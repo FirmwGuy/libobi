@@ -1,0 +1,12 @@
+/build/
+/build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.dSYM/
+.DS_Store
+

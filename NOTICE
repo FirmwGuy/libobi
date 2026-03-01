@@ -1,0 +1,7 @@
+libobi is licensed under the Mozilla Public License 2.0 (MPL-2.0).
+Copyright (c) 2026–present Victor M. Barrientos
+
+This repository contains the libobi loader/runtime implementation. Optional provider plugins
+(wrapping third-party libraries like SDL, FFmpeg, OpenSSL, etc.) are expected to ship as separate
+modules and may be licensed under different terms depending on their upstream dependencies.
+
