@@ -1,0 +1,6 @@
+option('providers', type: 'feature', value: 'enabled',
+  description: 'Build OBI provider plugins (shared modules).')
+
+option('provider_null', type: 'feature', value: 'enabled',
+  description: 'Build the dependency-free null provider plugin.')
+

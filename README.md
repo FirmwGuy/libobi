@@ -16,6 +16,7 @@
 Design goals:
 
 - dependency-free core runtime (just libc + platform dynamic loading),
+- canonical ABI headers sourced from `OBI-ABI` (tracked as the `obi-abi/` submodule),
 - provider plugins wrap third-party libraries and remain separately distributable,
 - stable C ABI surface suitable for FFIs.
 
@@ -37,4 +38,3 @@ meson compile -C build
 The `libobi` runtime itself is MPL-2.0. Provider plugins are separate modules and may carry their
 own licenses depending on the libraries they wrap. Distributions can ship a curated provider pack
 without forcing all hosts to take on all third-party dependencies.
-

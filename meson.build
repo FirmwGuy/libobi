@@ -10,7 +10,7 @@ project(
 )
 
 cc = meson.get_compiler('c')
-inc = include_directories('include')
+inc = include_directories('include', 'obi-abi/include')
 
 deps = []
 if host_machine.system() != 'windows'
@@ -32,9 +32,13 @@ libobi = library(
   install: true,
 )
 
+install_subdir('obi-abi/include', install_dir: get_option('includedir'), strip_directory: true)
+
 install_headers(
-  'include/obi/obi_core_v0.h',
   'include/obi/obi_rt_v0.h',
   subdir: 'obi',
 )
 
+if get_option('providers').enabled()
+  subdir('providers')
+endif

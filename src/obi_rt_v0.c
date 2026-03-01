@@ -217,8 +217,8 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
         return OBI_STATUS_UNAVAILABLE;
     }
 
-    const obi_provider_factory_v0* factory =
-        (const obi_provider_factory_v0*)GetProcAddress(h, OBI_PROVIDER_FACTORY_SYMBOL_V0);
+    const obi_provider_factory_desc_v0* factory =
+        (const obi_provider_factory_desc_v0*)GetProcAddress(h, OBI_PROVIDER_FACTORY_SYMBOL_V0);
     if (!factory) {
         _set_err(rt, "Missing factory symbol '%s' in '%s'", OBI_PROVIDER_FACTORY_SYMBOL_V0, path);
         (void)FreeLibrary(h);
@@ -231,8 +231,8 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
         return OBI_STATUS_UNAVAILABLE;
     }
 
-    const obi_provider_factory_v0* factory =
-        (const obi_provider_factory_v0*)dlsym(h, OBI_PROVIDER_FACTORY_SYMBOL_V0);
+    const obi_provider_factory_desc_v0* factory =
+        (const obi_provider_factory_desc_v0*)dlsym(h, OBI_PROVIDER_FACTORY_SYMBOL_V0);
     if (!factory) {
         _set_err(rt, "Missing factory symbol '%s' in '%s': %s",
                  OBI_PROVIDER_FACTORY_SYMBOL_V0, path, dlerror());

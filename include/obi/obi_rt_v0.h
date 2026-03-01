@@ -4,7 +4,7 @@
 #ifndef OBI_RT_V0_H
 #define OBI_RT_V0_H
 
-#include "obi_core_v0.h"
+#include <obi/obi_core_v0.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,4 +56,3 @@ const char* obi_rt_last_error_utf8(obi_rt_v0* rt);
 #endif
 
 #endif /* OBI_RT_V0_H */
-

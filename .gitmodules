@@ -1,0 +1,3 @@
+[submodule "obi-abi"]
+	path = obi-abi
+	url = ../OBI-ABI
