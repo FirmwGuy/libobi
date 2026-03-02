@@ -39,6 +39,38 @@ install_headers(
   subdir: 'obi',
 )
 
+provider_modules = []
+provider_profiles = []
 if get_option('providers').enabled()
   subdir('providers')
+endif
+
+provider_smoke = executable(
+  'obi_provider_smoke',
+  ['tools/obi_provider_smoke.c'],
+  include_directories: inc,
+  link_with: libobi,
+  dependencies: deps,
+  install: false,
+)
+
+if provider_modules.length() > 0
+  provider_paths = []
+  foreach p : provider_modules
+    provider_paths += [p.full_path()]
+  endforeach
+
+  test(
+    'provider_load_smoke',
+    provider_smoke,
+    args: ['--load-only'] + provider_paths,
+  )
+
+  if provider_profiles.length() > 0
+    test(
+      'provider_profile_smoke',
+      provider_smoke,
+      args: ['--profiles'] + provider_paths + ['--'] + provider_profiles,
+    )
+  endif
 endif

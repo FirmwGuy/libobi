@@ -4,3 +4,17 @@ option('providers', type: 'feature', value: 'enabled',
 option('provider_null', type: 'feature', value: 'enabled',
   description: 'Build the dependency-free null provider plugin.')
 
+option('provider_gfx_sdl3', type: 'feature', value: 'auto',
+  description: 'Build SDL3-backed gfx window/input provider plugin.')
+
+option('provider_gfx_raylib', type: 'feature', value: 'enabled',
+  description: 'Build raylib-profile gfx provider plugin (functional in-memory render2d baseline).')
+
+option('provider_text_stack', type: 'feature', value: 'auto',
+  description: 'Build text stack provider plugin (fontconfig/freetype/harfbuzz/fribidi).')
+
+option('provider_data_magic', type: 'feature', value: 'auto',
+  description: 'Build file-type provider plugin using libmagic.')
+
+option('provider_media_image', type: 'feature', value: 'enabled',
+  description: 'Build media image-codec provider plugin (PNG/JPEG/WebP decode+encode baseline).')

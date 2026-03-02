@@ -7,3 +7,4 @@ null_provider = shared_module(
   install_dir: provider_install_dir,
 )
 
+provider_modules += [null_provider]

@@ -25,6 +25,11 @@ typedef struct obi_rt_config_v0 {
     const obi_host_v0* host;
 } obi_rt_config_v0;
 
+enum {
+    /* Binding is advisory; runtime may fall back to other providers if it fails. */
+    OBI_RT_BIND_ALLOW_FALLBACK = 1u << 0,
+};
+
 /* Create/destroy a runtime instance. */
 obi_status obi_rt_create(const obi_rt_config_v0* config, obi_rt_v0** out_rt);
 void       obi_rt_destroy(obi_rt_v0* rt);
@@ -42,9 +47,31 @@ obi_status obi_rt_get_profile(obi_rt_v0* rt,
                               void* out_profile,
                               size_t out_profile_size);
 
+/* Fetch a profile handle from a specific provider ID. */
+obi_status obi_rt_get_profile_from_provider(obi_rt_v0* rt,
+                                            const char* provider_id,
+                                            const char* profile_id,
+                                            uint32_t profile_abi_major,
+                                            void* out_profile,
+                                            size_t out_profile_size);
+
+/* Selection policy controls. */
+obi_status obi_rt_policy_clear(obi_rt_v0* rt);
+obi_status obi_rt_policy_set_preferred_providers_csv(obi_rt_v0* rt, const char* csv_provider_ids);
+obi_status obi_rt_policy_set_denied_providers_csv(obi_rt_v0* rt, const char* csv_provider_ids);
+obi_status obi_rt_policy_bind_profile(obi_rt_v0* rt,
+                                      const char* profile_id,
+                                      const char* provider_id,
+                                      uint32_t flags);
+obi_status obi_rt_policy_bind_prefix(obi_rt_v0* rt,
+                                     const char* profile_prefix,
+                                     const char* provider_id,
+                                     uint32_t flags);
+
 /* Introspection: loaded providers. Returned provider handles are borrowed views. */
 obi_status obi_rt_provider_count(obi_rt_v0* rt, size_t* out_count);
 obi_status obi_rt_provider_get(obi_rt_v0* rt, size_t index, obi_provider_v0* out_provider);
+obi_status obi_rt_provider_id(obi_rt_v0* rt, size_t index, const char** out_provider_id);
 
 /* Best-effort human-readable runtime error (UTF-8). Pointer remains valid until next libobi call
  * on the same runtime or runtime destruction.
