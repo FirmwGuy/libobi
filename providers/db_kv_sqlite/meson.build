@@ -1,0 +1,22 @@
+sqlite_dep = dependency('sqlite3', required: get_option('provider_db_kv_sqlite'))
+
+if sqlite_dep.found()
+  db_kv_sqlite_provider_id = 'obi.provider:db.kv.sqlite'
+
+  db_kv_sqlite_provider = shared_module(
+    'obi_provider_db_kv_sqlite',
+    ['obi_provider_db_kv_sqlite_v0.c'],
+    include_directories: inc,
+    dependencies: deps + [sqlite_dep],
+    install: true,
+    install_dir: provider_install_dir,
+  )
+
+  provider_modules += [db_kv_sqlite_provider]
+  provider_profiles += [
+    'obi.profile:db.kv-0',
+  ]
+  provider_profile_pairs += [
+    'obi.profile:db.kv-0|' + db_kv_sqlite_provider_id,
+  ]
+endif

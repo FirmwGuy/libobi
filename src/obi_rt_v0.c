@@ -28,6 +28,8 @@ typedef struct obi_loaded_provider_v0 {
     void* dylib_handle;
     obi_provider_v0 provider;
     char* provider_id;
+    char* license_class;
+    char* license_spdx_expression;
 } obi_loaded_provider_v0;
 
 typedef struct obi_profile_binding_v0 {
@@ -60,6 +62,24 @@ struct obi_rt_v0 {
     size_t denied_count;
     size_t denied_cap;
 
+    char** allowed_license_classes;
+    size_t allowed_license_class_count;
+    size_t allowed_license_class_cap;
+
+    char** denied_license_classes;
+    size_t denied_license_class_count;
+    size_t denied_license_class_cap;
+
+    char** allowed_spdx_prefixes;
+    size_t allowed_spdx_prefix_count;
+    size_t allowed_spdx_prefix_cap;
+
+    char** denied_spdx_prefixes;
+    size_t denied_spdx_prefix_count;
+    size_t denied_spdx_prefix_cap;
+
+    bool eager_reject_disallowed_loads;
+
     obi_profile_binding_v0* bindings;
     size_t binding_count;
     size_t binding_cap;
@@ -71,14 +91,73 @@ struct obi_rt_v0 {
     char last_error[512];
 };
 
-static void _set_err(obi_rt_v0* rt, const char* fmt, ...) {
-    if (!rt) {
+static bool _host_emit_diagnostic_available(const obi_host_v0* host) {
+    if (!host || !host->emit_diagnostic) {
+        return false;
+    }
+    return (size_t)host->struct_size >=
+           (offsetof(obi_host_v0, emit_diagnostic) + sizeof(host->emit_diagnostic));
+}
+
+static void _emit_diagnostic(obi_rt_v0* rt,
+                             obi_log_level level,
+                             obi_diagnostic_scope_v0 scope,
+                             obi_status status,
+                             const char* code,
+                             const char* provider_id,
+                             const char* profile_id,
+                             const char* message_utf8) {
+    if (!rt || !message_utf8 || message_utf8[0] == '\0') {
         return;
     }
 
+    if (_host_emit_diagnostic_available(&rt->host)) {
+        obi_diagnostic_v0 diag;
+        memset(&diag, 0, sizeof(diag));
+        diag.struct_size = (uint32_t)sizeof(diag);
+        diag.level = (uint32_t)level;
+        diag.scope = (uint32_t)scope;
+        diag.status = (int32_t)status;
+        diag.code = code;
+        diag.message_utf8 = message_utf8;
+        diag.provider_id = provider_id;
+        diag.profile_id = profile_id;
+        rt->host.emit_diagnostic(rt->host.ctx, &diag);
+        return;
+    }
+
+    if (rt->host.log) {
+        rt->host.log(rt->host.ctx, level, message_utf8);
+    }
+}
+
+static void _set_err_v(obi_rt_v0* rt,
+                       obi_log_level level,
+                       obi_diagnostic_scope_v0 scope,
+                       obi_status status,
+                       const char* code,
+                       const char* provider_id,
+                       const char* profile_id,
+                       const char* fmt,
+                       va_list ap) {
+    if (!rt || !fmt) {
+        return;
+    }
+    (void)vsnprintf(rt->last_error, sizeof(rt->last_error), fmt, ap);
+    _emit_diagnostic(rt, level, scope, status, code, provider_id, profile_id, rt->last_error);
+}
+
+static void _set_err_diag(obi_rt_v0* rt,
+                          obi_log_level level,
+                          obi_diagnostic_scope_v0 scope,
+                          obi_status status,
+                          const char* code,
+                          const char* provider_id,
+                          const char* profile_id,
+                          const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    (void)vsnprintf(rt->last_error, sizeof(rt->last_error), fmt, ap);
+    _set_err_v(rt, level, scope, status, code, provider_id, profile_id, fmt, ap);
     va_end(ap);
 }
 
@@ -108,6 +187,126 @@ static bool _streq(const char* a, const char* b) {
     return strcmp(a, b) == 0;
 }
 
+static void _normalize_ascii_token_inplace(char* s) {
+    if (!s) {
+        return;
+    }
+    for (char* p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c >= 'A' && c <= 'Z') {
+            *p = (char)(c - 'A' + 'a');
+        } else if (c == '-') {
+            *p = '_';
+        }
+    }
+}
+
+static void _lower_ascii_inplace(char* s) {
+    if (!s) {
+        return;
+    }
+    for (char* p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c >= 'A' && c <= 'Z') {
+            *p = (char)(c - 'A' + 'a');
+        }
+    }
+}
+
+static void _normalize_string_list_inplace(char** list, size_t count) {
+    if (!list) {
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        _normalize_ascii_token_inplace(list[i]);
+    }
+}
+
+static void _lower_string_list_inplace(char** list, size_t count) {
+    if (!list) {
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        _lower_ascii_inplace(list[i]);
+    }
+}
+
+static char* _extract_license_field_from_describe_json(const char* json, const char* field_name) {
+    if (!json || json[0] == '\0' || !field_name || field_name[0] == '\0') {
+        return NULL;
+    }
+
+    char key[64];
+    int nk = snprintf(key, sizeof(key), "\"%s\"", field_name);
+    if (nk <= 0 || (size_t)nk >= sizeof(key)) {
+        return NULL;
+    }
+
+    const char* p = strstr(json, "\"license\"");
+    if (!p) {
+        return NULL;
+    }
+    p = strchr(p, '{');
+    if (!p) {
+        return NULL;
+    }
+
+    const char* field_key = strstr(p, key);
+    if (!field_key) {
+        return NULL;
+    }
+
+    const char* colon = strchr(field_key, ':');
+    if (!colon) {
+        return NULL;
+    }
+
+    const char* q0 = strchr(colon, '"');
+    if (!q0) {
+        return NULL;
+    }
+    q0++;
+    const char* q1 = strchr(q0, '"');
+    if (!q1 || q1 <= q0) {
+        return NULL;
+    }
+
+    return _dup_range(q0, (size_t)(q1 - q0));
+}
+
+static char* _extract_license_class_from_describe_json(const char* json) {
+    char* out = _extract_license_field_from_describe_json(json, "class");
+    if (!out) {
+        return NULL;
+    }
+    _normalize_ascii_token_inplace(out);
+    return out;
+}
+
+static char* _extract_spdx_expression_from_describe_json(const char* json) {
+    char* out = _extract_license_field_from_describe_json(json, "spdx_expression");
+    if (!out) {
+        return NULL;
+    }
+    _lower_ascii_inplace(out);
+    return out;
+}
+
+static bool _parse_env_bool(const char* value, bool default_value) {
+    if (!value || value[0] == '\0') {
+        return default_value;
+    }
+    if (_streq(value, "1") || _streq(value, "true") || _streq(value, "TRUE") ||
+        _streq(value, "yes") || _streq(value, "YES") || _streq(value, "on") || _streq(value, "ON")) {
+        return true;
+    }
+    if (_streq(value, "0") || _streq(value, "false") || _streq(value, "FALSE") ||
+        _streq(value, "no") || _streq(value, "NO") || _streq(value, "off") || _streq(value, "OFF")) {
+        return false;
+    }
+    return default_value;
+}
+
 static void* _default_alloc(void* ctx, size_t size) {
     (void)ctx;
     return malloc(size);
@@ -125,14 +324,8 @@ static void _default_free(void* ctx, void* ptr) {
 
 static void _default_log(void* ctx, obi_log_level level, const char* msg) {
     (void)ctx;
-    const char* lvl = "INFO";
-    switch (level) {
-        case OBI_LOG_DEBUG: lvl = "DEBUG"; break;
-        case OBI_LOG_INFO:  lvl = "INFO"; break;
-        case OBI_LOG_WARN:  lvl = "WARN"; break;
-        case OBI_LOG_ERROR: lvl = "ERROR"; break;
-    }
-    fprintf(stderr, "[libobi] %s: %s\n", lvl, msg ? msg : "(null)");
+    (void)level;
+    (void)msg;
 }
 
 static uint64_t _default_now_ns(void* ctx, obi_time_clock clock) {
@@ -154,7 +347,11 @@ static uint64_t _default_now_ns(void* ctx, obi_time_clock clock) {
 static void _host_fill_defaults(obi_host_v0* dst, const obi_host_v0* src) {
     memset(dst, 0, sizeof(*dst));
     if (src) {
-        *dst = *src;
+        size_t src_size = (size_t)src->struct_size;
+        if (src_size == 0u || src_size > sizeof(*dst)) {
+            src_size = sizeof(*dst);
+        }
+        memcpy(dst, src, src_size);
     }
 
     dst->abi_major = OBI_CORE_ABI_MAJOR;
@@ -290,6 +487,29 @@ static bool _string_list_contains(char* const* list, size_t count, const char* v
     }
     for (size_t i = 0; i < count; i++) {
         if (_streq(list[i], value)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool _starts_with(const char* value, const char* prefix) {
+    if (!value || !prefix) {
+        return false;
+    }
+    size_t n = strlen(prefix);
+    if (n == 0u) {
+        return false;
+    }
+    return strncmp(value, prefix, n) == 0;
+}
+
+static bool _string_list_prefix_match(char* const* list, size_t count, const char* value) {
+    if (!list || !value) {
+        return false;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (_starts_with(value, list[i])) {
             return true;
         }
     }
@@ -485,13 +705,85 @@ static ptrdiff_t _provider_index_by_id(const obi_rt_v0* rt, const char* provider
     return -1;
 }
 
+static const char* _provider_license_class_or_unknown(const obi_rt_v0* rt, size_t provider_index) {
+    if (!rt || provider_index >= rt->provider_count) {
+        return "unknown";
+    }
+    const char* c = rt->providers[provider_index].license_class;
+    if (!c || c[0] == '\0') {
+        return "unknown";
+    }
+    return c;
+}
+
+static const char* _provider_license_spdx_or_unknown(const obi_rt_v0* rt, size_t provider_index) {
+    if (!rt || provider_index >= rt->provider_count) {
+        return "unknown";
+    }
+    const char* c = rt->providers[provider_index].license_spdx_expression;
+    if (!c || c[0] == '\0') {
+        return "unknown";
+    }
+    return c;
+}
+
+static bool _provider_values_denied(const obi_rt_v0* rt,
+                                    const char* provider_id,
+                                    const char* license_class,
+                                    const char* license_spdx_expression) {
+    if (!rt) {
+        return false;
+    }
+
+    const char* pid = (provider_id && provider_id[0] != '\0') ? provider_id : "(unknown)";
+    const char* cls = (license_class && license_class[0] != '\0') ? license_class : "unknown";
+    const char* spdx = (license_spdx_expression && license_spdx_expression[0] != '\0') ?
+                       license_spdx_expression : "unknown";
+
+    if (_string_list_contains(rt->denied_ids, rt->denied_count, pid)) {
+        return true;
+    }
+
+    if (_string_list_contains(rt->denied_license_classes,
+                              rt->denied_license_class_count,
+                              cls)) {
+        return true;
+    }
+
+    if (rt->allowed_license_class_count > 0 &&
+        !_string_list_contains(rt->allowed_license_classes,
+                               rt->allowed_license_class_count,
+                               cls)) {
+        return true;
+    }
+
+    if (_string_list_prefix_match(rt->denied_spdx_prefixes,
+                                  rt->denied_spdx_prefix_count,
+                                  spdx)) {
+        return true;
+    }
+
+    if (rt->allowed_spdx_prefix_count > 0 &&
+        !_string_list_prefix_match(rt->allowed_spdx_prefixes,
+                                   rt->allowed_spdx_prefix_count,
+                                   spdx)) {
+        return true;
+    }
+
+    return false;
+}
+
 static bool _provider_is_denied(const obi_rt_v0* rt, size_t provider_index) {
     if (!rt || provider_index >= rt->provider_count) {
         return false;
     }
-    return _string_list_contains(rt->denied_ids,
-                                 rt->denied_count,
-                                 rt->providers[provider_index].provider_id);
+
+    const char* cls = _provider_license_class_or_unknown(rt, provider_index);
+    const char* spdx = _provider_license_spdx_or_unknown(rt, provider_index);
+    return _provider_values_denied(rt,
+                                   rt->providers[provider_index].provider_id,
+                                   cls,
+                                   spdx);
 }
 
 static obi_status _provider_get_profile(obi_rt_v0* rt,
@@ -515,11 +807,17 @@ static obi_status _provider_get_profile(obi_rt_v0* rt,
                                        out_profile,
                                        out_profile_size);
     if (st != OBI_STATUS_OK && st != OBI_STATUS_UNSUPPORTED) {
-        _set_err(rt,
-                 "Provider '%s' returned status=%d for profile '%s'",
-                 rt->providers[provider_index].provider_id ? rt->providers[provider_index].provider_id : "(unknown)",
-                 (int)st,
-                 profile_id);
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_CALL,
+                      st,
+                      "runtime.provider_profile_query_failed",
+                      rt->providers[provider_index].provider_id ? rt->providers[provider_index].provider_id : "(unknown)",
+                      profile_id,
+                      "Provider '%s' returned status=%d for profile '%s'",
+                      rt->providers[provider_index].provider_id ? rt->providers[provider_index].provider_id : "(unknown)",
+                      (int)st,
+                      profile_id);
     }
 
     return st;
@@ -595,10 +893,16 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
     ptrdiff_t pos = _provider_index_by_id(rt, binding->provider_id);
     if (pos < 0) {
         if ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) == 0u) {
-            _set_err(rt,
-                     "Bound provider '%s' not loaded for profile '%s'",
-                     binding->provider_id,
-                     profile_id);
+            _set_err_diag(rt,
+                          OBI_LOG_WARN,
+                          OBI_DIAG_SCOPE_PROFILE,
+                          OBI_STATUS_UNSUPPORTED,
+                          "runtime.bound_provider_not_loaded",
+                          binding->provider_id,
+                          profile_id,
+                          "Bound provider '%s' not loaded for profile '%s'",
+                          binding->provider_id,
+                          profile_id);
             *out_handled = true;
         }
         return OBI_STATUS_UNSUPPORTED;
@@ -611,10 +915,16 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
 
     if (_provider_is_denied(rt, idx)) {
         if ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) == 0u) {
-            _set_err(rt,
-                     "Bound provider '%s' is denied for profile '%s'",
-                     binding->provider_id,
-                     profile_id);
+            _set_err_diag(rt,
+                          OBI_LOG_WARN,
+                          OBI_DIAG_SCOPE_PROFILE,
+                          OBI_STATUS_PERMISSION_DENIED,
+                          "runtime.bound_provider_denied",
+                          binding->provider_id,
+                          profile_id,
+                          "Bound provider '%s' is denied for profile '%s'",
+                          binding->provider_id,
+                          profile_id);
             *out_handled = true;
         }
         return OBI_STATUS_UNSUPPORTED;
@@ -634,10 +944,16 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
 
     if (st == OBI_STATUS_UNSUPPORTED) {
         if ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) == 0u) {
-            _set_err(rt,
-                     "Bound provider '%s' does not support profile '%s'",
-                     binding->provider_id,
-                     profile_id);
+            _set_err_diag(rt,
+                          OBI_LOG_WARN,
+                          OBI_DIAG_SCOPE_PROFILE,
+                          OBI_STATUS_UNSUPPORTED,
+                          "runtime.bound_provider_unsupported",
+                          binding->provider_id,
+                          profile_id,
+                          "Bound provider '%s' does not support profile '%s'",
+                          binding->provider_id,
+                          profile_id);
             *out_handled = true;
         }
         return OBI_STATUS_UNSUPPORTED;
@@ -687,6 +1003,12 @@ static void _provider_destroy(obi_loaded_provider_v0* p) {
 
     free(p->provider_id);
     p->provider_id = NULL;
+
+    free(p->license_class);
+    p->license_class = NULL;
+
+    free(p->license_spdx_expression);
+    p->license_spdx_expression = NULL;
 }
 
 static void _policy_clear_all(obi_rt_v0* rt) {
@@ -695,6 +1017,18 @@ static void _policy_clear_all(obi_rt_v0* rt) {
     }
     _string_list_free(&rt->preferred_ids, &rt->preferred_count, &rt->preferred_cap);
     _string_list_free(&rt->denied_ids, &rt->denied_count, &rt->denied_cap);
+    _string_list_free(&rt->allowed_license_classes,
+                      &rt->allowed_license_class_count,
+                      &rt->allowed_license_class_cap);
+    _string_list_free(&rt->denied_license_classes,
+                      &rt->denied_license_class_count,
+                      &rt->denied_license_class_cap);
+    _string_list_free(&rt->allowed_spdx_prefixes,
+                      &rt->allowed_spdx_prefix_count,
+                      &rt->allowed_spdx_prefix_cap);
+    _string_list_free(&rt->denied_spdx_prefixes,
+                      &rt->denied_spdx_prefix_count,
+                      &rt->denied_spdx_prefix_cap);
     _bindings_clear(rt);
     _cache_clear(rt);
 }
@@ -722,11 +1056,13 @@ obi_status obi_rt_create(const obi_rt_config_v0* config, obi_rt_v0** out_rt) {
     *out_rt = NULL;
 
     const obi_host_v0* host = NULL;
+    uint32_t config_flags = 0u;
     if (config) {
         if (config->struct_size != 0u && config->struct_size < sizeof(*config)) {
             return OBI_STATUS_BAD_ARG;
         }
         host = config->host;
+        config_flags = config->flags;
     }
 
     obi_rt_v0* rt = (obi_rt_v0*)calloc(1, sizeof(*rt));
@@ -736,6 +1072,8 @@ obi_status obi_rt_create(const obi_rt_config_v0* config, obi_rt_v0** out_rt) {
 
     _host_fill_defaults(&rt->host, host);
     rt->last_error[0] = '\0';
+    rt->eager_reject_disallowed_loads =
+        ((config_flags & OBI_RT_CONFIG_EAGER_REJECT_DISALLOWED_LOADS) != 0u);
 
     const char* env_pref = getenv("OBI_PREFER_PROVIDERS");
     if (env_pref && env_pref[0] != '\0') {
@@ -761,6 +1099,65 @@ obi_status obi_rt_create(const obi_rt_config_v0* config, obi_rt_v0** out_rt) {
             return st;
         }
     }
+
+    const char* env_allow_license = getenv("OBI_ALLOW_LICENSE_CLASSES");
+    if (env_allow_license && env_allow_license[0] != '\0') {
+        obi_status st = _string_list_set_csv(&rt->allowed_license_classes,
+                                             &rt->allowed_license_class_count,
+                                             &rt->allowed_license_class_cap,
+                                             env_allow_license);
+        if (st != OBI_STATUS_OK) {
+            _runtime_free_all(rt);
+            free(rt);
+            return st;
+        }
+        _normalize_string_list_inplace(rt->allowed_license_classes, rt->allowed_license_class_count);
+    }
+
+    const char* env_deny_license = getenv("OBI_DENY_LICENSE_CLASSES");
+    if (env_deny_license && env_deny_license[0] != '\0') {
+        obi_status st = _string_list_set_csv(&rt->denied_license_classes,
+                                             &rt->denied_license_class_count,
+                                             &rt->denied_license_class_cap,
+                                             env_deny_license);
+        if (st != OBI_STATUS_OK) {
+            _runtime_free_all(rt);
+            free(rt);
+            return st;
+        }
+        _normalize_string_list_inplace(rt->denied_license_classes, rt->denied_license_class_count);
+    }
+
+    const char* env_allow_spdx = getenv("OBI_ALLOW_LICENSE_SPDX_PREFIXES");
+    if (env_allow_spdx && env_allow_spdx[0] != '\0') {
+        obi_status st = _string_list_set_csv(&rt->allowed_spdx_prefixes,
+                                             &rt->allowed_spdx_prefix_count,
+                                             &rt->allowed_spdx_prefix_cap,
+                                             env_allow_spdx);
+        if (st != OBI_STATUS_OK) {
+            _runtime_free_all(rt);
+            free(rt);
+            return st;
+        }
+        _lower_string_list_inplace(rt->allowed_spdx_prefixes, rt->allowed_spdx_prefix_count);
+    }
+
+    const char* env_deny_spdx = getenv("OBI_DENY_LICENSE_SPDX_PREFIXES");
+    if (env_deny_spdx && env_deny_spdx[0] != '\0') {
+        obi_status st = _string_list_set_csv(&rt->denied_spdx_prefixes,
+                                             &rt->denied_spdx_prefix_count,
+                                             &rt->denied_spdx_prefix_cap,
+                                             env_deny_spdx);
+        if (st != OBI_STATUS_OK) {
+            _runtime_free_all(rt);
+            free(rt);
+            return st;
+        }
+        _lower_string_list_inplace(rt->denied_spdx_prefixes, rt->denied_spdx_prefix_count);
+    }
+
+    const char* env_eager = getenv("OBI_EAGER_REJECT_DISALLOWED_LOADS");
+    rt->eager_reject_disallowed_loads = _parse_env_bool(env_eager, rt->eager_reject_disallowed_loads);
 
     *out_rt = rt;
     return OBI_STATUS_OK;
@@ -817,6 +1214,88 @@ obi_status obi_rt_policy_set_denied_providers_csv(obi_rt_v0* rt, const char* csv
     return st;
 }
 
+obi_status obi_rt_policy_set_allowed_license_classes_csv(obi_rt_v0* rt,
+                                                         const char* csv_license_classes) {
+    if (!rt) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    obi_status st = _string_list_set_csv(&rt->allowed_license_classes,
+                                         &rt->allowed_license_class_count,
+                                         &rt->allowed_license_class_cap,
+                                         csv_license_classes);
+    if (st == OBI_STATUS_OK) {
+        _normalize_string_list_inplace(rt->allowed_license_classes, rt->allowed_license_class_count);
+        _cache_clear(rt);
+        rt->last_error[0] = '\0';
+    }
+    return st;
+}
+
+obi_status obi_rt_policy_set_denied_license_classes_csv(obi_rt_v0* rt,
+                                                        const char* csv_license_classes) {
+    if (!rt) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    obi_status st = _string_list_set_csv(&rt->denied_license_classes,
+                                         &rt->denied_license_class_count,
+                                         &rt->denied_license_class_cap,
+                                         csv_license_classes);
+    if (st == OBI_STATUS_OK) {
+        _normalize_string_list_inplace(rt->denied_license_classes, rt->denied_license_class_count);
+        _cache_clear(rt);
+        rt->last_error[0] = '\0';
+    }
+    return st;
+}
+
+obi_status obi_rt_policy_set_allowed_spdx_prefixes_csv(obi_rt_v0* rt,
+                                                        const char* csv_spdx_prefixes) {
+    if (!rt) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    obi_status st = _string_list_set_csv(&rt->allowed_spdx_prefixes,
+                                         &rt->allowed_spdx_prefix_count,
+                                         &rt->allowed_spdx_prefix_cap,
+                                         csv_spdx_prefixes);
+    if (st == OBI_STATUS_OK) {
+        _lower_string_list_inplace(rt->allowed_spdx_prefixes, rt->allowed_spdx_prefix_count);
+        _cache_clear(rt);
+        rt->last_error[0] = '\0';
+    }
+    return st;
+}
+
+obi_status obi_rt_policy_set_denied_spdx_prefixes_csv(obi_rt_v0* rt,
+                                                       const char* csv_spdx_prefixes) {
+    if (!rt) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    obi_status st = _string_list_set_csv(&rt->denied_spdx_prefixes,
+                                         &rt->denied_spdx_prefix_count,
+                                         &rt->denied_spdx_prefix_cap,
+                                         csv_spdx_prefixes);
+    if (st == OBI_STATUS_OK) {
+        _lower_string_list_inplace(rt->denied_spdx_prefixes, rt->denied_spdx_prefix_count);
+        _cache_clear(rt);
+        rt->last_error[0] = '\0';
+    }
+    return st;
+}
+
+obi_status obi_rt_policy_set_eager_reject_disallowed_provider_loads(obi_rt_v0* rt, bool enabled) {
+    if (!rt) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    rt->eager_reject_disallowed_loads = enabled;
+    rt->last_error[0] = '\0';
+    return OBI_STATUS_OK;
+}
+
 obi_status obi_rt_policy_bind_profile(obi_rt_v0* rt,
                                       const char* profile_id,
                                       const char* provider_id,
@@ -859,45 +1338,91 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
 #if defined(_WIN32)
     HMODULE h = LoadLibraryA(path);
     if (!h) {
-        _set_err(rt, "LoadLibraryA failed for '%s' (err=%lu)", path, (unsigned long)GetLastError());
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNAVAILABLE,
+                      "runtime.provider_load_library_failed",
+                      NULL,
+                      NULL,
+                      "LoadLibraryA failed for '%s' (err=%lu)",
+                      path,
+                      (unsigned long)GetLastError());
         return OBI_STATUS_UNAVAILABLE;
     }
 
     const obi_provider_factory_desc_v0* factory =
         (const obi_provider_factory_desc_v0*)GetProcAddress(h, OBI_PROVIDER_FACTORY_SYMBOL_V0);
     if (!factory) {
-        _set_err(rt, "Missing factory symbol '%s' in '%s'", OBI_PROVIDER_FACTORY_SYMBOL_V0, path);
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNSUPPORTED,
+                      "runtime.provider_factory_symbol_missing",
+                      NULL,
+                      NULL,
+                      "Missing factory symbol '%s' in '%s'",
+                      OBI_PROVIDER_FACTORY_SYMBOL_V0,
+                      path);
         (void)FreeLibrary(h);
         return OBI_STATUS_UNSUPPORTED;
     }
 #else
-    void* h = dlopen(path, RTLD_NOW);
+    int dlopen_flags = RTLD_NOW;
+#  if defined(RTLD_NODELETE)
+    /* Some provider dependency stacks register process-global GLib/GObject types and
+     * are not safely unloadable/reloadable within the same process. Keep plugin images
+     * resident once loaded while still destroying provider instances on rt teardown. */
+    dlopen_flags |= RTLD_NODELETE;
+#  endif
+    void* h = dlopen(path, dlopen_flags);
     if (!h) {
-        _set_err(rt, "dlopen failed for '%s': %s", path, dlerror());
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNAVAILABLE,
+                      "runtime.provider_dlopen_failed",
+                      NULL,
+                      NULL,
+                      "dlopen failed for '%s': %s",
+                      path,
+                      dlerror());
         return OBI_STATUS_UNAVAILABLE;
     }
 
     const obi_provider_factory_desc_v0* factory =
         (const obi_provider_factory_desc_v0*)dlsym(h, OBI_PROVIDER_FACTORY_SYMBOL_V0);
     if (!factory) {
-        _set_err(rt,
-                 "Missing factory symbol '%s' in '%s': %s",
-                 OBI_PROVIDER_FACTORY_SYMBOL_V0,
-                 path,
-                 dlerror());
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNSUPPORTED,
+                      "runtime.provider_factory_symbol_missing",
+                      NULL,
+                      NULL,
+                      "Missing factory symbol '%s' in '%s': %s",
+                      OBI_PROVIDER_FACTORY_SYMBOL_V0,
+                      path,
+                      dlerror());
         (void)dlclose(h);
         return OBI_STATUS_UNSUPPORTED;
     }
 #endif
 
     if (factory->abi_major != OBI_CORE_ABI_MAJOR || factory->abi_minor != OBI_CORE_ABI_MINOR) {
-        _set_err(rt,
-                 "Factory ABI mismatch in '%s' (have %u.%u, need %u.%u)",
-                 path,
-                 (unsigned)factory->abi_major,
-                 (unsigned)factory->abi_minor,
-                 (unsigned)OBI_CORE_ABI_MAJOR,
-                 (unsigned)OBI_CORE_ABI_MINOR);
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNSUPPORTED,
+                      "runtime.provider_factory_abi_mismatch",
+                      NULL,
+                      NULL,
+                      "Factory ABI mismatch in '%s' (have %u.%u, need %u.%u)",
+                      path,
+                      (unsigned)factory->abi_major,
+                      (unsigned)factory->abi_minor,
+                      (unsigned)OBI_CORE_ABI_MAJOR,
+                      (unsigned)OBI_CORE_ABI_MINOR);
 #if defined(_WIN32)
         (void)FreeLibrary((HMODULE)h);
 #else
@@ -907,7 +1432,15 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
     }
 
     if (factory->struct_size < sizeof(*factory) || !factory->create) {
-        _set_err(rt, "Invalid factory struct in '%s'", path);
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_ERROR,
+                      "runtime.provider_factory_invalid",
+                      NULL,
+                      NULL,
+                      "Invalid factory struct in '%s'",
+                      path);
 #if defined(_WIN32)
         (void)FreeLibrary((HMODULE)h);
 #else
@@ -921,7 +1454,16 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
 
     obi_status st = factory->create(&rt->host, &provider);
     if (st != OBI_STATUS_OK) {
-        _set_err(rt, "Provider create failed for '%s' (status=%d)", path, (int)st);
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      st,
+                      "runtime.provider_create_failed",
+                      NULL,
+                      NULL,
+                      "Provider create failed for '%s' (status=%d)",
+                      path,
+                      (int)st);
 #if defined(_WIN32)
         (void)FreeLibrary((HMODULE)h);
 #else
@@ -942,7 +1484,24 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
     }
 
     char* provider_id_copy = _dup_str(provider_id);
-    if (!provider_id_copy) {
+    char* license_class_copy = NULL;
+    char* license_spdx_copy = NULL;
+    if (provider.api && provider.api->describe_json) {
+        const char* describe_json = provider.api->describe_json(provider.ctx);
+        license_class_copy = _extract_license_class_from_describe_json(describe_json);
+        license_spdx_copy = _extract_spdx_expression_from_describe_json(describe_json);
+    }
+    if (!license_class_copy) {
+        license_class_copy = _dup_str("unknown");
+    }
+    if (!license_spdx_copy) {
+        license_spdx_copy = _dup_str("unknown");
+    }
+
+    if (!provider_id_copy || !license_class_copy || !license_spdx_copy) {
+        free(provider_id_copy);
+        free(license_class_copy);
+        free(license_spdx_copy);
         if (provider.api && provider.api->destroy) {
             provider.api->destroy(provider.ctx);
         }
@@ -954,10 +1513,39 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
+    if (rt->eager_reject_disallowed_loads &&
+        _provider_values_denied(rt, provider_id_copy, license_class_copy, license_spdx_copy)) {
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      OBI_STATUS_PERMISSION_DENIED,
+                      "runtime.provider_rejected_by_policy",
+                      provider_id_copy,
+                      NULL,
+                      "Provider '%s' rejected at load-time by policy (license.class=%s license.spdx_expression=%s)",
+                      provider_id_copy,
+                      license_class_copy,
+                      license_spdx_copy);
+        free(provider_id_copy);
+        free(license_class_copy);
+        free(license_spdx_copy);
+        if (provider.api && provider.api->destroy) {
+            provider.api->destroy(provider.ctx);
+        }
+#if defined(_WIN32)
+        (void)FreeLibrary((HMODULE)h);
+#else
+        (void)dlclose(h);
+#endif
+        return OBI_STATUS_PERMISSION_DENIED;
+    }
+
     if (rt->provider_count == rt->provider_cap) {
         st = _providers_grow(rt);
         if (st != OBI_STATUS_OK) {
             free(provider_id_copy);
+            free(license_class_copy);
+            free(license_spdx_copy);
             if (provider.api && provider.api->destroy) {
                 provider.api->destroy(provider.ctx);
             }
@@ -975,6 +1563,8 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
     lp.dylib_handle = (void*)h;
     lp.provider = provider;
     lp.provider_id = provider_id_copy;
+    lp.license_class = license_class_copy;
+    lp.license_spdx_expression = license_spdx_copy;
 
     rt->providers[rt->provider_count++] = lp;
 
@@ -1007,12 +1597,27 @@ obi_status obi_rt_load_provider_dir(obi_rt_v0* rt, const char* dir_path) {
     }
 
 #if defined(_WIN32)
-    _set_err(rt, "obi_rt_load_provider_dir is not implemented on Windows yet");
+    _set_err_diag(rt,
+                  OBI_LOG_WARN,
+                  OBI_DIAG_SCOPE_RUNTIME,
+                  OBI_STATUS_UNSUPPORTED,
+                  "runtime.load_provider_dir_unsupported",
+                  NULL,
+                  NULL,
+                  "obi_rt_load_provider_dir is not implemented on Windows yet");
     return OBI_STATUS_UNSUPPORTED;
 #else
     DIR* d = opendir(dir_path);
     if (!d) {
-        _set_err(rt, "opendir failed for '%s'", dir_path);
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNAVAILABLE,
+                      "runtime.load_provider_dir_open_failed",
+                      NULL,
+                      NULL,
+                      "opendir failed for '%s'",
+                      dir_path);
         return OBI_STATUS_UNAVAILABLE;
     }
 
@@ -1073,7 +1678,15 @@ obi_status obi_rt_load_provider_dir(obi_rt_v0* rt, const char* dir_path) {
 
     if (path_count == 0u) {
         free(paths);
-        _set_err(rt, "No providers found in '%s'", dir_path);
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNAVAILABLE,
+                      "runtime.load_provider_dir_empty",
+                      NULL,
+                      NULL,
+                      "No providers found in '%s'",
+                      dir_path);
         return OBI_STATUS_UNAVAILABLE;
     }
 
@@ -1089,7 +1702,15 @@ obi_status obi_rt_load_provider_dir(obi_rt_v0* rt, const char* dir_path) {
     free(paths);
 
     if (loaded == 0u) {
-        _set_err(rt, "No providers loaded from '%s'", dir_path);
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNAVAILABLE,
+                      "runtime.load_provider_dir_none_loaded",
+                      NULL,
+                      NULL,
+                      "No providers loaded from '%s'",
+                      dir_path);
         return OBI_STATUS_UNAVAILABLE;
     }
 
@@ -1112,13 +1733,29 @@ obi_status obi_rt_get_profile_from_provider(obi_rt_v0* rt,
 
     ptrdiff_t pos = _provider_index_by_id(rt, provider_id);
     if (pos < 0) {
-        _set_err(rt, "Provider '%s' is not loaded", provider_id);
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      OBI_STATUS_UNSUPPORTED,
+                      "runtime.provider_not_loaded",
+                      provider_id,
+                      profile_id,
+                      "Provider '%s' is not loaded",
+                      provider_id);
         return OBI_STATUS_UNSUPPORTED;
     }
 
     size_t idx = (size_t)pos;
     if (_provider_is_denied(rt, idx)) {
-        _set_err(rt, "Provider '%s' is denied by policy", provider_id);
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      OBI_STATUS_PERMISSION_DENIED,
+                      "runtime.provider_denied",
+                      provider_id,
+                      profile_id,
+                      "Provider '%s' is denied by policy",
+                      provider_id);
         return OBI_STATUS_PERMISSION_DENIED;
     }
 
@@ -1129,10 +1766,16 @@ obi_status obi_rt_get_profile_from_provider(obi_rt_v0* rt,
                                           out_profile,
                                           out_profile_size);
     if (st == OBI_STATUS_UNSUPPORTED) {
-        _set_err(rt,
-                 "Provider '%s' does not support profile '%s'",
-                 provider_id,
-                 profile_id);
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_PROFILE,
+                      OBI_STATUS_UNSUPPORTED,
+                      "runtime.provider_profile_unsupported",
+                      provider_id,
+                      profile_id,
+                      "Provider '%s' does not support profile '%s'",
+                      provider_id,
+                      profile_id);
     }
 
     return st;
@@ -1150,7 +1793,14 @@ obi_status obi_rt_get_profile(obi_rt_v0* rt,
     rt->last_error[0] = '\0';
 
     if (rt->provider_count == 0u) {
-        _set_err(rt, "No providers are loaded");
+        _set_err_diag(rt,
+                      OBI_LOG_WARN,
+                      OBI_DIAG_SCOPE_RUNTIME,
+                      OBI_STATUS_UNAVAILABLE,
+                      "runtime.no_providers_loaded",
+                      NULL,
+                      profile_id,
+                      "No providers are loaded");
         return OBI_STATUS_UNAVAILABLE;
     }
 
@@ -1280,7 +1930,15 @@ obi_status obi_rt_get_profile(obi_rt_v0* rt,
 
     free(tried);
 
-    _set_err(rt, "No loaded provider supports profile '%s'", profile_id);
+    _set_err_diag(rt,
+                  OBI_LOG_WARN,
+                  OBI_DIAG_SCOPE_PROFILE,
+                  OBI_STATUS_UNSUPPORTED,
+                  "runtime.no_provider_supports_profile",
+                  NULL,
+                  profile_id,
+                  "No loaded provider supports profile '%s'",
+                  profile_id);
     return OBI_STATUS_UNSUPPORTED;
 }
 

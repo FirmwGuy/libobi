@@ -26,6 +26,11 @@ typedef struct obi_rt_config_v0 {
 } obi_rt_config_v0;
 
 enum {
+    /* If set, disallowed providers are rejected immediately when loaded. */
+    OBI_RT_CONFIG_EAGER_REJECT_DISALLOWED_LOADS = 1u << 0,
+};
+
+enum {
     /* Binding is advisory; runtime may fall back to other providers if it fails. */
     OBI_RT_BIND_ALLOW_FALLBACK = 1u << 0,
 };
@@ -59,6 +64,11 @@ obi_status obi_rt_get_profile_from_provider(obi_rt_v0* rt,
 obi_status obi_rt_policy_clear(obi_rt_v0* rt);
 obi_status obi_rt_policy_set_preferred_providers_csv(obi_rt_v0* rt, const char* csv_provider_ids);
 obi_status obi_rt_policy_set_denied_providers_csv(obi_rt_v0* rt, const char* csv_provider_ids);
+obi_status obi_rt_policy_set_allowed_license_classes_csv(obi_rt_v0* rt, const char* csv_license_classes);
+obi_status obi_rt_policy_set_denied_license_classes_csv(obi_rt_v0* rt, const char* csv_license_classes);
+obi_status obi_rt_policy_set_allowed_spdx_prefixes_csv(obi_rt_v0* rt, const char* csv_spdx_prefixes);
+obi_status obi_rt_policy_set_denied_spdx_prefixes_csv(obi_rt_v0* rt, const char* csv_spdx_prefixes);
+obi_status obi_rt_policy_set_eager_reject_disallowed_provider_loads(obi_rt_v0* rt, bool enabled);
 obi_status obi_rt_policy_bind_profile(obi_rt_v0* rt,
                                       const char* profile_id,
                                       const char* provider_id,

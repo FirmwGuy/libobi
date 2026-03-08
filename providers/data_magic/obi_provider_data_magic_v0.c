@@ -207,7 +207,11 @@ static obi_status _get_profile(void* ctx,
 
 static const char* _describe_json(void* ctx) {
     (void)ctx;
-    return "{\"provider_id\":\"obi.provider:data.magic\",\"profiles\":[\"obi.profile:data.file_type-0\"]}";
+    return "{\"provider_id\":\"obi.provider:data.magic\",\"provider_version\":\"0.1.0\","
+           "\"profiles\":[\"obi.profile:data.file_type-0\"],"
+           "\"license\":{\"spdx_expression\":\"MPL-2.0\",\"class\":\"weak_copyleft\"},"
+           "\"behavior\":{\"diagnostics\":\"host\",\"writes_stdout\":false,\"writes_stderr\":false,\"may_exit_process\":false},"
+           "\"deps\":[]}";
 }
 
 static void _destroy(void* ctx) {

@@ -10,11 +10,299 @@ option('provider_gfx_sdl3', type: 'feature', value: 'auto',
 option('provider_gfx_raylib', type: 'feature', value: 'enabled',
   description: 'Build raylib-profile gfx provider plugin (functional in-memory render2d baseline).')
 
+option('provider_gfx_gpu_sokol', type: 'feature', value: 'enabled',
+  description: 'Build sokol-backed gfx.gpu_device provider plugin using vendored ../libraries/sokol.')
+
+option('provider_gfx_render3d_raylib', type: 'feature', value: 'enabled',
+  description: 'Build raylib-backed gfx.render3d provider plugin using vendored ../libraries/raylib.')
+
+option('provider_gfx_render3d_sokol', type: 'feature', value: 'enabled',
+  description: 'Build sokol-backed gfx.render3d provider plugin using vendored ../libraries/sokol.')
+
 option('provider_text_stack', type: 'feature', value: 'auto',
   description: 'Build text stack provider plugin (fontconfig/freetype/harfbuzz/fribidi).')
+
+option('provider_text_icu', type: 'feature', value: 'auto',
+  description: 'Build text segmenter provider plugin using ICU4C break iterators.')
+
+option('provider_text_native', type: 'feature', value: 'disabled',
+  description: 'Build retired text placeholder provider plugin (`text.inhouse`).')
+
+option('provider_text_layout_pango', type: 'feature', value: 'auto',
+  description: 'Build text.layout provider plugin using Pango (`text.layout.pango`).')
+
+option('provider_text_layout_raqm', type: 'feature', value: 'auto',
+  description: 'Build text.layout provider plugin using raqm (`text.layout.raqm`).')
+
+option('provider_text_ime_sdl3', type: 'feature', value: 'auto',
+  description: 'Build text.ime provider plugin using SDL3 (`text.ime.sdl3`).')
+
+option('provider_text_ime_gtk', type: 'feature', value: 'auto',
+  description: 'Build text.ime provider plugin using GTK IM contexts (`text.ime.gtk`).')
+
+option('provider_text_spell_enchant', type: 'feature', value: 'auto',
+  description: 'Build text.spellcheck provider plugin using Enchant (`text.spell.enchant`).')
+
+option('provider_text_spell_aspell', type: 'feature', value: 'auto',
+  description: 'Build text.spellcheck provider plugin using Aspell (`text.spell.aspell`).')
+
+option('provider_text_regex_pcre2', type: 'feature', value: 'auto',
+  description: 'Build text.regex provider plugin using PCRE2 (`text.regex.pcre2`).')
+
+option('provider_text_regex_onig', type: 'feature', value: 'auto',
+  description: 'Build text.regex provider plugin using Oniguruma (`text.regex.onig`).')
+
+option('provider_math_native', type: 'feature', value: 'enabled',
+  description: 'Build math.scientific_ops provider plugin (native/libm portability fallback).')
+
+option('provider_math_bigint_gmp', type: 'feature', value: 'auto',
+  description: 'Build math.bigint provider plugin using GMP.')
+
+option('provider_math_bigint_libtommath', type: 'feature', value: 'auto',
+  description: 'Build math.bigint provider plugin using LibTomMath.')
+
+option('provider_math_science_openlibm', type: 'feature', value: 'auto',
+  description: 'Build math.scientific_ops provider plugin using openlibm.')
+
+option('provider_math_blas_openblas', type: 'feature', value: 'auto',
+  description: 'Build math.blas provider plugin using OpenBLAS.')
+
+option('provider_math_bigfloat_mpfr', type: 'feature', value: 'auto',
+  description: 'Build math.bigfloat provider plugin using MPFR.')
+
+option('provider_math_bigfloat_libbf', type: 'feature', value: 'auto',
+  description: 'Build math.bigfloat provider plugin using vendored libbf.')
+
+option('provider_math_blas_blis', type: 'feature', value: 'auto',
+  description: 'Build math.blas provider plugin using BLIS CBLAS.')
+
+option('provider_math_decimal_mpdecimal', type: 'feature', value: 'auto',
+  description: 'Build math.decimal provider plugin using mpdecimal.')
+
+option('provider_math_decimal_decnumber', type: 'feature', value: 'auto',
+  description: 'Build math.decimal provider plugin using vendored decNumber.')
+
+option('provider_db_native', type: 'feature', value: 'disabled',
+  description: 'Build retired db kv/sql bootstrap provider plugin (native in-house fallback).')
+
+option('provider_db_kv_sqlite', type: 'feature', value: 'auto',
+  description: 'Build db.kv provider plugin using SQLite.')
+
+option('provider_db_kv_lmdb', type: 'feature', value: 'auto',
+  description: 'Build db.kv provider plugin using LMDB.')
+
+option('provider_db_sql_sqlite', type: 'feature', value: 'auto',
+  description: 'Build db.sql provider plugin using SQLite.')
+
+option('provider_db_sql_postgres', type: 'feature', value: 'auto',
+  description: 'Build db.sql provider plugin using PostgreSQL libpq.')
 
 option('provider_data_magic', type: 'feature', value: 'auto',
   description: 'Build file-type provider plugin using libmagic.')
 
+option('provider_data_gio', type: 'feature', value: 'auto',
+  description: 'Build file-type provider plugin using GLib/GIO content-type detection.')
+
+option('provider_data_native', type: 'feature', value: 'enabled',
+  description: 'Build data compression/archive/serde provider plugin (native baseline).')
+
+option('provider_data_uri_uriparser', type: 'feature', value: 'auto',
+  description: 'Build data.uri provider plugin using uriparser.')
+
+option('provider_data_uri_glib', type: 'feature', value: 'auto',
+  description: 'Build data.uri provider plugin using GLib GUri APIs.')
+
+option('provider_data_compression_zlib', type: 'feature', value: 'auto',
+  description: 'Build data.compression provider plugin using zlib.')
+
+option('provider_data_compression_libdeflate', type: 'feature', value: 'auto',
+  description: 'Build data.compression provider plugin using libdeflate.')
+
+option('provider_data_archive_libarchive', type: 'feature', value: 'auto',
+  description: 'Build data.archive provider plugin using libarchive.')
+
+option('provider_data_archive_libzip', type: 'feature', value: 'auto',
+  description: 'Build data.archive provider plugin using libzip.')
+
+option('provider_data_serde_yyjson', type: 'feature', value: 'auto',
+  description: 'Build data.serde emit/events provider plugin using yyjson.')
+
+option('provider_data_serde_jansson', type: 'feature', value: 'auto',
+  description: 'Build data.serde emit/events provider plugin using jansson.')
+
+option('provider_data_serde_jsmn', type: 'feature', value: 'enabled',
+  description: 'Build data.serde events provider plugin using vendored jsmn.')
+
+option('provider_doc_native', type: 'feature', value: 'disabled',
+  description: 'Build retired doc inspect/markdown/markup/paged/text-decode provider plugin (native synthetic fallback).')
+
+option('provider_doc_inspect_gio', type: 'feature', value: 'auto',
+  description: 'Build doc.inspect provider plugin using GIO content-type detection.')
+
+option('provider_doc_inspect_magic', type: 'feature', value: 'auto',
+  description: 'Build doc.inspect provider plugin using libmagic.')
+
+option('provider_doc_markup_libxml2', type: 'feature', value: 'auto',
+  description: 'Build doc.markup_events provider plugin using libxml2.')
+
+option('provider_doc_markup_expat', type: 'feature', value: 'auto',
+  description: 'Build doc.markup_events provider plugin using expat.')
+
+option('provider_doc_md_cmark', type: 'feature', value: 'auto',
+  description: 'Build doc.markdown_commonmark/doc.markdown_events provider plugin using libcmark.')
+
+option('provider_doc_md_md4c', type: 'feature', value: 'auto',
+  description: 'Build doc.markdown_commonmark/doc.markdown_events provider plugin using md4c.')
+
+option('provider_doc_textdecode_iconv', type: 'feature', value: 'auto',
+  description: 'Build doc.text_decode provider plugin using iconv.')
+
+option('provider_doc_textdecode_icu', type: 'feature', value: 'auto',
+  description: 'Build doc.text_decode provider plugin using ICU converter APIs.')
+
+option('provider_doc_paged_mupdf', type: 'feature', value: 'auto',
+  description: 'Build doc.paged_document provider plugin using MuPDF.')
+
+option('provider_doc_paged_poppler', type: 'feature', value: 'auto',
+  description: 'Build doc.paged_document provider plugin using Poppler-GLib.')
+
+option('provider_crypto_openssl', type: 'feature', value: 'auto',
+  description: 'Build crypto hash/aead/kdf/random/sign provider plugin using OpenSSL.')
+
+option('provider_crypto_sodium', type: 'feature', value: 'auto',
+  description: 'Build crypto hash/aead/kdf/random/sign provider plugin using libsodium.')
+
+option('provider_crypto_native', type: 'feature', value: 'enabled',
+  description: 'Build crypto hash/aead/kdf/random/sign provider plugin (native baseline).')
+
+option('provider_media_native', type: 'feature', value: 'disabled',
+  description: 'Build retired media placeholder provider plugin (`media.inhouse`).')
+
 option('provider_media_image', type: 'feature', value: 'enabled',
   description: 'Build media image-codec provider plugin (PNG/JPEG/WebP decode+encode baseline).')
+
+option('provider_media_gdkpixbuf', type: 'feature', value: 'auto',
+  description: 'Build media image-codec provider plugin using gdk-pixbuf.')
+
+option('provider_media_audio_resample_libsamplerate', type: 'feature', value: 'auto',
+  description: 'Build media.audio_resample provider plugin using libsamplerate.')
+
+option('provider_media_audio_sdl3', type: 'feature', value: 'auto',
+  description: 'Build media.audio_device provider plugin using SDL3 (`media.audio.sdl3`).')
+
+option('provider_media_audio_portaudio', type: 'feature', value: 'auto',
+  description: 'Build media.audio_device provider plugin using PortAudio (`media.audio.portaudio`).')
+
+option('provider_media_audio_miniaudio', type: 'feature', value: 'enabled',
+  description: 'Build media.audio_mix provider plugin using vendored miniaudio (`media.audio.miniaudio`).')
+
+option('provider_media_audio_openal', type: 'feature', value: 'auto',
+  description: 'Build media.audio_mix provider plugin using OpenAL Soft (`media.audio.openal`).')
+
+option('provider_media_audio_sdlmixer12', type: 'feature', value: 'auto',
+  description: 'Build media.audio_mix provider plugin using SDL_mixer 1.2 (`media.audio.sdlmixer12`).')
+
+option('provider_media_audio_resample_speexdsp', type: 'feature', value: 'auto',
+  description: 'Build media.audio_resample provider plugin using speexdsp (`media.audio_resample.speexdsp`).')
+
+option('provider_media_ffmpeg', type: 'feature', value: 'auto',
+  description: 'Build media demux/mux/av codec provider plugin using FFmpeg (`media.ffmpeg`).')
+
+option('provider_media_gstreamer', type: 'feature', value: 'auto',
+  description: 'Build media demux/mux/av codec provider plugin using GStreamer (`media.gstreamer`).')
+
+option('provider_media_scale_ffmpeg', type: 'feature', value: 'auto',
+  description: 'Build media.video_scale_convert provider plugin using FFmpeg swscale (`media.scale.ffmpeg`).')
+
+option('provider_media_scale_libyuv', type: 'feature', value: 'auto',
+  description: 'Build media.video_scale_convert provider plugin using libyuv (`media.scale.libyuv`).')
+
+option('provider_time_native', type: 'feature', value: 'disabled',
+  description: 'Build time datetime provider plugin (`time.inhouse`) as a retired portability fallback (off by default after ICU+GLib coverage landed).')
+
+option('provider_time_glib', type: 'feature', value: 'auto',
+  description: 'Build time datetime provider plugin using GLib time-zone conversions.')
+
+option('provider_time_icu', type: 'feature', value: 'auto',
+  description: 'Build time datetime provider plugin using ICU4C calendar/time-zone conversions (`time.icu`).')
+
+option('provider_core_native', type: 'feature', value: 'enabled',
+  description: 'Build core split providers using C11 atomics + libuv + libevent.')
+
+option('provider_core_glib', type: 'feature', value: 'auto',
+  description: 'Build core split providers using GLib GCancellable + main-context pump.')
+
+option('provider_os_native', type: 'feature', value: 'enabled',
+  description: 'Build split OS native providers (`os.env.native`, `os.fs.native`, `os.process.native`, `os.dylib.native`).')
+
+option('provider_os_glib', type: 'feature', value: 'auto',
+  description: 'Build split OS GLib/GModule providers (`os.env.glib`, `os.dylib.gmodule`, `os.fswatch.glib`).')
+
+option('provider_os_libuv', type: 'feature', value: 'auto',
+  description: 'Build split OS libuv providers (`os.fs.libuv`, `os.process.libuv`, `os.fswatch.libuv`).')
+
+option('provider_ipc_bus_sdbus', type: 'feature', value: 'auto',
+  description: 'Build ipc.bus provider plugin using libsystemd sd-bus (`ipc.bus.sdbus`).')
+
+option('provider_ipc_bus_dbus1', type: 'feature', value: 'auto',
+  description: 'Build ipc.bus provider plugin using libdbus-1 (`ipc.bus.dbus1`).')
+
+option('provider_net_socket_libuv', type: 'feature', value: 'auto',
+  description: 'Build net.socket provider plugin using libuv (`net.socket.libuv`).')
+
+option('provider_net_dns_cares', type: 'feature', value: 'auto',
+  description: 'Build net.dns provider plugin using c-ares (`net.dns.cares`).')
+
+option('provider_net_dns_ldns', type: 'feature', value: 'auto',
+  description: 'Build net.dns provider plugin using ldns (`net.dns.ldns`).')
+
+option('provider_net_tls_openssl', type: 'feature', value: 'auto',
+  description: 'Build net.tls provider plugin using OpenSSL (`net.tls.openssl`).')
+
+option('provider_net_tls_mbedtls', type: 'feature', value: 'auto',
+  description: 'Build net.tls provider plugin using mbedTLS (`net.tls.mbedtls`).')
+
+option('provider_net_http_curl', type: 'feature', value: 'auto',
+  description: 'Build net.http_client provider plugin using libcurl (`net.http.curl`).')
+
+option('provider_net_http_libsoup', type: 'feature', value: 'auto',
+  description: 'Build net.http_client provider plugin using libsoup (`net.http.libsoup`).')
+
+option('provider_net_ws_libwebsockets', type: 'feature', value: 'auto',
+  description: 'Build net.websocket provider plugin using libwebsockets (`net.ws.libwebsockets`).')
+
+option('provider_net_ws_wslay', type: 'feature', value: 'auto',
+  description: 'Build net.websocket provider plugin using wslay (`net.ws.wslay`).')
+
+option('provider_net_native', type: 'feature', value: 'enabled',
+  description: 'Build net socket provider plugin (`net.socket.native`) for the roadmap native+libuv pairing.')
+
+option('provider_asset_meshio_cgltf_fastobj', type: 'feature', value: 'enabled',
+  description: 'Build asset mesh_io/scene_io provider plugin using cgltf + fast_obj.')
+
+option('provider_asset_meshio_ufbx', type: 'feature', value: 'enabled',
+  description: 'Build asset mesh_io/scene_io provider plugin using ufbx.')
+
+option('provider_phys_native', type: 'feature', value: 'disabled',
+  description: 'Build retired phys placeholder provider plugin (`phys.inhouse`).')
+
+option('provider_phys2d_chipmunk', type: 'feature', value: 'auto',
+  description: 'Build phys.world2d/debug_draw provider plugin using Chipmunk2D (`phys2d.chipmunk`).')
+
+option('provider_phys2d_box2d', type: 'feature', value: 'auto',
+  description: 'Build phys.world2d/debug_draw provider plugin using Box2D (`phys2d.box2d`).')
+
+option('provider_phys3d_ode', type: 'feature', value: 'auto',
+  description: 'Build phys.world3d/debug_draw provider plugin using ODE (`phys3d.ode`).')
+
+option('provider_phys3d_bullet', type: 'feature', value: 'auto',
+  description: 'Build phys.world3d/debug_draw provider plugin using Bullet (`phys3d.bullet`).')
+
+option('provider_hw_gpio_native', type: 'feature', value: 'enabled',
+  description: 'Build hw.gpio provider plugin (Linux-first native synthetic baseline with hardware-gated smoke usage).')
+
+option('provider_hw_gpio_libgpiod', type: 'feature', value: 'auto',
+  description: 'Build hw.gpio provider plugin using libgpiod (`hw.gpio.libgpiod`).')
+
+option('gpio_hardware_tests', type: 'boolean', value: false,
+  description: 'Enable hw.gpio conformance/smoke registration for Raspberry Pi or dedicated test-jig targets.')

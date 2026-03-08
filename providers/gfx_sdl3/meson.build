@@ -1,6 +1,7 @@
 sdl3_dep = dependency('sdl3', required: get_option('provider_gfx_sdl3'))
 
 if sdl3_dep.found()
+  gfx_sdl3_provider_id = 'obi.provider:gfx.sdl3'
   gfx_sdl3_provider = shared_module(
     'obi_provider_gfx_sdl3',
     ['obi_provider_gfx_sdl3_v0.c'],
@@ -14,5 +15,9 @@ if sdl3_dep.found()
   provider_profiles += [
     'obi.profile:gfx.window_input-0',
     'obi.profile:gfx.render2d-0',
+  ]
+  provider_profile_pairs += [
+    'obi.profile:gfx.window_input-0|' + gfx_sdl3_provider_id,
+    'obi.profile:gfx.render2d-0|' + gfx_sdl3_provider_id,
   ]
 endif

@@ -4,6 +4,7 @@ harfbuzz_dep = dependency('harfbuzz', required: get_option('provider_text_stack'
 fribidi_dep = dependency('fribidi', required: get_option('provider_text_stack'))
 
 if fontconfig_dep.found() and freetype_dep.found() and harfbuzz_dep.found() and fribidi_dep.found()
+  text_stack_provider_id = 'obi.provider:text.stack'
   text_stack_provider = shared_module(
     'obi_provider_text_stack',
     ['obi_provider_text_stack_v0.c'],
@@ -19,5 +20,11 @@ if fontconfig_dep.found() and freetype_dep.found() and harfbuzz_dep.found() and 
     'obi.profile:text.raster_cache-0',
     'obi.profile:text.shape-0',
     'obi.profile:text.segmenter-0',
+  ]
+  provider_profile_pairs += [
+    'obi.profile:text.font_db-0|' + text_stack_provider_id,
+    'obi.profile:text.raster_cache-0|' + text_stack_provider_id,
+    'obi.profile:text.shape-0|' + text_stack_provider_id,
+    'obi.profile:text.segmenter-0|' + text_stack_provider_id,
   ]
 endif
