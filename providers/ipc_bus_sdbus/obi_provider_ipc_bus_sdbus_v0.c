@@ -8,6 +8,7 @@
 #endif
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_ipc_bus_v0.h>
 
 #include <systemd/sd-bus.h>
@@ -821,6 +822,49 @@ static const char* _describe_json(void* ctx) {
            "\"deps\":" OBI_IPC_BUS_SDBUS_PROVIDER_DEPS_JSON "}";
 }
 
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    static const obi_legal_dependency_v0 deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "libsystemd",
+            .name = "libsystemd",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+    };
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+    out_meta->module_license.struct_size = (uint32_t)sizeof(out_meta->module_license);
+    out_meta->module_license.copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+    out_meta->module_license.patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    out_meta->module_license.spdx_expression = OBI_IPC_BUS_SDBUS_PROVIDER_SPDX;
+
+    out_meta->effective_license.struct_size = (uint32_t)sizeof(out_meta->effective_license);
+    out_meta->effective_license.copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+    out_meta->effective_license.patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    out_meta->effective_license.spdx_expression = "MPL-2.0 AND LGPL-2.1-or-later";
+    out_meta->effective_license.summary_utf8 =
+        "Effective posture reflects module plus required libsystemd dependency";
+
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = sizeof(deps) / sizeof(deps[0]);
+    return OBI_STATUS_OK;
+}
+
 static void _destroy(void* ctx) {
     obi_ipc_bus_sdbus_ctx_v0* p = (obi_ipc_bus_sdbus_ctx_v0*)ctx;
     if (!p) {
@@ -844,6 +888,7 @@ static const obi_provider_api_v0 OBI_PROVIDER_IPC_BUS_SDBUS_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 

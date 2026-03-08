@@ -2,6 +2,7 @@
 /* SPDX-FileCopyrightText: 2026-present Victor M. Barrientos <firmw.guy@gmail.com> */
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_db_kv_v0.h>
 
 #include <sqlite3.h>
@@ -621,6 +622,49 @@ static const char* _describe_json(void* ctx) {
            "\"deps\":[{\"name\":\"sqlite3\",\"version\":\"dynamic\",\"spdx_expression\":\"blessing\",\"class\":\"permissive\"}]}";
 }
 
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    static const obi_legal_dependency_v0 deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "sqlite3",
+            .name = "sqlite3",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_PERMISSIVE,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "blessing",
+            },
+        },
+    };
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+    out_meta->module_license.struct_size = (uint32_t)sizeof(out_meta->module_license);
+    out_meta->module_license.copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+    out_meta->module_license.patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    out_meta->module_license.spdx_expression = "MPL-2.0";
+
+    out_meta->effective_license.struct_size = (uint32_t)sizeof(out_meta->effective_license);
+    out_meta->effective_license.copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+    out_meta->effective_license.patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    out_meta->effective_license.spdx_expression = "MPL-2.0 AND blessing";
+    out_meta->effective_license.summary_utf8 =
+        "Effective posture reflects module plus required sqlite3 dependency";
+
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = sizeof(deps) / sizeof(deps[0]);
+    return OBI_STATUS_OK;
+}
+
 static void _destroy(void* ctx) {
     obi_db_kv_sqlite_ctx_v0* p = (obi_db_kv_sqlite_ctx_v0*)ctx;
     if (!p) {
@@ -643,6 +687,7 @@ static const obi_provider_api_v0 OBI_DB_KV_SQLITE_PROVIDER_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 

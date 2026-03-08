@@ -2,7 +2,12 @@
 /* SPDX-FileCopyrightText: 2026-present Victor M. Barrientos <firmw.guy@gmail.com> */
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_data_serde_events_v0.h>
+
+#define JSMN_STATIC
+#define JSMN_PARENT_LINKS
+#include <jsmn.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,245 +41,6 @@ typedef struct obi_serde_parser_ctx_v0 {
     size_t idx;
     char* last_error;
 } obi_serde_parser_ctx_v0;
-
-/* ---------------- vendored jsmn ---------------- */
-
-typedef enum jsmntype_t {
-    JSMN_UNDEFINED = 0,
-    JSMN_OBJECT = 1,
-    JSMN_ARRAY = 2,
-    JSMN_STRING = 3,
-    JSMN_PRIMITIVE = 4,
-} jsmntype_t;
-
-enum jsmnerr {
-    JSMN_ERROR_NOMEM = -1,
-    JSMN_ERROR_INVAL = -2,
-    JSMN_ERROR_PART = -3,
-};
-
-typedef struct jsmntok_t {
-    jsmntype_t type;
-    int start;
-    int end;
-    int size;
-    int parent;
-} jsmntok_t;
-
-typedef struct jsmn_parser {
-    unsigned int pos;
-    unsigned int toknext;
-    int toksuper;
-} jsmn_parser;
-
-static void jsmn_init(jsmn_parser* parser) {
-    parser->pos = 0u;
-    parser->toknext = 0u;
-    parser->toksuper = -1;
-}
-
-static jsmntok_t* jsmn_alloc_token(jsmn_parser* parser,
-                                   jsmntok_t* tokens,
-                                   size_t num_tokens) {
-    if (parser->toknext >= num_tokens) {
-        return NULL;
-    }
-    jsmntok_t* tok = &tokens[parser->toknext++];
-    tok->start = -1;
-    tok->end = -1;
-    tok->size = 0;
-    tok->parent = -1;
-    tok->type = JSMN_UNDEFINED;
-    return tok;
-}
-
-static void jsmn_fill_token(jsmntok_t* token, jsmntype_t type, int start, int end) {
-    token->type = type;
-    token->start = start;
-    token->end = end;
-    token->size = 0;
-}
-
-static int jsmn_parse_primitive(jsmn_parser* parser,
-                                const char* js,
-                                size_t len,
-                                jsmntok_t* tokens,
-                                size_t num_tokens) {
-    unsigned int start = parser->pos;
-
-    while (parser->pos < len) {
-        char c = js[parser->pos];
-        if (c == '\t' || c == '\r' || c == '\n' || c == ' ' || c == ',' || c == ']' || c == '}') {
-            break;
-        }
-        if (c < 32 || c >= 127) {
-            parser->pos = start;
-            return JSMN_ERROR_INVAL;
-        }
-        parser->pos++;
-    }
-
-    if (tokens == NULL) {
-        parser->pos--;
-        return 0;
-    }
-
-    jsmntok_t* token = jsmn_alloc_token(parser, tokens, num_tokens);
-    if (!token) {
-        parser->pos = start;
-        return JSMN_ERROR_NOMEM;
-    }
-    jsmn_fill_token(token, JSMN_PRIMITIVE, (int)start, (int)parser->pos);
-    token->parent = parser->toksuper;
-    parser->pos--;
-    return 0;
-}
-
-static int jsmn_parse_string(jsmn_parser* parser,
-                             const char* js,
-                             size_t len,
-                             jsmntok_t* tokens,
-                             size_t num_tokens) {
-    unsigned int start = parser->pos;
-    parser->pos++;
-
-    while (parser->pos < len) {
-        char c = js[parser->pos];
-
-        if (c == '"') {
-            if (tokens == NULL) {
-                return 0;
-            }
-
-            jsmntok_t* token = jsmn_alloc_token(parser, tokens, num_tokens);
-            if (!token) {
-                parser->pos = start;
-                return JSMN_ERROR_NOMEM;
-            }
-            jsmn_fill_token(token, JSMN_STRING, (int)start + 1, (int)parser->pos);
-            token->parent = parser->toksuper;
-            return 0;
-        }
-
-        if (c == '\\' && parser->pos + 1 < len) {
-            parser->pos++;
-            char esc = js[parser->pos];
-            if (esc == '"' || esc == '/' || esc == '\\' || esc == 'b' || esc == 'f' || esc == 'r' || esc == 'n' || esc == 't') {
-                continue;
-            }
-            if (esc == 'u') {
-                for (int i = 0; i < 4; i++) {
-                    parser->pos++;
-                    if (parser->pos >= len) {
-                        parser->pos = start;
-                        return JSMN_ERROR_PART;
-                    }
-                    char h = js[parser->pos];
-                    if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F'))) {
-                        parser->pos = start;
-                        return JSMN_ERROR_INVAL;
-                    }
-                }
-                continue;
-            }
-            parser->pos = start;
-            return JSMN_ERROR_INVAL;
-        }
-
-        if ((unsigned char)c < 32u) {
-            parser->pos = start;
-            return JSMN_ERROR_INVAL;
-        }
-
-        parser->pos++;
-    }
-
-    parser->pos = start;
-    return JSMN_ERROR_PART;
-}
-
-static int jsmn_parse(jsmn_parser* parser,
-                      const char* js,
-                      size_t len,
-                      jsmntok_t* tokens,
-                      size_t num_tokens) {
-    for (; parser->pos < len; parser->pos++) {
-        char c = js[parser->pos];
-        jsmntok_t* token = NULL;
-
-        switch (c) {
-            case '{':
-            case '[':
-                token = jsmn_alloc_token(parser, tokens, num_tokens);
-                if (!token) {
-                    return JSMN_ERROR_NOMEM;
-                }
-                if (parser->toksuper != -1) {
-                    tokens[parser->toksuper].size++;
-                    token->parent = parser->toksuper;
-                }
-                token->type = (c == '{') ? JSMN_OBJECT : JSMN_ARRAY;
-                token->start = (int)parser->pos;
-                parser->toksuper = (int)parser->toknext - 1;
-                break;
-
-            case '}':
-            case ']': {
-                jsmntype_t type = (c == '}') ? JSMN_OBJECT : JSMN_ARRAY;
-                int i = (int)parser->toknext - 1;
-                for (; i >= 0; i--) {
-                    token = &tokens[i];
-                    if (token->start != -1 && token->end == -1) {
-                        if (token->type != type) {
-                            return JSMN_ERROR_INVAL;
-                        }
-                        token->end = (int)parser->pos + 1;
-                        parser->toksuper = token->parent;
-                        break;
-                    }
-                }
-                if (i == -1) {
-                    return JSMN_ERROR_INVAL;
-                }
-                break;
-            }
-
-            case '"':
-                if (jsmn_parse_string(parser, js, len, tokens, num_tokens) < 0) {
-                    return JSMN_ERROR_INVAL;
-                }
-                if (parser->toksuper != -1) {
-                    tokens[parser->toksuper].size++;
-                }
-                break;
-
-            case '\t':
-            case '\r':
-            case '\n':
-            case ' ':
-            case ':':
-            case ',':
-                break;
-
-            default:
-                if (jsmn_parse_primitive(parser, js, len, tokens, num_tokens) < 0) {
-                    return JSMN_ERROR_INVAL;
-                }
-                if (parser->toksuper != -1) {
-                    tokens[parser->toksuper].size++;
-                }
-                break;
-        }
-    }
-
-    for (int i = (int)parser->toknext - 1; i >= 0; i--) {
-        if (tokens[i].start != -1 && tokens[i].end == -1) {
-            return JSMN_ERROR_PART;
-        }
-    }
-
-    return (int)parser->toknext;
-}
 
 /* ---------------- shared helpers ---------------- */
 
@@ -498,13 +264,9 @@ static int _jsmn_emit_token(const char* json,
                 return 0;
             }
 
-            int children = tok->size;
-            if ((children & 1) != 0) {
-                _serde_set_error(out_err, "malformed object token stream");
-                return 0;
-            }
+            int pair_count = tok->size;
             (*io_index)++;
-            for (int i = 0; i < children;) {
+            for (int i = 0; i < pair_count; i++) {
                 if (*io_index < 0 || *io_index >= tok_count || toks[*io_index].type != JSMN_STRING) {
                     _serde_set_error(out_err, "expected object key token");
                     return 0;
@@ -522,7 +284,6 @@ static int _jsmn_emit_token(const char* json,
                     _serde_set_error(out_err, "out of memory emitting KEY");
                     return 0;
                 }
-                i++;
 
                 (*io_index)++;
                 if (!_jsmn_emit_token(json,
@@ -537,7 +298,6 @@ static int _jsmn_emit_token(const char* json,
                                       depth + 1)) {
                     return 0;
                 }
-                i++;
             }
 
             if (!_serde_push_event(io_events, io_count, io_cap, OBI_SERDE_EVENT_END_MAP, "", 0u, 0u)) {
@@ -897,7 +657,50 @@ static const char* _describe_json(void* ctx) {
            "\"profiles\":[\"obi.profile:data.serde_events-0\"]," \
            "\"license\":{\"spdx_expression\":\"MPL-2.0\",\"class\":\"weak_copyleft\"}," \
            "\"behavior\":{\"diagnostics\":\"host\",\"writes_stdout\":false,\"writes_stderr\":false,\"may_exit_process\":false}," \
-           "\"deps\":[\"jsmn(vendored)\"]}";
+           "\"deps\":[{\"name\":\"jsmn\",\"version\":\"vendored\",\"spdx_expression\":\"MIT\",\"class\":\"permissive\"}]}";
+}
+
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    static const obi_legal_dependency_v0 deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_BUILD,
+            .dependency_id = "jsmn",
+            .name = "jsmn",
+            .version = "vendored",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_PERMISSIVE,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "MIT",
+            },
+        },
+    };
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+    out_meta->module_license.struct_size = (uint32_t)sizeof(out_meta->module_license);
+    out_meta->module_license.copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+    out_meta->module_license.patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    out_meta->module_license.spdx_expression = "MPL-2.0";
+
+    out_meta->effective_license.struct_size = (uint32_t)sizeof(out_meta->effective_license);
+    out_meta->effective_license.copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+    out_meta->effective_license.patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    out_meta->effective_license.spdx_expression = "MPL-2.0 AND MIT";
+    out_meta->effective_license.summary_utf8 =
+        "Effective posture reflects module plus embedded jsmn dependency";
+
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = sizeof(deps) / sizeof(deps[0]);
+    return OBI_STATUS_OK;
 }
 
 static void _destroy(void* ctx) {
@@ -923,6 +726,7 @@ static const obi_provider_api_v0 OBI_DATA_SERDE_JSMN_PROVIDER_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 

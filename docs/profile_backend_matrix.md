@@ -28,13 +28,15 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 
 | Provider ID | Profiles served now | Notes |
 |---|---:|---|
-| `obi.provider:gfx.sdl3` | 2 | Roadmap-final SDL3 backend for `gfx.window_input-0` and `gfx.render2d-0`. |
+| `obi.provider:gfx.sdl3` | 3 | Roadmap-final SDL3 backend for `gfx.window_input-0`, `gfx.render2d-0`, and `gfx.gpu_device-0`. |
 | `obi.provider:gfx.raylib` | 2 | Roadmap-final raylib backend for current 2D/window coverage. |
 | `obi.provider:gfx.gpu.sokol` | 1 | Roadmap-final sokol backend for `gfx.gpu_device-0` (vendored `../libraries/sokol`). |
 | `obi.provider:gfx.render3d.raylib` | 1 | Roadmap-final raylib 3D backend for `gfx.render3d-0` (vendored `../libraries/raylib`). |
 | `obi.provider:gfx.render3d.sokol` | 1 | Roadmap-final sokol 3D backend for `gfx.render3d-0` (vendored `../libraries/sokol`). |
 | `obi.provider:text.stack` | 4 | Roadmap-final font/raster/shape/segmenter backend bundle already using the named libraries. |
-| `obi.provider:text.icu` | 1 | Roadmap-final segmenter backend using ICU break iterators. |
+| `obi.provider:text.icu` | 2 | Roadmap-final ICU/HarfBuzz backend for `text.segmenter-0` + `text.shape-0` (split-provider face loading via bytes + face_index). |
+| `obi.provider:text.pango` | 1 | Roadmap-final `text.font_db-0` backend using Pango + Fontconfig match/fallback resolution. |
+| `obi.provider:text.stb` | 1 | Roadmap-final `text.raster_cache-0` backend using `stb_truetype`. |
 | `obi.provider:text.layout.pango` | 1 | Roadmap-final `text.layout-0` backend using Pango. |
 | `obi.provider:text.layout.raqm` | 1 | Roadmap-final `text.layout-0` backend using raqm (+ HarfBuzz/FriBidi/FreeType stack). |
 | `obi.provider:text.ime.sdl3` | 1 | Roadmap-final `text.ime-0` backend using SDL3 text-input/IME hooks. |
@@ -88,8 +90,8 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 | `obi.provider:net.ws.wslay` | 1 | Roadmap-final `net.websocket-0` backend using wslay event-context probing plus deterministic echo contract. |
 | `obi.provider:asset.meshio.cgltf_fastobj` | 2 | Roadmap-final asset mesh/scene backend using vendored cgltf + fast_obj. |
 | `obi.provider:asset.meshio.ufbx` | 2 | Roadmap-final asset mesh/scene backend using vendored ufbx. |
-| `obi.provider:phys2d.chipmunk` | 2 | Roadmap-final `phys.world2d-0` + `phys.debug_draw-0` backend using Chipmunk2D. |
-| `obi.provider:phys2d.box2d` | 2 | Roadmap-final `phys.world2d-0` + `phys.debug_draw-0` backend using Box2D. |
+| `obi.provider:phys2d.chipmunk` | 2 | Roadmap-final `phys.world2d-0` + `phys.debug_draw-0` backend with direct Chipmunk2D delegation (not `phys_native` wrapper reuse). |
+| `obi.provider:phys2d.box2d` | 2 | Roadmap-final `phys.world2d-0` + `phys.debug_draw-0` backend with direct Box2D delegation (not `phys_native` wrapper reuse). |
 | `obi.provider:phys3d.ode` | 2 | Roadmap-final `phys.world3d-0` + `phys.debug_draw-0` backend using ODE. |
 | `obi.provider:phys3d.bullet` | 2 | Roadmap-final `phys.world3d-0` + `phys.debug_draw-0` backend using Bullet. |
 | `obi.provider:hw.gpio.libgpiod` | 1 | Roadmap-final `hw.gpio-0` backend using libgpiod (runtime/conformance remains Raspberry Pi/test-jig gated). |
@@ -118,6 +120,7 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 | `obi.provider:doc.inspect.gio` | 1 | Roadmap-final GIO `doc.inspect-0` backend (`g_content_type_guess`-based probe path). |
 | `obi.provider:media.image` | 1 | Roadmap-final image-codec backend via libpng/libjpeg/libwebp. |
 | `obi.provider:media.gdkpixbuf` | 1 | Roadmap-final image-codec backend via gdk-pixbuf. |
+| `obi.provider:media.stb` | 1 | Roadmap-final image-codec backend via `stb_image`/`stb_image_write`. |
 | `obi.provider:media.audio.sdl3` | 1 | Roadmap-final `media.audio_device-0` backend using SDL3 audio APIs. |
 | `obi.provider:media.audio.portaudio` | 1 | Roadmap-final `media.audio_device-0` backend using PortAudio stream APIs. |
 | `obi.provider:media.audio.miniaudio` | 1 | Roadmap-final `media.audio_mix-0` backend using miniaudio mixer paths. |
@@ -154,15 +157,20 @@ Everything else currently implemented under `*.inhouse` / `*.bootstrap` (plus ex
 - GPIO profile smoke/conformance rows are excluded unless Meson is configured with `-Dgpio_hardware_tests=true`.
 - Exact mixed-runtime coexistence combinations are recorded in `docs/mixed_runtime_poc_matrix.md`.
 
-Stage 3 is reopened as of March 6, 2026 and remains open until roadmap coverage expands beyond the
-currently implemented final providers. `tools/obi_provider_smoke.c --mix` now targets roadmap providers
-(`time.glib`, `text.stack`/`text.icu`, `data.magic`/`data.gio`, `media.image`/`media.gdkpixbuf`) and is
-hard-gated in Meson for the current roadmap-complete async/stateful overlap set:
+Stage 3 mixed-runtime POC is complete for the current roadmap-complete provider set.
+`tools/obi_provider_smoke.c --mix` targets roadmap providers (`time.glib`,
+`text.stack`/`text.icu`, `data.magic`/`data.gio`, `media.image`/`media.gdkpixbuf`)
+and remains hard-gated in Meson for the current async/stateful overlap set:
 `core.cancel-0`, `core.pump-0`, `core.waitset-0`, `os.fs_watch-0`, `ipc.bus-0`, `net.socket-0`,
 `net.http_client-0`, `time.datetime-0`, `text.regex-0`, `data.serde_events-0`, `data.serde_emit-0`.
 The mix lane now runs three lifecycle cycles (forward/reverse/rotated provider load order) and includes
 real overlap coverage for additional shared-resource profiles such as `media.audio_device-0`,
 `media.audio_mix-0`, `media.audio_resample-0`, and `net.websocket-0`.
+
+Build policy note kept from the provider audit: backend resolution should prefer
+system shared libraries first, then vendored shared fallbacks. Static vendored
+fallback is opt-in only; the current explicit gate is `-Dphys2d_allow_static_fallback=true`
+for `obi.provider:phys2d.box2d` and `obi.provider:phys2d.chipmunk`.
 
 GPIO conformance/smoke registration is explicitly target-gated in Meson with `-Dgpio_hardware_tests=true`.
 Default generic CI keeps GPIO profile conformance disabled; runtime smoke remains SKIP-only off Raspberry Pi/test-jig targets.

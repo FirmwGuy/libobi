@@ -2,6 +2,7 @@
 /* SPDX-FileCopyrightText: 2026-present Victor M. Barrientos <firmw.guy@gmail.com> */
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_media_audio_device_v0.h>
 #include <obi/profiles/obi_media_audio_mix_v0.h>
 #include <obi/profiles/obi_media_audio_resample_v0.h>
@@ -86,6 +87,82 @@
 typedef struct obi_media_native_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
 } obi_media_native_ctx_v0;
+
+/* Only used in non-route-sensitive fallback branches. */
+#if !defined(OBI_MEDIA_BACKEND_FFMPEG_DEMUXMUX) && \
+    !defined(OBI_MEDIA_BACKEND_GSTREAMER) && \
+    !defined(OBI_MEDIA_BACKEND_FFMPEG_SCALE)
+static uint32_t _legal_copyleft_from_legacy_class(const char* klass) {
+    if (!klass || klass[0] == '\0') {
+        return OBI_LEGAL_COPYLEFT_UNKNOWN;
+    }
+    if (strcmp(klass, "permissive") == 0) {
+        return OBI_LEGAL_COPYLEFT_PERMISSIVE;
+    }
+    if (strcmp(klass, "weak_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_WEAK;
+    }
+    if (strcmp(klass, "strong_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_STRONG;
+    }
+    return OBI_LEGAL_COPYLEFT_UNKNOWN;
+}
+
+static uint32_t _legal_patent_from_legacy_class(const char* klass) {
+    if (!klass || klass[0] == '\0') {
+        return OBI_LEGAL_PATENT_POSTURE_UNKNOWN;
+    }
+    if (strcmp(klass, "patent_friendly") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT;
+    }
+    if (strcmp(klass, "patent_sensitive") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_SENSITIVE;
+    }
+    if (strcmp(klass, "patent_restricted") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_RESTRICTED;
+    }
+    return OBI_LEGAL_PATENT_POSTURE_UNKNOWN;
+}
+#endif
+
+static void _legal_term_fill(obi_legal_term_v0* term,
+                             const char* spdx_expression,
+                             uint32_t copyleft_class,
+                             uint32_t patent_posture,
+                             uint64_t flags,
+                             const char* summary_utf8) {
+    if (!term) {
+        return;
+    }
+    memset(term, 0, sizeof(*term));
+    term->struct_size = (uint32_t)sizeof(*term);
+    term->copyleft_class = copyleft_class;
+    term->patent_posture = patent_posture;
+    term->flags = flags;
+    term->spdx_expression = spdx_expression;
+    term->summary_utf8 = summary_utf8;
+}
+
+#if defined(OBI_MEDIA_BACKEND_GSTREAMER)
+static int _gst_plugin_available(const char* plugin_name) {
+    if (!plugin_name || plugin_name[0] == '\0') {
+        return 0;
+    }
+    if (!gst_is_initialized()) {
+        gst_init(NULL, NULL);
+    }
+    GstRegistry* reg = gst_registry_get();
+    if (!reg) {
+        return 0;
+    }
+    GstPlugin* plugin = gst_registry_find_plugin(reg, plugin_name);
+    if (!plugin) {
+        return 0;
+    }
+    gst_object_unref(plugin);
+    return 1;
+}
+#endif
 
 static void _media_backend_probe(void) {
 #if defined(OBI_MEDIA_BACKEND_SDL3)
@@ -1678,6 +1755,361 @@ static const char* _describe_json(void* ctx) {
            "\"deps\":" OBI_MEDIA_PROVIDER_DEPS_JSON "}";
 }
 
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+
+    _legal_term_fill(&out_meta->module_license,
+                     "MPL-2.0",
+                     OBI_LEGAL_COPYLEFT_WEAK,
+                     OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                     0u,
+                     "OBI wrapper module license");
+
+#if defined(OBI_MEDIA_BACKEND_FFMPEG_DEMUXMUX)
+    static const obi_legal_selector_term_v0 decode_vp9_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "vp9" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const char* decode_vp9_deps[] = { "ffmpeg-core" };
+
+    static const obi_legal_selector_term_v0 decode_h264_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "h264" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const char* decode_h264_deps[] = { "ffmpeg-core", "ffmpeg-gpl-codecs" };
+
+    static const obi_legal_selector_term_v0 decode_av1_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "av1" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const char* decode_av1_deps[] = { "ffmpeg-core" };
+
+    static const obi_legal_dependency_v0 deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "ffmpeg-core",
+            .name = "FFmpeg core (libavformat/libavcodec/libavutil)",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_OPTIONAL_RUNTIME,
+            .dependency_id = "ffmpeg-gpl-codecs",
+            .name = "FFmpeg GPL codec stack",
+            .version = "runtime-optional",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_STRONG,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_SENSITIVE,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "GPL-2.0-or-later",
+                .summary_utf8 = "Depends on optional GPL codec/runtime configuration",
+            },
+        },
+    };
+
+    static const obi_legal_route_v0 routes[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE,
+            .flags = OBI_LEGAL_ROUTE_FLAG_DEFAULT,
+            .route_id = "decode:vp9:ffmpeg-core",
+            .profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0,
+            .summary_utf8 = "Decode VP9 via FFmpeg core path",
+            .implementation_utf8 = "ffmpeg",
+            .selectors = decode_vp9_selectors,
+            .selector_count = sizeof(decode_vp9_selectors) / sizeof(decode_vp9_selectors[0]),
+            .dependency_ids = decode_vp9_deps,
+            .dependency_id_count = sizeof(decode_vp9_deps) / sizeof(decode_vp9_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_UNKNOWN,
+            .route_id = "decode:h264:ffmpeg-gpl",
+            .profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0,
+            .summary_utf8 = "Decode H.264 via optional GPL FFmpeg path",
+            .implementation_utf8 = "ffmpeg",
+            .selectors = decode_h264_selectors,
+            .selector_count = sizeof(decode_h264_selectors) / sizeof(decode_h264_selectors[0]),
+            .dependency_ids = decode_h264_deps,
+            .dependency_id_count = sizeof(decode_h264_deps) / sizeof(decode_h264_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_STRONG,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_SENSITIVE,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "GPL-2.0-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE,
+            .route_id = "decode:av1:ffmpeg-core-explicit",
+            .profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0,
+            .summary_utf8 = "Decode AV1 via FFmpeg core path",
+            .implementation_utf8 = "ffmpeg",
+            .selectors = decode_av1_selectors,
+            .selector_count = sizeof(decode_av1_selectors) / sizeof(decode_av1_selectors[0]),
+            .dependency_ids = decode_av1_deps,
+            .dependency_id_count = sizeof(decode_av1_deps) / sizeof(decode_av1_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "LGPL-2.1-or-later",
+                .summary_utf8 = "Patent posture may depend on runtime codec implementation details",
+            },
+        },
+    };
+
+    out_meta->flags = OBI_PROVIDER_LEGAL_META_FLAG_ROUTE_SENSITIVE |
+                      OBI_PROVIDER_LEGAL_META_FLAG_UNKNOWN_RUNTIME_COMPONENTS_POSSIBLE;
+    _legal_term_fill(&out_meta->effective_license,
+                     "unknown",
+                     OBI_LEGAL_COPYLEFT_UNKNOWN,
+                     OBI_LEGAL_PATENT_POSTURE_UNKNOWN,
+                     OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                     "Route depends on codec/build/runtime FFmpeg features");
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = sizeof(deps) / sizeof(deps[0]);
+    out_meta->routes = routes;
+    out_meta->route_count = sizeof(routes) / sizeof(routes[0]);
+    return OBI_STATUS_OK;
+#elif defined(OBI_MEDIA_BACKEND_GSTREAMER)
+    static const obi_legal_selector_term_v0 decode_opus_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "opus" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "gstreamer" },
+    };
+    static const char* decode_opus_deps[] = { "gstreamer-core" };
+
+    static const obi_legal_selector_term_v0 decode_h264_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "h264" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "gstreamer" },
+    };
+    static const char* decode_h264_deps[] = { "gstreamer-core", "gstreamer-libav" };
+
+    static const obi_legal_dependency_v0 deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "gstreamer-core",
+            .name = "GStreamer core",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_OPTIONAL_RUNTIME,
+            .dependency_id = "gstreamer-libav",
+            .name = "GStreamer libav plugin family",
+            .version = "runtime-optional",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_STRONG,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_SENSITIVE,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "GPL-2.0-or-later",
+                .summary_utf8 = "Depends on runtime plugin family",
+            },
+        },
+    };
+
+    static obi_legal_route_v0 routes[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_UNKNOWN,
+            .flags = OBI_LEGAL_ROUTE_FLAG_DEFAULT,
+            .route_id = "decode:opus:gst-core",
+            .profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0,
+            .summary_utf8 = "Decode Opus via base plugin path",
+            .implementation_utf8 = "gstreamer",
+            .selectors = decode_opus_selectors,
+            .selector_count = sizeof(decode_opus_selectors) / sizeof(decode_opus_selectors[0]),
+            .dependency_ids = decode_opus_deps,
+            .dependency_id_count = sizeof(decode_opus_deps) / sizeof(decode_opus_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_UNKNOWN,
+            .route_id = "decode:h264:gst-libav",
+            .profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0,
+            .summary_utf8 = "Decode H.264 via libav plugin family",
+            .implementation_utf8 = "gstreamer",
+            .selectors = decode_h264_selectors,
+            .selector_count = sizeof(decode_h264_selectors) / sizeof(decode_h264_selectors[0]),
+            .dependency_ids = decode_h264_deps,
+            .dependency_id_count = sizeof(decode_h264_deps) / sizeof(decode_h264_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_STRONG,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_SENSITIVE,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "GPL-2.0-or-later",
+            },
+        },
+    };
+
+    routes[0].availability = _gst_plugin_available("playback") ?
+                                 OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE :
+                                 OBI_LEGAL_ROUTE_AVAILABILITY_MISSING_RUNTIME_COMPONENT;
+    routes[1].availability = _gst_plugin_available("libav") ?
+                                 OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE :
+                                 OBI_LEGAL_ROUTE_AVAILABILITY_MISSING_RUNTIME_COMPONENT;
+
+    out_meta->flags = OBI_PROVIDER_LEGAL_META_FLAG_ROUTE_SENSITIVE |
+                      OBI_PROVIDER_LEGAL_META_FLAG_UNKNOWN_RUNTIME_COMPONENTS_POSSIBLE;
+    _legal_term_fill(&out_meta->effective_license,
+                     "unknown",
+                     OBI_LEGAL_COPYLEFT_UNKNOWN,
+                     OBI_LEGAL_PATENT_POSTURE_UNKNOWN,
+                     OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                     "Route depends on runtime plugin/element availability");
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = sizeof(deps) / sizeof(deps[0]);
+    out_meta->routes = routes;
+    out_meta->route_count = sizeof(routes) / sizeof(routes[0]);
+    return OBI_STATUS_OK;
+#elif defined(OBI_MEDIA_BACKEND_FFMPEG_SCALE)
+    static const obi_legal_selector_term_v0 rgba_scale_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "rgba" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const char* rgba_scale_deps[] = { "ffmpeg-swscale" };
+
+    static const obi_legal_selector_term_v0 h264_scale_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "h264" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const char* h264_scale_deps[] = { "ffmpeg-swscale", "ffmpeg-gpl-filters" };
+
+    static const obi_legal_dependency_v0 deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "ffmpeg-swscale",
+            .name = "FFmpeg swscale/libavutil",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_OPTIONAL_RUNTIME,
+            .dependency_id = "ffmpeg-gpl-filters",
+            .name = "FFmpeg GPL filter/codec stack",
+            .version = "runtime-optional",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_STRONG,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_SENSITIVE,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "GPL-2.0-or-later",
+            },
+        },
+    };
+
+    static const obi_legal_route_v0 routes[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE,
+            .flags = OBI_LEGAL_ROUTE_FLAG_DEFAULT,
+            .route_id = "scale:rgba:ffmpeg-swscale",
+            .profile_id = OBI_PROFILE_MEDIA_VIDEO_SCALE_CONVERT_V0,
+            .summary_utf8 = "Scale/convert through swscale core path",
+            .implementation_utf8 = "ffmpeg-swscale",
+            .selectors = rgba_scale_selectors,
+            .selector_count = sizeof(rgba_scale_selectors) / sizeof(rgba_scale_selectors[0]),
+            .dependency_ids = rgba_scale_deps,
+            .dependency_id_count = sizeof(rgba_scale_deps) / sizeof(rgba_scale_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_UNKNOWN,
+            .route_id = "scale:h264:ffmpeg-gpl",
+            .profile_id = OBI_PROFILE_MEDIA_VIDEO_SCALE_CONVERT_V0,
+            .summary_utf8 = "Scale/convert with optional GPL stack",
+            .implementation_utf8 = "ffmpeg-swscale",
+            .selectors = h264_scale_selectors,
+            .selector_count = sizeof(h264_scale_selectors) / sizeof(h264_scale_selectors[0]),
+            .dependency_ids = h264_scale_deps,
+            .dependency_id_count = sizeof(h264_scale_deps) / sizeof(h264_scale_deps[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_STRONG,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_SENSITIVE,
+                .flags = OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                .spdx_expression = "GPL-2.0-or-later",
+            },
+        },
+    };
+
+    out_meta->flags = OBI_PROVIDER_LEGAL_META_FLAG_ROUTE_SENSITIVE |
+                      OBI_PROVIDER_LEGAL_META_FLAG_UNKNOWN_RUNTIME_COMPONENTS_POSSIBLE;
+    _legal_term_fill(&out_meta->effective_license,
+                     "unknown",
+                     OBI_LEGAL_COPYLEFT_UNKNOWN,
+                     OBI_LEGAL_PATENT_POSTURE_UNKNOWN,
+                     OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                     "Route depends on codec/build/runtime FFmpeg scale features");
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = sizeof(deps) / sizeof(deps[0]);
+    out_meta->routes = routes;
+    out_meta->route_count = sizeof(routes) / sizeof(routes[0]);
+    return OBI_STATUS_OK;
+#else
+    _legal_term_fill(&out_meta->effective_license,
+                     OBI_MEDIA_PROVIDER_SPDX,
+                     _legal_copyleft_from_legacy_class(OBI_MEDIA_PROVIDER_LICENSE_CLASS),
+                     _legal_patent_from_legacy_class(OBI_MEDIA_PROVIDER_LICENSE_CLASS),
+                     OBI_LEGAL_TERM_FLAG_CONSERVATIVE,
+                     "Derived from legacy provider license metadata");
+    return OBI_STATUS_UNSUPPORTED;
+#endif
+}
+
 static void _destroy(void* ctx) {
     obi_media_native_ctx_v0* p = (obi_media_native_ctx_v0*)ctx;
     if (!p) {
@@ -1701,6 +2133,7 @@ static const obi_provider_api_v0 OBI_MEDIA_NATIVE_PROVIDER_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 

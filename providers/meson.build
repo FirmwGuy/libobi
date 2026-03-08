@@ -35,6 +35,14 @@ if not get_option('provider_text_icu').disabled()
   subdir('text_icu')
 endif
 
+if not get_option('provider_text_pango').disabled()
+  subdir('text_pango')
+endif
+
+if not get_option('provider_text_stb').disabled()
+  subdir('text_stb')
+endif
+
 if get_option('provider_text_native').enabled()
   subdir('text_native')
 endif
@@ -245,6 +253,10 @@ endif
 
 if not get_option('provider_media_gdkpixbuf').disabled()
   subdir('media_gdkpixbuf')
+endif
+
+if not get_option('provider_media_stb').disabled()
+  subdir('media_stb')
 endif
 
 if not get_option('provider_media_audio_resample_libsamplerate').disabled()

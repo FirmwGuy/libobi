@@ -8,6 +8,7 @@
 #endif
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_os_dylib_v0.h>
 #include <obi/profiles/obi_os_env_v0.h>
 #include <obi/profiles/obi_os_fs_v0.h>
@@ -111,6 +112,43 @@ extern char** environ;
 typedef struct obi_os_native_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
 } obi_os_native_ctx_v0;
+
+static uint32_t _os_native_legal_copyleft_from_class(const char* klass) {
+    if (!klass || klass[0] == '\0') {
+        return OBI_LEGAL_COPYLEFT_UNKNOWN;
+    }
+    if (strcmp(klass, "permissive") == 0) {
+        return OBI_LEGAL_COPYLEFT_PERMISSIVE;
+    }
+    if (strcmp(klass, "weak_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_WEAK;
+    }
+    if (strcmp(klass, "strong_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_STRONG;
+    }
+    return OBI_LEGAL_COPYLEFT_UNKNOWN;
+}
+
+static uint32_t _os_native_legal_patent_from_class(const char* klass) {
+    if (!klass || klass[0] == '\0') {
+        return OBI_LEGAL_PATENT_POSTURE_UNKNOWN;
+    }
+    if (strcmp(klass, "patent_friendly") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT;
+    }
+    if (strcmp(klass, "patent_sensitive") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_SENSITIVE;
+    }
+    if (strcmp(klass, "patent_restricted") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_RESTRICTED;
+    }
+    if (strcmp(klass, "permissive") == 0 ||
+        strcmp(klass, "weak_copyleft") == 0 ||
+        strcmp(klass, "strong_copyleft") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    }
+    return OBI_LEGAL_PATENT_POSTURE_UNKNOWN;
+}
 
 static char* _dup_range(const char* s, size_t n) {
     char* out = (char*)malloc(n + 1u);
@@ -2523,6 +2561,35 @@ static const char* _describe_json(void* ctx) {
            "\"deps\":" OBI_OS_NATIVE_PROVIDER_DEPS_JSON "}";
 }
 
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    const uint32_t module_copyleft =
+        _os_native_legal_copyleft_from_class(OBI_OS_NATIVE_PROVIDER_LICENSE_CLASS);
+    const uint32_t module_patent =
+        _os_native_legal_patent_from_class(OBI_OS_NATIVE_PROVIDER_LICENSE_CLASS);
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+    out_meta->module_license.struct_size = (uint32_t)sizeof(out_meta->module_license);
+    out_meta->module_license.copyleft_class = module_copyleft;
+    out_meta->module_license.patent_posture = module_patent;
+    out_meta->module_license.spdx_expression = OBI_OS_NATIVE_PROVIDER_SPDX;
+
+    out_meta->effective_license.struct_size = (uint32_t)sizeof(out_meta->effective_license);
+    out_meta->effective_license.copyleft_class = module_copyleft;
+    out_meta->effective_license.patent_posture = module_patent;
+    out_meta->effective_license.spdx_expression = OBI_OS_NATIVE_PROVIDER_SPDX;
+    out_meta->effective_license.summary_utf8 =
+        "Effective posture equals provider module posture";
+    return OBI_STATUS_OK;
+}
+
 static void _destroy(void* ctx) {
     obi_os_native_ctx_v0* p = (obi_os_native_ctx_v0*)ctx;
     if (!p) {
@@ -2546,6 +2613,7 @@ static const obi_provider_api_v0 OBI_OS_NATIVE_PROVIDER_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 

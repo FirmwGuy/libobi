@@ -25,6 +25,12 @@ option('provider_text_stack', type: 'feature', value: 'auto',
 option('provider_text_icu', type: 'feature', value: 'auto',
   description: 'Build text segmenter provider plugin using ICU4C break iterators.')
 
+option('provider_text_pango', type: 'feature', value: 'auto',
+  description: 'Build text.font_db provider plugin using Pango + Fontconfig (`text.pango`).')
+
+option('provider_text_stb', type: 'feature', value: 'auto',
+  description: 'Build text.raster_cache provider plugin using stb_truetype (`text.stb`).')
+
 option('provider_text_native', type: 'feature', value: 'disabled',
   description: 'Build retired text placeholder provider plugin (`text.inhouse`).')
 
@@ -131,7 +137,7 @@ option('provider_data_serde_jansson', type: 'feature', value: 'auto',
   description: 'Build data.serde emit/events provider plugin using jansson.')
 
 option('provider_data_serde_jsmn', type: 'feature', value: 'enabled',
-  description: 'Build data.serde events provider plugin using vendored jsmn.')
+  description: 'Build data.serde events provider plugin using jsmn (system header first, vendored fallback).')
 
 option('provider_doc_native', type: 'feature', value: 'disabled',
   description: 'Build retired doc inspect/markdown/markup/paged/text-decode provider plugin (native synthetic fallback).')
@@ -183,6 +189,9 @@ option('provider_media_image', type: 'feature', value: 'enabled',
 
 option('provider_media_gdkpixbuf', type: 'feature', value: 'auto',
   description: 'Build media image-codec provider plugin using gdk-pixbuf.')
+
+option('provider_media_stb', type: 'feature', value: 'auto',
+  description: 'Build media image-codec provider plugin using stb_image + stb_image_write (`media.stb`).')
 
 option('provider_media_audio_resample_libsamplerate', type: 'feature', value: 'auto',
   description: 'Build media.audio_resample provider plugin using libsamplerate.')
@@ -291,6 +300,9 @@ option('provider_phys2d_chipmunk', type: 'feature', value: 'auto',
 
 option('provider_phys2d_box2d', type: 'feature', value: 'auto',
   description: 'Build phys.world2d/debug_draw provider plugin using Box2D (`phys2d.box2d`).')
+
+option('phys2d_allow_static_fallback', type: 'boolean', value: false,
+  description: 'Allow static vendored fallback for phys2d backends when system dependencies are unavailable (default is shared vendored fallback).')
 
 option('provider_phys3d_ode', type: 'feature', value: 'auto',
   description: 'Build phys.world3d/debug_draw provider plugin using ODE (`phys3d.ode`).')

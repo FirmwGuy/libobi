@@ -15,9 +15,11 @@ if sdl3_dep.found()
   provider_profiles += [
     'obi.profile:gfx.window_input-0',
     'obi.profile:gfx.render2d-0',
+    'obi.profile:gfx.gpu_device-0',
   ]
   provider_profile_pairs += [
     'obi.profile:gfx.window_input-0|' + gfx_sdl3_provider_id,
     'obi.profile:gfx.render2d-0|' + gfx_sdl3_provider_id,
+    'obi.profile:gfx.gpu_device-0|' + gfx_sdl3_provider_id,
   ]
 endif

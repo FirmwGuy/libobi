@@ -741,10 +741,10 @@ static int _copy_font_source_to_owned_bytes(const obi_font_source_v0* src,
     return 0;
 }
 
-static int _load_font_bytes_from_provider(obi_rt_v0* rt,
-                                          const char* provider_id,
-                                          uint8_t** out_bytes,
-                                          size_t* out_size) {
+static int _try_load_font_bytes_from_provider(obi_rt_v0* rt,
+                                              const char* provider_id,
+                                              uint8_t** out_bytes,
+                                              size_t* out_size) {
     if (!rt || !provider_id || !out_bytes || !out_size) {
         return 0;
     }
@@ -758,17 +758,11 @@ static int _load_font_bytes_from_provider(obi_rt_v0* rt,
                                                       &fontdb,
                                                       sizeof(fontdb));
     if (st != OBI_STATUS_OK || !fontdb.api || !fontdb.api->match_face) {
-        fprintf(stderr,
-                "text font source: provider=%s font_db unavailable (status=%d err=%s)\n",
-                provider_id,
-                (int)st,
-                obi_rt_last_error_utf8(rt));
         return 0;
     }
 
     obi_font_source_v0 src;
     if (!_match_face(fontdb, &src)) {
-        fprintf(stderr, "text font source: provider=%s match_face failed\n", provider_id);
         return 0;
     }
 
@@ -776,12 +770,60 @@ static int _load_font_bytes_from_provider(obi_rt_v0* rt,
     if (src.release) {
         src.release(src.release_ctx, &src);
     }
-    if (!ok) {
-        fprintf(stderr, "text font source: provider=%s unsupported/invalid source kind\n", provider_id);
+    return ok;
+}
+
+static int _load_font_bytes_for_consumer_provider(obi_rt_v0* rt,
+                                                   const char* consumer_provider_id,
+                                                   uint8_t** out_bytes,
+                                                   size_t* out_size) {
+    if (!rt || !consumer_provider_id || !out_bytes || !out_size) {
         return 0;
     }
 
-    return 1;
+    if (_provider_loaded(rt, consumer_provider_id) &&
+        _try_load_font_bytes_from_provider(rt, consumer_provider_id, out_bytes, out_size)) {
+        return 1;
+    }
+
+    static const char* k_text_fontdb_candidates[] = {
+        "obi.provider:text.pango",
+        "obi.provider:text.stack",
+    };
+
+    for (size_t i = 0u; i < sizeof(k_text_fontdb_candidates) / sizeof(k_text_fontdb_candidates[0]); i++) {
+        const char* candidate = k_text_fontdb_candidates[i];
+        if (!candidate || strcmp(candidate, consumer_provider_id) == 0) {
+            continue;
+        }
+        if (!_provider_loaded(rt, candidate)) {
+            continue;
+        }
+        if (_try_load_font_bytes_from_provider(rt, candidate, out_bytes, out_size)) {
+            return 1;
+        }
+    }
+
+    size_t provider_count = 0u;
+    if (obi_rt_provider_count(rt, &provider_count) == OBI_STATUS_OK) {
+        for (size_t i = 0u; i < provider_count; i++) {
+            const char* candidate = NULL;
+            if (obi_rt_provider_id(rt, i, &candidate) != OBI_STATUS_OK || !candidate) {
+                continue;
+            }
+            if (strcmp(candidate, consumer_provider_id) == 0) {
+                continue;
+            }
+            if (_try_load_font_bytes_from_provider(rt, candidate, out_bytes, out_size)) {
+                return 1;
+            }
+        }
+    }
+
+    fprintf(stderr,
+            "text font source: provider=%s unable to locate compatible text.font_db source provider\n",
+            consumer_provider_id);
+    return 0;
 }
 
 static int _exercise_text_font_db_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
@@ -853,7 +895,7 @@ static int _exercise_text_raster_cache_profile(obi_rt_v0* rt,
 
     uint8_t* font_bytes = NULL;
     size_t font_bytes_size = 0u;
-    if (!_load_font_bytes_from_provider(rt, provider_id, &font_bytes, &font_bytes_size)) {
+    if (!_load_font_bytes_for_consumer_provider(rt, provider_id, &font_bytes, &font_bytes_size)) {
         return 0;
     }
 
@@ -933,37 +975,58 @@ static int _exercise_text_shape_profile(obi_rt_v0* rt, const char* provider_id, 
         return 0;
     }
 
-    obi_text_raster_cache_v0 raster;
-    memset(&raster, 0, sizeof(raster));
-    st = obi_rt_get_profile_from_provider(rt,
-                                          provider_id,
-                                          OBI_PROFILE_TEXT_RASTER_CACHE_V0,
-                                          OBI_CORE_ABI_MAJOR,
-                                          &raster,
-                                          sizeof(raster));
-    if (st != OBI_STATUS_OK || !raster.api || !raster.api->face_create_from_bytes || !raster.api->face_destroy) {
-        fprintf(stderr,
-                "text.shape exercise: provider=%s missing raster_cache helper (status=%d err=%s)\n",
-                provider_id,
-                (int)st,
-                obi_rt_last_error_utf8(rt));
-        return 0;
-    }
-
     uint8_t* font_bytes = NULL;
     size_t font_bytes_size = 0u;
-    if (!_load_font_bytes_from_provider(rt, provider_id, &font_bytes, &font_bytes_size)) {
+    if (!_load_font_bytes_for_consumer_provider(rt, provider_id, &font_bytes, &font_bytes_size)) {
         return 0;
     }
 
+    obi_text_raster_cache_v0 raster;
+    memset(&raster, 0, sizeof(raster));
+
     obi_text_face_id_v0 face = 0u;
-    st = raster.api->face_create_from_bytes(raster.ctx,
-                                            (obi_bytes_view_v0){ font_bytes, font_bytes_size },
-                                            0u,
-                                            &face);
-    if (st != OBI_STATUS_OK || face == 0u) {
+    int face_from_shape = 0;
+    if (shape.api->face_create_from_bytes && shape.api->face_destroy) {
+        st = shape.api->face_create_from_bytes(shape.ctx,
+                                               (obi_bytes_view_v0){ font_bytes, font_bytes_size },
+                                               0u,
+                                               &face);
+        if (st != OBI_STATUS_OK || face == 0u) {
+            free(font_bytes);
+            fprintf(stderr, "text.shape exercise: provider=%s face_create(shape) failed (status=%d)\n", provider_id, (int)st);
+            return 0;
+        }
+        face_from_shape = 1;
+    } else {
+        st = obi_rt_get_profile_from_provider(rt,
+                                              provider_id,
+                                              OBI_PROFILE_TEXT_RASTER_CACHE_V0,
+                                              OBI_CORE_ABI_MAJOR,
+                                              &raster,
+                                              sizeof(raster));
+        if (st != OBI_STATUS_OK || !raster.api || !raster.api->face_create_from_bytes || !raster.api->face_destroy) {
+            free(font_bytes);
+            fprintf(stderr,
+                    "text.shape exercise: provider=%s missing face loader (no shape face_create_from_bytes or local raster_cache) (status=%d err=%s)\n",
+                    provider_id,
+                    (int)st,
+                    obi_rt_last_error_utf8(rt));
+            return 0;
+        }
+        st = raster.api->face_create_from_bytes(raster.ctx,
+                                                (obi_bytes_view_v0){ font_bytes, font_bytes_size },
+                                                0u,
+                                                &face);
+        if (st != OBI_STATUS_OK || face == 0u) {
+            free(font_bytes);
+            fprintf(stderr, "text.shape exercise: provider=%s face_create(raster) failed (status=%d)\n", provider_id, (int)st);
+            return 0;
+        }
+    }
+
+    if (face == 0u) {
         free(font_bytes);
-        fprintf(stderr, "text.shape exercise: provider=%s face_create failed (status=%d)\n", provider_id, (int)st);
+        fprintf(stderr, "text.shape exercise: provider=%s face_create produced invalid face id\n", provider_id);
         return 0;
     }
 
@@ -988,7 +1051,11 @@ static int _exercise_text_shape_profile(obi_rt_v0* rt, const char* provider_id, 
                                &glyph_count,
                                &resolved);
     if (st != OBI_STATUS_OK || glyph_count == 0u) {
-        raster.api->face_destroy(raster.ctx, face);
+        if (face_from_shape) {
+            shape.api->face_destroy(shape.ctx, face);
+        } else {
+            raster.api->face_destroy(raster.ctx, face);
+        }
         free(font_bytes);
         fprintf(stderr, "text.shape exercise: provider=%s sizing failed (status=%d count=%zu)\n", provider_id, (int)st, glyph_count);
         return 0;
@@ -996,7 +1063,11 @@ static int _exercise_text_shape_profile(obi_rt_v0* rt, const char* provider_id, 
 
     obi_text_glyph_v0* shaped = (obi_text_glyph_v0*)calloc(glyph_count, sizeof(*shaped));
     if (!shaped) {
-        raster.api->face_destroy(raster.ctx, face);
+        if (face_from_shape) {
+            shape.api->face_destroy(shape.ctx, face);
+        } else {
+            raster.api->face_destroy(raster.ctx, face);
+        }
         free(font_bytes);
         return 0;
     }
@@ -1011,7 +1082,11 @@ static int _exercise_text_shape_profile(obi_rt_v0* rt, const char* provider_id, 
                                &glyph_count,
                                &resolved);
     free(shaped);
-    raster.api->face_destroy(raster.ctx, face);
+    if (face_from_shape) {
+        shape.api->face_destroy(shape.ctx, face);
+    } else {
+        raster.api->face_destroy(raster.ctx, face);
+    }
     free(font_bytes);
     if (st != OBI_STATUS_OK) {
         fprintf(stderr, "text.shape exercise: provider=%s shape_utf8 failed (status=%d)\n", provider_id, (int)st);
@@ -8496,37 +8571,47 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
         return 0;
     }
 
+    const int need_world2d = (dbg.api->caps & OBI_PHYS_DEBUG_CAP_WORLD2D) != 0u;
+    const int need_world3d = (dbg.api->caps & OBI_PHYS_DEBUG_CAP_WORLD3D) != 0u;
+    if (!need_world2d && !need_world3d) {
+        return 1;
+    }
+
     obi_phys_world2d_v0 phys2d;
     obi_phys_world3d_v0 phys3d;
     memset(&phys2d, 0, sizeof(phys2d));
     memset(&phys3d, 0, sizeof(phys3d));
 
-    st = obi_rt_get_profile_from_provider(rt,
-                                          provider_id,
-                                          OBI_PROFILE_PHYS_WORLD2D_V0,
-                                          OBI_CORE_ABI_MAJOR,
-                                          &phys2d,
-                                          sizeof(phys2d));
-    if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
-        return 1;
-    }
-    if (st != OBI_STATUS_OK || !phys2d.api || !phys2d.api->world_create) {
-        fprintf(stderr, "phys.debug_draw exercise: provider=%s world2d profile missing (status=%d)\n", provider_id, (int)st);
-        return 0;
+    if (need_world2d) {
+        st = obi_rt_get_profile_from_provider(rt,
+                                              provider_id,
+                                              OBI_PROFILE_PHYS_WORLD2D_V0,
+                                              OBI_CORE_ABI_MAJOR,
+                                              &phys2d,
+                                              sizeof(phys2d));
+        if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
+            return 1;
+        }
+        if (st != OBI_STATUS_OK || !phys2d.api || !phys2d.api->world_create) {
+            fprintf(stderr, "phys.debug_draw exercise: provider=%s world2d profile missing (status=%d)\n", provider_id, (int)st);
+            return 0;
+        }
     }
 
-    st = obi_rt_get_profile_from_provider(rt,
-                                          provider_id,
-                                          OBI_PROFILE_PHYS_WORLD3D_V0,
-                                          OBI_CORE_ABI_MAJOR,
-                                          &phys3d,
-                                          sizeof(phys3d));
-    if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
-        return 1;
-    }
-    if (st != OBI_STATUS_OK || !phys3d.api || !phys3d.api->world_create) {
-        fprintf(stderr, "phys.debug_draw exercise: provider=%s world3d profile missing (status=%d)\n", provider_id, (int)st);
-        return 0;
+    if (need_world3d) {
+        st = obi_rt_get_profile_from_provider(rt,
+                                              provider_id,
+                                              OBI_PROFILE_PHYS_WORLD3D_V0,
+                                              OBI_CORE_ABI_MAJOR,
+                                              &phys3d,
+                                              sizeof(phys3d));
+        if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
+            return 1;
+        }
+        if (st != OBI_STATUS_OK || !phys3d.api || !phys3d.api->world_create) {
+            fprintf(stderr, "phys.debug_draw exercise: provider=%s world3d profile missing (status=%d)\n", provider_id, (int)st);
+            return 0;
+        }
     }
 
     int ok = 1;
@@ -8545,20 +8630,26 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
     p3.struct_size = (uint32_t)sizeof(p3);
     p3.gravity = (obi_vec3f_v0){ 0.0f, -9.8f, 0.0f };
 
-    st = phys2d.api->world_create(phys2d.ctx, &p2, &world2d);
-    if (st != OBI_STATUS_OK || !world2d.api || !world2d.api->destroy) {
-        fprintf(stderr, "phys.debug_draw exercise: provider=%s world2d create failed (status=%d)\n", provider_id, (int)st);
-        return 0;
+    if (need_world2d) {
+        st = phys2d.api->world_create(phys2d.ctx, &p2, &world2d);
+        if (st != OBI_STATUS_OK || !world2d.api || !world2d.api->destroy) {
+            fprintf(stderr, "phys.debug_draw exercise: provider=%s world2d create failed (status=%d)\n", provider_id, (int)st);
+            return 0;
+        }
     }
 
-    st = phys3d.api->world_create(phys3d.ctx, &p3, &world3d);
-    if (st != OBI_STATUS_OK || !world3d.api || !world3d.api->destroy) {
-        fprintf(stderr, "phys.debug_draw exercise: provider=%s world3d create failed (status=%d)\n", provider_id, (int)st);
-        world2d.api->destroy(world2d.ctx);
-        return 0;
+    if (need_world3d) {
+        st = phys3d.api->world_create(phys3d.ctx, &p3, &world3d);
+        if (st != OBI_STATUS_OK || !world3d.api || !world3d.api->destroy) {
+            fprintf(stderr, "phys.debug_draw exercise: provider=%s world3d create failed (status=%d)\n", provider_id, (int)st);
+            if (need_world2d) {
+                world2d.api->destroy(world2d.ctx);
+            }
+            return 0;
+        }
     }
 
-    if (world2d.api->body_create && world2d.api->collider_create_box) {
+    if (need_world2d && world2d.api->body_create && world2d.api->collider_create_box) {
         obi_phys2d_body_def_v0 b2;
         memset(&b2, 0, sizeof(b2));
         b2.struct_size = (uint32_t)sizeof(b2);
@@ -8574,7 +8665,7 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
         }
     }
 
-    if (world3d.api->body_create && world3d.api->collider_create_sphere) {
+    if (need_world3d && world3d.api->body_create && world3d.api->collider_create_sphere) {
         obi_phys3d_body_def_v0 b3;
         memset(&b3, 0, sizeof(b3));
         b3.struct_size = (uint32_t)sizeof(b3);
@@ -8596,47 +8687,55 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
     dparams.struct_size = (uint32_t)sizeof(dparams);
     dparams.flags = OBI_PHYS_DEBUG_FLAG_SHAPES;
 
-    obi_phys_debug_line2d_v0 lines2[16];
-    obi_phys_debug_tri2d_v0 tris2[16];
-    size_t line2_count = 0u;
-    size_t tri2_count = 0u;
-    st = dbg.api->collect_world2d(dbg.ctx,
-                                  &world2d,
-                                  &dparams,
-                                  lines2,
-                                  16u,
-                                  &line2_count,
-                                  tris2,
-                                  16u,
-                                  &tri2_count);
-    if (st != OBI_STATUS_OK) {
-        ok = 0;
-        fprintf(stderr, "phys.debug_draw exercise: provider=%s collect_world2d failed (status=%d)\n", provider_id, (int)st);
-        goto cleanup_debug;
+    if (need_world2d) {
+        obi_phys_debug_line2d_v0 lines2[16];
+        obi_phys_debug_tri2d_v0 tris2[16];
+        size_t line2_count = 0u;
+        size_t tri2_count = 0u;
+        st = dbg.api->collect_world2d(dbg.ctx,
+                                      &world2d,
+                                      &dparams,
+                                      lines2,
+                                      16u,
+                                      &line2_count,
+                                      tris2,
+                                      16u,
+                                      &tri2_count);
+        if (st != OBI_STATUS_OK) {
+            ok = 0;
+            fprintf(stderr, "phys.debug_draw exercise: provider=%s collect_world2d failed (status=%d)\n", provider_id, (int)st);
+            goto cleanup_debug;
+        }
     }
 
-    obi_phys_debug_line3d_v0 lines3[16];
-    obi_phys_debug_tri3d_v0 tris3[16];
-    size_t line3_count = 0u;
-    size_t tri3_count = 0u;
-    st = dbg.api->collect_world3d(dbg.ctx,
-                                  &world3d,
-                                  &dparams,
-                                  lines3,
-                                  16u,
-                                  &line3_count,
-                                  tris3,
-                                  16u,
-                                  &tri3_count);
-    if (st != OBI_STATUS_OK) {
-        ok = 0;
-        fprintf(stderr, "phys.debug_draw exercise: provider=%s collect_world3d failed (status=%d)\n", provider_id, (int)st);
-        goto cleanup_debug;
+    if (need_world3d) {
+        obi_phys_debug_line3d_v0 lines3[16];
+        obi_phys_debug_tri3d_v0 tris3[16];
+        size_t line3_count = 0u;
+        size_t tri3_count = 0u;
+        st = dbg.api->collect_world3d(dbg.ctx,
+                                      &world3d,
+                                      &dparams,
+                                      lines3,
+                                      16u,
+                                      &line3_count,
+                                      tris3,
+                                      16u,
+                                      &tri3_count);
+        if (st != OBI_STATUS_OK) {
+            ok = 0;
+            fprintf(stderr, "phys.debug_draw exercise: provider=%s collect_world3d failed (status=%d)\n", provider_id, (int)st);
+            goto cleanup_debug;
+        }
     }
 
 cleanup_debug:
-    world2d.api->destroy(world2d.ctx);
-    world3d.api->destroy(world3d.ctx);
+    if (need_world2d && world2d.api && world2d.api->destroy) {
+        world2d.api->destroy(world2d.ctx);
+    }
+    if (need_world3d && world3d.api && world3d.api->destroy) {
+        world3d.api->destroy(world3d.ctx);
+    }
     return ok;
 }
 
@@ -9258,7 +9357,8 @@ static int _exercise_doc_paged_poppler(obi_rt_v0* rt) {
 
 static int _exercise_gfx_sdl3(obi_rt_v0* rt) {
     return _exercise_profile_for_provider(rt, OBI_PROFILE_GFX_WINDOW_INPUT_V0, "obi.provider:gfx.sdl3", 1) &&
-           _exercise_profile_for_provider(rt, OBI_PROFILE_GFX_RENDER2D_V0, "obi.provider:gfx.sdl3", 1);
+           _exercise_profile_for_provider(rt, OBI_PROFILE_GFX_RENDER2D_V0, "obi.provider:gfx.sdl3", 1) &&
+           _exercise_profile_for_provider(rt, OBI_PROFILE_GFX_GPU_DEVICE_V0, "obi.provider:gfx.sdl3", 1);
 }
 
 static int _exercise_gfx_raylib(obi_rt_v0* rt) {
@@ -9397,6 +9497,387 @@ static int _exercise_crypto_native(obi_rt_v0* rt) {
            _exercise_profile_for_provider(rt, OBI_PROFILE_CRYPTO_KDF_V0, "obi.provider:crypto.inhouse", 1) &&
            _exercise_profile_for_provider(rt, OBI_PROFILE_CRYPTO_RANDOM_V0, "obi.provider:crypto.inhouse", 1) &&
            _exercise_profile_for_provider(rt, OBI_PROFILE_CRYPTO_SIGN_V0, "obi.provider:crypto.inhouse", 1);
+}
+
+static int _provider_index_by_id(obi_rt_v0* rt, const char* provider_id, size_t* out_index) {
+    if (!rt || !provider_id || !out_index) {
+        return 0;
+    }
+    size_t count = 0u;
+    if (obi_rt_provider_count(rt, &count) != OBI_STATUS_OK) {
+        return 0;
+    }
+    for (size_t i = 0u; i < count; i++) {
+        const char* pid = NULL;
+        if (obi_rt_provider_id(rt, i, &pid) != OBI_STATUS_OK || !pid) {
+            continue;
+        }
+        if (strcmp(pid, provider_id) == 0) {
+            *out_index = i;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int _exercise_legal_selector_api(obi_rt_v0* rt) {
+    if (!rt) {
+        return 0;
+    }
+
+    size_t provider_count = 0u;
+    obi_status st = obi_rt_provider_count(rt, &provider_count);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "legal selector: provider_count failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    int has_media_ffmpeg = 0;
+    int has_media_gstreamer = 0;
+    int has_media_scale_ffmpeg = 0;
+    int has_crypto_openssl = 0;
+    int has_crypto_sodium = 0;
+    int has_phys2d_box2d = 0;
+    int has_phys2d_chipmunk = 0;
+
+    for (size_t i = 0u; i < provider_count; i++) {
+        const char* pid = NULL;
+        const obi_provider_legal_metadata_v0* meta = NULL;
+        st = obi_rt_provider_id(rt, i, &pid);
+        if (st != OBI_STATUS_OK || !pid) {
+            fprintf(stderr, "legal selector: provider_id(%zu) failed (status=%d)\n", i, (int)st);
+            return 0;
+        }
+
+        st = obi_rt_provider_legal_metadata(rt, i, &meta);
+        if (st != OBI_STATUS_OK || !meta) {
+            fprintf(stderr, "legal selector: provider_legal_metadata(%s) failed (status=%d)\n", pid, (int)st);
+            return 0;
+        }
+        if (meta->struct_size < sizeof(*meta)) {
+            fprintf(stderr, "legal selector: provider metadata struct too small for %s\n", pid);
+            return 0;
+        }
+
+        if (strcmp(pid, "obi.provider:media.ffmpeg") == 0) {
+            has_media_ffmpeg = 1;
+            if ((meta->flags & OBI_PROVIDER_LEGAL_META_FLAG_ROUTE_SENSITIVE) == 0u ||
+                meta->route_count == 0u) {
+                fprintf(stderr, "legal selector: media.ffmpeg must expose route-sensitive metadata\n");
+                return 0;
+            }
+        } else if (strcmp(pid, "obi.provider:media.gstreamer") == 0) {
+            has_media_gstreamer = 1;
+            if ((meta->flags & OBI_PROVIDER_LEGAL_META_FLAG_ROUTE_SENSITIVE) == 0u ||
+                meta->route_count == 0u) {
+                fprintf(stderr, "legal selector: media.gstreamer must expose route-sensitive metadata\n");
+                return 0;
+            }
+        } else if (strcmp(pid, "obi.provider:media.scale.ffmpeg") == 0) {
+            has_media_scale_ffmpeg = 1;
+            if ((meta->flags & OBI_PROVIDER_LEGAL_META_FLAG_ROUTE_SENSITIVE) == 0u ||
+                meta->route_count == 0u) {
+                fprintf(stderr, "legal selector: media.scale.ffmpeg must expose route-sensitive metadata\n");
+                return 0;
+            }
+        } else if (strcmp(pid, "obi.provider:crypto.openssl") == 0) {
+            has_crypto_openssl = 1;
+        } else if (strcmp(pid, "obi.provider:crypto.sodium") == 0) {
+            has_crypto_sodium = 1;
+        } else if (strcmp(pid, "obi.provider:phys2d.box2d") == 0) {
+            has_phys2d_box2d = 1;
+        } else if (strcmp(pid, "obi.provider:phys2d.chipmunk") == 0) {
+            has_phys2d_chipmunk = 1;
+        }
+    }
+
+    if (has_media_ffmpeg) {
+        static const obi_legal_selector_term_v0 vp9_selectors[] = {
+            { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "vp9" },
+            { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+        };
+        static const obi_legal_selector_term_v0 h264_selectors[] = {
+            { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "h264" },
+            { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+        };
+        static const obi_legal_selector_term_v0 av1_selectors[] = {
+            { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "av1" },
+            { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+        };
+
+        obi_legal_requirement_v0 req;
+        memset(&req, 0, sizeof(req));
+        req.struct_size = (uint32_t)sizeof(req);
+        req.profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0;
+
+        obi_legal_selector_policy_v0 weak_policy;
+        memset(&weak_policy, 0, sizeof(weak_policy));
+        weak_policy.struct_size = (uint32_t)sizeof(weak_policy);
+        weak_policy.preset = OBI_LEGAL_PRESET_UP_TO_WEAK_COPYLEFT;
+
+        const obi_legal_plan_v0* plan = NULL;
+
+        req.selectors = vp9_selectors;
+        req.selector_count = sizeof(vp9_selectors) / sizeof(vp9_selectors[0]);
+        st = obi_rt_legal_plan(rt, &weak_policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE ||
+            !plan->items[0].provider_id ||
+            strcmp(plan->items[0].provider_id, "obi.provider:media.ffmpeg") != 0) {
+            fprintf(stderr, "legal selector: weak policy vp9 route should be selectable on media.ffmpeg\n");
+            return 0;
+        }
+        st = obi_rt_legal_apply_plan(rt, plan, OBI_RT_BIND_ALLOW_FALLBACK);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "legal selector: apply_plan(vp9) failed (status=%d)\n", (int)st);
+            return 0;
+        }
+
+        req.selectors = h264_selectors;
+        req.selector_count = sizeof(h264_selectors) / sizeof(h264_selectors[0]);
+        st = obi_rt_legal_plan(rt, &weak_policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_BLOCKED) {
+            fprintf(stderr, "legal selector: weak policy h264 route should be blocked on media.ffmpeg\n");
+            return 0;
+        }
+        st = obi_rt_legal_apply_plan(rt, plan, OBI_RT_BIND_ALLOW_FALLBACK);
+        if (st != OBI_STATUS_PERMISSION_DENIED) {
+            fprintf(stderr, "legal selector: apply_plan(blocked) must fail with permission denied\n");
+            return 0;
+        }
+
+        /* Unknown is conservative by default. */
+        req.selectors = NULL;
+        req.selector_count = 0u;
+        req.profile_id = OBI_PROFILE_MEDIA_DEMUX_V0;
+        st = obi_rt_legal_plan(rt, &weak_policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_BLOCKED) {
+            fprintf(stderr, "legal selector: unknown legal posture must be blocked by default\n");
+            return 0;
+        }
+
+        obi_legal_selector_policy_v0 allow_unknown_policy;
+        memset(&allow_unknown_policy, 0, sizeof(allow_unknown_policy));
+        allow_unknown_policy.struct_size = (uint32_t)sizeof(allow_unknown_policy);
+        allow_unknown_policy.preset = OBI_LEGAL_PRESET_UP_TO_STRONG_COPYLEFT;
+        allow_unknown_policy.allowed_patent_postures = OBI_LEGAL_PATENT_MASK_ALL;
+        allow_unknown_policy.flags = OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_COPYLEFT |
+                                     OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_PATENT_POSTURE |
+                                     OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_OPTIONAL_RUNTIME_COMPONENTS;
+        st = obi_rt_legal_plan(rt, &allow_unknown_policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE) {
+            fprintf(stderr, "legal selector: allow-unknown policy should enable unknown provider-wide route\n");
+            return 0;
+        }
+
+        /* Patent posture filtering is independent from copyleft ceiling. */
+        obi_legal_selector_policy_v0 patent_policy;
+        memset(&patent_policy, 0, sizeof(patent_policy));
+        patent_policy.struct_size = (uint32_t)sizeof(patent_policy);
+        patent_policy.preset = OBI_LEGAL_PRESET_UP_TO_WEAK_COPYLEFT;
+        patent_policy.max_copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+        patent_policy.allowed_patent_postures =
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT);
+
+        req.profile_id = OBI_PROFILE_MEDIA_AV_DECODE_V0;
+        req.selectors = vp9_selectors;
+        req.selector_count = sizeof(vp9_selectors) / sizeof(vp9_selectors[0]);
+        st = obi_rt_legal_plan(rt, &patent_policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_BLOCKED) {
+            fprintf(stderr, "legal selector: patent mask should block weak/ordinary vp9 route\n");
+            return 0;
+        }
+
+        req.selectors = av1_selectors;
+        req.selector_count = sizeof(av1_selectors) / sizeof(av1_selectors[0]);
+        st = obi_rt_legal_plan(rt, &patent_policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE) {
+            fprintf(stderr, "legal selector: patent mask should allow weak/explicit-grant av1 route\n");
+            return 0;
+        }
+
+        const obi_rt_legal_preset_report_v0* report = NULL;
+        req.selectors = vp9_selectors;
+        req.selector_count = sizeof(vp9_selectors) / sizeof(vp9_selectors[0]);
+        st = obi_rt_legal_report_presets(rt, &req, 1u, &report);
+        if (st != OBI_STATUS_OK || !report || report->result_count != 3u) {
+            fprintf(stderr, "legal selector: preset report failed (status=%d)\n", (int)st);
+            return 0;
+        }
+
+        size_t selectable_full = 0u;
+        for (size_t i = 0u; i < report->result_count; i++) {
+            if (report->results[i].overall_status == OBI_LEGAL_PLAN_STATUS_SELECTABLE) {
+                selectable_full++;
+            }
+        }
+
+        st = obi_rt_policy_set_denied_providers_csv(rt, "obi.provider:media.ffmpeg");
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "legal selector: failed to apply reduced-provider deny policy (status=%d)\n", (int)st);
+            return 0;
+        }
+
+        st = obi_rt_legal_report_presets(rt, &req, 1u, &report);
+        if (st != OBI_STATUS_OK || !report || report->result_count != 3u) {
+            fprintf(stderr, "legal selector: reduced preset report failed (status=%d)\n", (int)st);
+            return 0;
+        }
+
+        size_t selectable_reduced = 0u;
+        for (size_t i = 0u; i < report->result_count; i++) {
+            if (report->results[i].overall_status == OBI_LEGAL_PLAN_STATUS_SELECTABLE) {
+                selectable_reduced++;
+            }
+        }
+
+        st = obi_rt_policy_clear(rt);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "legal selector: policy_clear after reduced-provider test failed (status=%d)\n", (int)st);
+            return 0;
+        }
+
+        if (selectable_reduced >= selectable_full) {
+            fprintf(stderr,
+                    "legal selector: reduced-provider fixture did not reduce selectable preset count (full=%zu reduced=%zu)\n",
+                    selectable_full,
+                    selectable_reduced);
+            return 0;
+        }
+    }
+
+    if (has_media_scale_ffmpeg) {
+        size_t idx = 0u;
+        if (!_provider_index_by_id(rt, "obi.provider:media.scale.ffmpeg", &idx)) {
+            fprintf(stderr, "legal selector: media.scale.ffmpeg index lookup failed\n");
+            return 0;
+        }
+        const obi_provider_legal_metadata_v0* meta = NULL;
+        st = obi_rt_provider_legal_metadata(rt, idx, &meta);
+        if (st != OBI_STATUS_OK || !meta || meta->route_count == 0u) {
+            fprintf(stderr, "legal selector: media.scale.ffmpeg metadata unavailable\n");
+            return 0;
+        }
+    }
+
+    if (has_crypto_openssl && has_crypto_sodium) {
+        obi_legal_requirement_v0 req;
+        memset(&req, 0, sizeof(req));
+        req.struct_size = (uint32_t)sizeof(req);
+        req.profile_id = OBI_PROFILE_CRYPTO_HASH_V0;
+
+        obi_legal_selector_policy_v0 policy;
+        memset(&policy, 0, sizeof(policy));
+        policy.struct_size = (uint32_t)sizeof(policy);
+        policy.preset = OBI_LEGAL_PRESET_CUSTOM;
+        policy.max_copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+        policy.allowed_patent_postures =
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT);
+
+        const obi_legal_plan_v0* plan = NULL;
+        st = obi_rt_legal_plan(rt, &policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE ||
+            !plan->items[0].provider_id ||
+            strcmp(plan->items[0].provider_id, "obi.provider:crypto.openssl") != 0) {
+            fprintf(stderr,
+                    "legal selector: explicit-grant-only patent mask should choose crypto.openssl\n");
+            return 0;
+        }
+
+        policy.allowed_patent_postures =
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_ORDINARY);
+        st = obi_rt_legal_plan(rt, &policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE ||
+            !plan->items[0].provider_id ||
+            strcmp(plan->items[0].provider_id, "obi.provider:crypto.sodium") != 0) {
+            fprintf(stderr,
+                    "legal selector: ordinary-only patent mask should choose crypto.sodium\n");
+            return 0;
+        }
+
+        policy.allowed_patent_postures =
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_ORDINARY) |
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT);
+        policy.max_copyleft_class = OBI_LEGAL_COPYLEFT_PERMISSIVE;
+        st = obi_rt_legal_plan(rt, &policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_BLOCKED) {
+            fprintf(stderr,
+                    "legal selector: lowering copyleft ceiling to permissive should block both crypto providers\n");
+            return 0;
+        }
+
+        policy.max_copyleft_class = OBI_LEGAL_COPYLEFT_WEAK;
+        st = obi_rt_legal_plan(rt, &policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE) {
+            fprintf(stderr,
+                    "legal selector: restoring weak copyleft ceiling should un-block same patent mask\n");
+            return 0;
+        }
+    }
+
+    if (has_phys2d_box2d && has_phys2d_chipmunk) {
+        obi_legal_requirement_v0 req;
+        memset(&req, 0, sizeof(req));
+        req.struct_size = (uint32_t)sizeof(req);
+        req.profile_id = OBI_PROFILE_PHYS_WORLD2D_V0;
+
+        obi_legal_selector_policy_v0 policy;
+        memset(&policy, 0, sizeof(policy));
+        policy.struct_size = (uint32_t)sizeof(policy);
+        policy.preset = OBI_LEGAL_PRESET_CUSTOM;
+        policy.max_copyleft_class = OBI_LEGAL_COPYLEFT_PERMISSIVE;
+        policy.allowed_patent_postures =
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_ORDINARY);
+
+        const obi_legal_plan_v0* plan = NULL;
+        st = obi_rt_legal_plan(rt, &policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE ||
+            !plan->items[0].provider_id ||
+            strcmp(plan->items[0].provider_id, "obi.provider:phys2d.chipmunk") != 0) {
+            fprintf(stderr,
+                    "legal selector: permissive+ordinary patent mask should choose phys2d.chipmunk\n");
+            return 0;
+        }
+
+        policy.allowed_patent_postures =
+            OBI_LEGAL_PATENT_POSTURE_MASK(OBI_LEGAL_PATENT_POSTURE_UNKNOWN);
+        policy.flags = OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_PATENT_POSTURE;
+        st = obi_rt_legal_plan(rt, &policy, &req, 1u, &plan);
+        if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u ||
+            plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE ||
+            !plan->items[0].provider_id ||
+            strcmp(plan->items[0].provider_id, "obi.provider:phys2d.box2d") != 0) {
+            fprintf(stderr,
+                    "legal selector: permissive+unknown patent mask should choose phys2d.box2d\n");
+            return 0;
+        }
+    }
+
+    if (has_media_gstreamer) {
+        size_t idx = 0u;
+        if (!_provider_index_by_id(rt, "obi.provider:media.gstreamer", &idx)) {
+            fprintf(stderr, "legal selector: media.gstreamer index lookup failed\n");
+            return 0;
+        }
+        const obi_provider_legal_metadata_v0* meta = NULL;
+        st = obi_rt_provider_legal_metadata(rt, idx, &meta);
+        if (st != OBI_STATUS_OK || !meta || meta->route_count == 0u) {
+            fprintf(stderr, "legal selector: media.gstreamer metadata unavailable\n");
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 static int _exercise_license_policy(obi_rt_v0* rt, const char* time_inhouse_provider_path) {
@@ -9911,8 +10392,15 @@ static int _exercise_mixed_backend_simultaneous(obi_rt_v0* rt) {
     if (_provider_loaded(rt, "obi.provider:text.stack")) {
         tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SHAPE_V0, "obi.provider:text.stack" };
     }
+    if (_provider_loaded(rt, "obi.provider:text.pango")) {
+        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_FONT_DB_V0, "obi.provider:text.pango" };
+    }
+    if (_provider_loaded(rt, "obi.provider:text.stb")) {
+        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_RASTER_CACHE_V0, "obi.provider:text.stb" };
+    }
     if (_provider_loaded(rt, "obi.provider:text.icu")) {
         tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SEGMENTER_V0, "obi.provider:text.icu" };
+        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SHAPE_V0, "obi.provider:text.icu" };
     }
     if (_provider_loaded(rt, "obi.provider:data.magic")) {
         tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_DATA_FILE_TYPE_V0, "obi.provider:data.magic" };
@@ -12021,6 +12509,13 @@ int main(int argc, char** argv) {
             return 1;
         }
         printf("exercise_ok=license.policy\n");
+
+        if (!_exercise_legal_selector_api(rt)) {
+            fprintf(stderr, "legal selector exercise failed\n");
+            obi_rt_destroy(rt);
+            return 1;
+        }
+        printf("exercise_ok=legal.selector\n");
     } else if (mode_profile_provider) {
         const char* resolved_provider_id = _resolve_profile_provider_target(rt, target_profile, target_provider_id);
         if (!_exercise_profile_for_provider(rt, target_profile, resolved_provider_id, 0)) {

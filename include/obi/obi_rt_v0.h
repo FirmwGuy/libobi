@@ -5,13 +5,14 @@
 #define OBI_RT_V0_H
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define OBI_RT_ABI_MAJOR 0u
-#define OBI_RT_ABI_MINOR 1u
+#define OBI_RT_ABI_MINOR 2u
 
 typedef struct obi_rt_v0 obi_rt_v0;
 
@@ -24,6 +25,24 @@ typedef struct obi_rt_config_v0 {
      */
     const obi_host_v0* host;
 } obi_rt_config_v0;
+
+typedef struct obi_rt_legal_preset_result_v0 {
+    uint32_t struct_size;
+    uint32_t preset; /* obi_legal_preset_v0 */
+    uint32_t overall_status; /* obi_legal_plan_status_v0 */
+    uint32_t reserved;
+
+    const obi_legal_plan_item_v0* items;
+    size_t item_count;
+} obi_rt_legal_preset_result_v0;
+
+typedef struct obi_rt_legal_preset_report_v0 {
+    uint32_t struct_size;
+    uint32_t reserved;
+
+    const obi_rt_legal_preset_result_v0* results;
+    size_t result_count;
+} obi_rt_legal_preset_report_v0;
 
 enum {
     /* If set, disallowed providers are rejected immediately when loaded. */
@@ -82,6 +101,57 @@ obi_status obi_rt_policy_bind_prefix(obi_rt_v0* rt,
 obi_status obi_rt_provider_count(obi_rt_v0* rt, size_t* out_count);
 obi_status obi_rt_provider_get(obi_rt_v0* rt, size_t index, obi_provider_v0* out_provider);
 obi_status obi_rt_provider_id(obi_rt_v0* rt, size_t index, const char** out_provider_id);
+/* Borrowed metadata snapshot for one loaded provider.
+ *
+ * Pointer lifetime:
+ * - valid until the next metadata/plan/report query that reuses internal runtime snapshot storage,
+ *   any provider-set mutation, policy mutation that invalidates selector state, or runtime destroy.
+ */
+obi_status obi_rt_provider_legal_metadata(obi_rt_v0* rt,
+                                          size_t index,
+                                          const obi_provider_legal_metadata_v0** out_metadata);
+
+/* Plan legal provider/route selections for a requirement set.
+ *
+ * Snapshot lifetime:
+ * - The returned plan pointer and all nested pointers are runtime-owned borrowed data.
+ * - They remain valid until:
+ *   1) the next legal-plan or preset-report query on the same runtime,
+ *   2) any provider load/unload or policy mutation that invalidates selector state,
+ *   3) runtime destruction.
+ */
+obi_status obi_rt_legal_plan(obi_rt_v0* rt,
+                             const obi_legal_selector_policy_v0* policy,
+                             const obi_legal_requirement_v0* requirements,
+                             size_t requirement_count,
+                             const obi_legal_plan_v0** out_plan);
+
+/* Convenience wrapper to evaluate one built-in preset. */
+obi_status obi_rt_legal_plan_preset(obi_rt_v0* rt,
+                                    uint32_t preset, /* obi_legal_preset_v0 */
+                                    const obi_legal_requirement_v0* requirements,
+                                    size_t requirement_count,
+                                    const obi_legal_plan_v0** out_plan);
+
+/* Evaluate all built-in presets and return selectable/blocking detail for each preset.
+ *
+ * Snapshot lifetime:
+ * - The returned report pointer and nested plan item pointers are runtime-owned borrowed data.
+ * - They follow the same invalidation rules as obi_rt_legal_plan(...).
+ */
+obi_status obi_rt_legal_report_presets(obi_rt_v0* rt,
+                                       const obi_legal_requirement_v0* requirements,
+                                       size_t requirement_count,
+                                       const obi_rt_legal_preset_report_v0** out_report);
+
+/* Apply a successful legal plan as runtime provider bindings for the covered profiles.
+ *
+ * Applies profile->provider bindings for selectable items. If any item is blocked,
+ * returns OBI_STATUS_PERMISSION_DENIED and leaves existing bindings unchanged.
+ */
+obi_status obi_rt_legal_apply_plan(obi_rt_v0* rt,
+                                   const obi_legal_plan_v0* plan,
+                                   uint32_t bind_flags);
 
 /* Best-effort human-readable runtime error (UTF-8). Pointer remains valid until next libobi call
  * on the same runtime or runtime destruction.

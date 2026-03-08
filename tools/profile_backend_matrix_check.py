@@ -58,9 +58,9 @@ NATIVE_FINAL_REQUIRED_PROFILES = {
     "obi.profile:os.fs-0",
     "obi.profile:os.process-0",
     "obi.profile:os.dylib-0",
-    "obi.profile:gfx.gpu_device-0",
 }
 NATIVE_FINAL_REMOVED_PROFILES = {
+    "obi.profile:gfx.gpu_device-0",
     "obi.profile:time.datetime-0",
     "obi.profile:asset.mesh_io-0",
     "obi.profile:asset.scene_io-0",

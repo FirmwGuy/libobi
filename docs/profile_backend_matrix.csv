@@ -4,7 +4,7 @@ obi.profile:gfx.window_input-0,obi.provider:gfx.raylib,implemented,raylib,roadma
 obi.profile:gfx.render2d-0,obi.provider:gfx.sdl3,implemented,SDL3,roadmap,final
 obi.profile:gfx.render2d-0,obi.provider:gfx.raylib,implemented,raylib,roadmap,final
 obi.profile:gfx.gpu_device-0,obi.provider:gfx.gpu.sokol,implemented,sokol_gfx_vendored,roadmap,final
-obi.profile:gfx.gpu_device-0,obi.provider:gfx.gpu.native,planned,native_gpu_device_fallback,roadmap,final
+obi.profile:gfx.gpu_device-0,obi.provider:gfx.sdl3,implemented,SDL3_GPU,roadmap,final
 obi.profile:gfx.render3d-0,obi.provider:gfx.render3d.raylib,implemented,raylib_vendored,roadmap,final
 obi.profile:gfx.render3d-0,obi.provider:gfx.render3d.sokol,implemented,sokol_gfx_vendored,roadmap,final
 obi.profile:time.datetime-0,obi.provider:time.glib,implemented,GLib,roadmap,final
@@ -38,11 +38,11 @@ obi.profile:net.http_client-0,obi.provider:net.http.libsoup,implemented,libsoup,
 obi.profile:net.websocket-0,obi.provider:net.ws.libwebsockets,implemented,libwebsockets,roadmap,final
 obi.profile:net.websocket-0,obi.provider:net.ws.wslay,implemented,wslay,roadmap,final
 obi.profile:text.font_db-0,obi.provider:text.stack,implemented,fontconfig,roadmap,final
-obi.profile:text.font_db-0,obi.provider:text.pango,planned,"Pango,Fontconfig",roadmap,final
+obi.profile:text.font_db-0,obi.provider:text.pango,implemented,"Pango,Fontconfig",roadmap,final
 obi.profile:text.raster_cache-0,obi.provider:text.stack,implemented,FreeType,roadmap,final
-obi.profile:text.raster_cache-0,obi.provider:text.stb,planned,stb_truetype,roadmap,final
+obi.profile:text.raster_cache-0,obi.provider:text.stb,implemented,stb_truetype,roadmap,final
 obi.profile:text.shape-0,obi.provider:text.stack,implemented,"HarfBuzz,FriBidi",roadmap,final
-obi.profile:text.shape-0,obi.provider:text.icu,planned,"HarfBuzz,ICU4C",roadmap,final
+obi.profile:text.shape-0,obi.provider:text.icu,implemented,"HarfBuzz,ICU4C",roadmap,final
 obi.profile:text.segmenter-0,obi.provider:text.stack,implemented,FriBidi,roadmap,final
 obi.profile:text.segmenter-0,obi.provider:text.icu,implemented,ICU4C,roadmap,final
 obi.profile:text.layout-0,obi.provider:text.layout.pango,implemented,Pango,roadmap,final
@@ -137,4 +137,4 @@ obi.profile:media.video_scale_convert-0,obi.provider:media.scale.ffmpeg,implemen
 obi.profile:media.video_scale_convert-0,obi.provider:media.scale.libyuv,implemented,libyuv,roadmap,final
 obi.profile:media.image_codec-0,obi.provider:media.image,implemented,"libpng,libjpeg,libwebp",roadmap,final
 obi.profile:media.image_codec-0,obi.provider:media.gdkpixbuf,implemented,gdk-pixbuf,roadmap,final
-obi.profile:media.image_codec-0,obi.provider:media.stb,planned,"stb_image,stb_image_write",roadmap,final
+obi.profile:media.image_codec-0,obi.provider:media.stb,implemented,"stb_image,stb_image_write",roadmap,final

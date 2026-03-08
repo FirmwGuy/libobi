@@ -1,7 +1,7 @@
 # libobi
 ## Omni Backstage Interface (OBI) Loader/Runtime
 
-**Last Updated:** 2026-03-01  
+**Last Updated:** 2026-03-08  
 **Status:** Draft  
 **Repository Role:** Implementation (loader/runtime), not the OBI spec
 
@@ -54,12 +54,12 @@ Resolution precedence:
 Additional rules:
 
 - Denied providers (`obi_rt_policy_set_denied_providers_csv`) are skipped for normal selection and blocked for explicit provider fetch.
-- License-class policy filters (`obi_rt_policy_set_allowed_license_classes_csv`, `obi_rt_policy_set_denied_license_classes_csv`) are enforced at selection/fetch time using provider `describe_json().license.class` (falls back to `unknown` when missing).
-- SPDX-prefix policy filters (`obi_rt_policy_set_allowed_spdx_prefixes_csv`, `obi_rt_policy_set_denied_spdx_prefixes_csv`) are enforced using provider `describe_json().license.spdx_expression` (falls back to `unknown` when missing).
+- License-class and SPDX-prefix CSV filters are now compatibility wrappers over cached typed legal facts (`effective_license`) when available.
+- When providers only expose `describe_json`, runtime maps legacy `license`/`deps` fields conservatively into typed legal facts (unknown by default when precision is missing).
 - Optional eager policy enforcement is available at provider load-time (`obi_rt_policy_set_eager_reject_disallowed_provider_loads`), rejecting disallowed modules before they are admitted to the runtime provider set.
 - Bindings are strict by default.
 - Set `OBI_RT_BIND_ALLOW_FALLBACK` when binding to allow fallback to later precedence stages if the bound provider is missing, denied, or does not implement the profile.
-- Policy and provider-load changes invalidate internal profile-resolution cache entries.
+- Policy and provider-load changes invalidate profile-resolution cache entries and legal-plan/report snapshots.
 
 Environment bootstrap at runtime creation:
 
@@ -79,6 +79,11 @@ Useful APIs:
 - `obi_rt_policy_set_allowed_license_classes_csv(...)` / `obi_rt_policy_set_denied_license_classes_csv(...)` for runtime license-profile filtering.
 - `obi_rt_policy_set_allowed_spdx_prefixes_csv(...)` / `obi_rt_policy_set_denied_spdx_prefixes_csv(...)` for SPDX-expression prefix filtering.
 - `obi_rt_policy_set_eager_reject_disallowed_provider_loads(...)` for immediate load-time rejection of disallowed providers.
+- `obi_rt_provider_legal_metadata(...)` for structured legal metadata enumeration per loaded provider.
+- `obi_rt_legal_plan(...)` / `obi_rt_legal_plan_preset(...)` for legal route planning over profile requirements.
+- `obi_rt_legal_report_presets(...)` for built-in preset feasibility reporting on current loaded providers.
+- `obi_rt_legal_apply_plan(...)` to materialize a successful legal plan as runtime profile bindings.
+- Legal metadata/plan/report pointers are runtime-owned borrowed snapshots, invalidated by the next legal query, provider set mutation, policy mutation, or runtime destruction.
 
 ---
 
@@ -88,8 +93,8 @@ Current provider modules (basic bring-up scope):
 
 - `obi_provider_null` -> provider id `obi.provider:null`
 - `obi_provider_gfx_sdl3` -> provider id `obi.provider:gfx.sdl3`
-  - profiles: `obi.profile:gfx.window_input-0`, `obi.profile:gfx.render2d-0`
-  - status: functional SDL3 window/input + 2D render baseline (window lifecycle, event polling, clipboard/text-input hooks, frame begin/end, scissor, rect fill, RGBA texture create/update/draw)
+  - profiles: `obi.profile:gfx.window_input-0`, `obi.profile:gfx.render2d-0`, `obi.profile:gfx.gpu_device-0`
+  - status: functional SDL3 backend for window/input, 2D rendering, and GPU-device surface (resource lifecycle, frame begin/end, bindings/pipeline validation, upload paths)
 - `obi_provider_gfx_raylib` -> provider id `obi.provider:gfx.raylib`
   - profiles: `obi.profile:gfx.window_input-0`, `obi.profile:gfx.render2d-0`
   - status: functional in-memory gfx baseline (window lifecycle/event poll/framebuffer size + render2d frame lifecycle, scissor/blend state, RGBA texture create/update/draw validation path)
@@ -106,8 +111,14 @@ Current provider modules (basic bring-up scope):
   - profiles: `obi.profile:text.font_db-0`, `obi.profile:text.raster_cache-0`, `obi.profile:text.shape-0`, `obi.profile:text.segmenter-0`
   - status: functional font matching (fontconfig), raster cache (FreeType A8 glyph rasterization), shaping (HarfBuzz), and UTF-8 segmentation/bidi baseline (FriBidi)
 - `obi_provider_text_icu` -> provider id `obi.provider:text.icu`
-  - profiles: `obi.profile:text.segmenter-0`
-  - status: functional ICU4C segmenter redundancy backend (grapheme/word/sentence/line boundaries via break iterators)
+  - profiles: `obi.profile:text.segmenter-0`, `obi.profile:text.shape-0`
+  - status: functional ICU4C + HarfBuzz backend (break-iterator segmentation, split-provider shape face loading, shaping, and bidi-run reporting)
+- `obi_provider_text_pango` -> provider id `obi.provider:text.pango`
+  - profiles: `obi.profile:text.font_db-0`
+  - status: Pango/Fontconfig-backed face matching backend with file-path source + ownership/release contract
+- `obi_provider_text_stb` -> provider id `obi.provider:text.stb`
+  - profiles: `obi.profile:text.raster_cache-0`
+  - status: stb_truetype-backed raster backend (face create from bytes, metrics, cmap, A8 glyph rasterization)
 - `obi_provider_text_native` -> provider id `obi.provider:text.inhouse`
   - profiles: no active matrix/test pairings (retired placeholder module; disabled by default)
   - status: deprecated synthetic fallback superseded by real text layout/ime/spell/regex providers
@@ -191,10 +202,10 @@ Current provider modules (basic bring-up scope):
   - status: deprecated synthetic fallback superseded by real physics backends
 - `obi_provider_phys2d_chipmunk` -> provider id `obi.provider:phys2d.chipmunk`
   - profiles: `obi.profile:phys.world2d-0`, `obi.profile:phys.debug_draw-0`
-  - status: Chipmunk2D-backed physics backend with debug-draw surface in the same provider
+  - status: Chipmunk2D-backed physics backend with direct Chipmunk world/body/shape delegation and world2d debug-draw surface in the same provider
 - `obi_provider_phys2d_box2d` -> provider id `obi.provider:phys2d.box2d`
   - profiles: `obi.profile:phys.world2d-0`, `obi.profile:phys.debug_draw-0`
-  - status: Box2D-backed physics backend with debug-draw surface in the same provider
+  - status: Box2D-backed physics backend with direct Box2D world/body/shape delegation and world2d debug-draw surface in the same provider
 - `obi_provider_phys3d_ode` -> provider id `obi.provider:phys3d.ode`
   - profiles: `obi.profile:phys.world3d-0`, `obi.profile:phys.debug_draw-0`
   - status: ODE-backed physics backend with debug-draw surface in the same provider
@@ -294,6 +305,9 @@ Current provider modules (basic bring-up scope):
 - `obi_provider_media_gdkpixbuf` -> provider id `obi.provider:media.gdkpixbuf`
   - profiles: `obi.profile:media.image_codec-0`
   - status: functional image codec redundancy backend via gdk-pixbuf (decode from bytes/reader and encode-to-writer for PNG/JPEG)
+- `obi_provider_media_stb` -> provider id `obi.provider:media.stb`
+  - profiles: `obi.profile:media.image_codec-0`
+  - status: stb_image/stb_image_write-backed image codec backend (decode from bytes/reader and encode-to-writer for PNG/JPEG)
 - `obi_provider_media_audio_sdl3` -> provider id `obi.provider:media.audio.sdl3`
   - profiles: `obi.profile:media.audio_device-0`
   - status: SDL3-backed audio device backend
@@ -479,7 +493,24 @@ without forcing all hosts to take on all third-party dependencies.
 
 Current runtime policy extensions:
 
-- provider metadata (`describe_json`) is used to derive `license.class` for selection policy;
-- runtime selection supports allow/deny filters by coarse class
-  (`permissive` / `patent` / `weak_copyleft` / `strong_copyleft`, plus `unknown` fallback).
-- runtime selection also supports allow/deny filters by SPDX-expression prefix and optional eager rejection at load-time.
+- runtime caches structured legal metadata (`module_license`, `effective_license`, `dependency_closure`, `routes`) from
+  `describe_legal_metadata(...)` when provided;
+- older providers remain supported through conservative `describe_json` fallback mapping;
+- high-level legal planning/apply/report APIs are available (`obi_rt_legal_plan*`, `obi_rt_legal_apply_plan`, `obi_rt_legal_report_presets`);
+- CSV allow/deny policy APIs remain available as legacy convenience filters over runtime effective legal facts;
+- unknown legal facts are conservative by default in the high-level legal selector path unless policy flags explicitly opt in.
+- current in-tree coverage is fully migrated for dual-path metadata exposure: every provider source file that still exposes
+  `describe_json()` also exposes `describe_legal_metadata()` (`91` provider source files in the March 8, 2026 audit).
+
+Provider provenance and fallback notes kept as permanent project policy:
+
+- the in-tree provenance audit found no remaining confirmed copied-source blocks in native/shared-base providers after
+  the `data.serde.jsmn` inline parser removal; that provider now includes upstream `jsmn.h` directly (system header first,
+  vendored fallback second) instead of embedding third-party parser code;
+- the civil-date helpers in `providers/time_common/obi_provider_time_base.inc` are documented as local expressions of
+  published formulas rather than embedded upstream source text;
+- vendored compiled fallback should prefer shared linkage: providers should resolve system shared libraries first, then
+  vendored shared builds, with static fallback enabled only behind an explicit Meson option gate;
+- the current in-tree static vendored fallback exception is the `phys2d` pair (`obi.provider:phys2d.box2d`,
+  `obi.provider:phys2d.chipmunk`) through `-Dphys2d_allow_static_fallback=true`; otherwise those vendored fallbacks build as
+  shared libraries.

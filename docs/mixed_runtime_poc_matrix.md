@@ -1,9 +1,14 @@
 # Mixed Runtime POC Coverage Matrix (Stage 3)
 
-Last updated: March 7, 2026
+Last updated: March 8, 2026
 
 This file records the exact mixed-runtime provider combinations exercised by
 `tools/obi_provider_smoke.c --mix`, and how Meson registers those runs.
+
+Current status: the roadmap mix lane is green for the current roadmap-complete
+overlap set (`provider_mix_smoke_roadmap` in `build_impl`), so Stage 3 mixed
+runtime coexistence is considered complete for the currently implemented
+roadmap slices.
 
 `--mix` now runs three lifecycle cycles per test invocation to exercise repeated
 setup/teardown and provider unload/reload surfaces:

@@ -2,6 +2,7 @@
 /* SPDX-FileCopyrightText: 2026-present Victor M. Barrientos <firmw.guy@gmail.com> */
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_time_datetime_v0.h>
 
 #include <limits.h>
@@ -53,6 +54,43 @@
 typedef struct obi_time_provider_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
 } obi_time_provider_ctx_v0;
+
+static uint32_t _legal_copyleft_from_legacy_class(const char* klass) {
+    if (!klass || klass[0] == '\0') {
+        return OBI_LEGAL_COPYLEFT_UNKNOWN;
+    }
+    if (strcmp(klass, "permissive") == 0) {
+        return OBI_LEGAL_COPYLEFT_PERMISSIVE;
+    }
+    if (strcmp(klass, "weak_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_WEAK;
+    }
+    if (strcmp(klass, "strong_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_STRONG;
+    }
+    return OBI_LEGAL_COPYLEFT_UNKNOWN;
+}
+
+static uint32_t _legal_patent_from_legacy_class(const char* klass) {
+    if (!klass || klass[0] == '\0') {
+        return OBI_LEGAL_PATENT_POSTURE_UNKNOWN;
+    }
+    if (strcmp(klass, "patent_friendly") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_EXPLICIT_GRANT;
+    }
+    if (strcmp(klass, "patent_sensitive") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_SENSITIVE;
+    }
+    if (strcmp(klass, "patent_restricted") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_RESTRICTED;
+    }
+    if (strcmp(klass, "permissive") == 0 ||
+        strcmp(klass, "weak_copyleft") == 0 ||
+        strcmp(klass, "strong_copyleft") == 0) {
+        return OBI_LEGAL_PATENT_POSTURE_ORDINARY;
+    }
+    return OBI_LEGAL_PATENT_POSTURE_UNKNOWN;
+}
 
 static bool _is_digit(char c) {
     return c >= '0' && c <= '9';
@@ -185,10 +223,9 @@ static bool _mul_overflow_i64(int64_t a, int64_t b, int64_t* out) {
 }
 
 /*
- * Days since 1970-01-01 (civil calendar), using Howard Hinnant's published
- * date algorithm formulas. His date-algorithms page states that the algorithms
- * are donated to the public domain; this libobi implementation remains covered
- * by this file's own SPDX/license terms.
+ * Days since 1970-01-01 (civil calendar), re-expressed from Howard Hinnant's
+ * published civil-date formulas. This file keeps a local implementation of
+ * the formulas and does not embed upstream source text.
  */
 static int64_t _days_from_civil(int64_t year, unsigned month, unsigned day) {
     year -= (month <= 2u) ? 1 : 0;
@@ -724,6 +761,97 @@ static const char* _describe_json(void* ctx) {
            "\"deps\":" OBI_TIME_PROVIDER_DEPS_JSON "}";
 }
 
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    static const obi_legal_dependency_v0 glib_deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "glib-2.0",
+            .name = "glib-2.0",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+    };
+
+    static const obi_legal_dependency_v0 icu_deps[] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "icu-i18n",
+            .name = "icu-i18n",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_PERMISSIVE,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "Unicode-3.0",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_REQUIRED_RUNTIME,
+            .dependency_id = "icu-uc",
+            .name = "icu-uc",
+            .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_PERMISSIVE,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "Unicode-3.0",
+            },
+        },
+    };
+
+    const obi_legal_dependency_v0* deps = NULL;
+    size_t dep_count = 0u;
+    const char* effective_spdx = OBI_TIME_PROVIDER_SPDX;
+    const char* effective_summary = "Effective posture equals provider module posture";
+
+    if (strcmp(OBI_TIME_PROVIDER_ID, "obi.provider:time.glib") == 0) {
+        deps = glib_deps;
+        dep_count = sizeof(glib_deps) / sizeof(glib_deps[0]);
+        effective_spdx = "MPL-2.0 AND LGPL-2.1-or-later";
+        effective_summary = "Effective posture reflects module plus required GLib dependency";
+    } else if (strcmp(OBI_TIME_PROVIDER_ID, "obi.provider:time.icu") == 0) {
+        deps = icu_deps;
+        dep_count = sizeof(icu_deps) / sizeof(icu_deps[0]);
+        effective_spdx = "MPL-2.0 AND Unicode-3.0";
+        effective_summary = "Effective posture reflects module plus required ICU dependencies";
+    }
+
+    const uint32_t module_copyleft = _legal_copyleft_from_legacy_class(OBI_TIME_PROVIDER_LICENSE_CLASS);
+    const uint32_t module_patent = _legal_patent_from_legacy_class(OBI_TIME_PROVIDER_LICENSE_CLASS);
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+    out_meta->module_license.struct_size = (uint32_t)sizeof(out_meta->module_license);
+    out_meta->module_license.copyleft_class = module_copyleft;
+    out_meta->module_license.patent_posture = module_patent;
+    out_meta->module_license.spdx_expression = OBI_TIME_PROVIDER_SPDX;
+
+    out_meta->effective_license.struct_size = (uint32_t)sizeof(out_meta->effective_license);
+    out_meta->effective_license.copyleft_class = module_copyleft;
+    out_meta->effective_license.patent_posture = module_patent;
+    out_meta->effective_license.spdx_expression = effective_spdx;
+    out_meta->effective_license.summary_utf8 = effective_summary;
+
+    out_meta->dependencies = deps;
+    out_meta->dependency_count = dep_count;
+    return OBI_STATUS_OK;
+}
+
 static void _destroy(void* ctx) {
     obi_time_provider_ctx_v0* p = (obi_time_provider_ctx_v0*)ctx;
     if (!p) {
@@ -748,6 +876,7 @@ static const obi_provider_api_v0 OBI_TIME_PROVIDER_ENTRY_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 

@@ -2,6 +2,7 @@
 /* SPDX-FileCopyrightText: 2026-present Victor M. Barrientos <firmw.guy@gmail.com> */
 
 #include <obi/obi_core_v0.h>
+#include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_text_ime_v0.h>
 #include <obi/profiles/obi_text_layout_v0.h>
 #include <obi/profiles/obi_text_regex_v0.h>
@@ -31,6 +32,18 @@
 
 #ifndef OBI_TEXT_PROVIDER_DEPS_JSON
 #  define OBI_TEXT_PROVIDER_DEPS_JSON "[]"
+#endif
+
+#ifndef OBI_TEXT_PROVIDER_TYPED_DEPS
+#  define OBI_TEXT_PROVIDER_TYPED_DEPS NULL
+#endif
+
+#ifndef OBI_TEXT_PROVIDER_TYPED_DEPS_COUNT
+#  define OBI_TEXT_PROVIDER_TYPED_DEPS_COUNT 0u
+#endif
+
+#ifndef OBI_TEXT_PROVIDER_PATENT_POSTURE
+#  define OBI_TEXT_PROVIDER_PATENT_POSTURE OBI_LEGAL_PATENT_POSTURE_ORDINARY
 #endif
 
 #ifndef OBI_TEXT_PROVIDER_PROFILES_JSON
@@ -1514,6 +1527,58 @@ static const char* _describe_json(void* ctx) {
            "\"deps\":" OBI_TEXT_PROVIDER_DEPS_JSON "}";
 }
 
+static uint32_t _copyleft_from_class_name(const char* class_name) {
+    if (!class_name) {
+        return OBI_LEGAL_COPYLEFT_UNKNOWN;
+    }
+    if (strcmp(class_name, "permissive") == 0) {
+        return OBI_LEGAL_COPYLEFT_PERMISSIVE;
+    }
+    if (strcmp(class_name, "weak_copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_WEAK;
+    }
+    if (strcmp(class_name, "strong_copyleft") == 0 || strcmp(class_name, "copyleft") == 0) {
+        return OBI_LEGAL_COPYLEFT_STRONG;
+    }
+    return OBI_LEGAL_COPYLEFT_UNKNOWN;
+}
+
+static obi_status _describe_legal_metadata(void* ctx,
+                                           obi_provider_legal_metadata_v0* out_meta,
+                                           size_t out_meta_size) {
+    (void)ctx;
+    if (!out_meta || out_meta_size < sizeof(*out_meta)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    const uint32_t copyleft = _copyleft_from_class_name(OBI_TEXT_PROVIDER_LICENSE_CLASS);
+    const uint32_t patent = (uint32_t)OBI_TEXT_PROVIDER_PATENT_POSTURE;
+
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->struct_size = (uint32_t)sizeof(*out_meta);
+
+    out_meta->module_license.struct_size = (uint32_t)sizeof(out_meta->module_license);
+    out_meta->module_license.copyleft_class = copyleft;
+    out_meta->module_license.patent_posture = patent;
+    out_meta->module_license.spdx_expression = OBI_TEXT_PROVIDER_SPDX;
+
+    out_meta->effective_license.struct_size = (uint32_t)sizeof(out_meta->effective_license);
+    out_meta->effective_license.copyleft_class = copyleft;
+    out_meta->effective_license.patent_posture = patent;
+    out_meta->effective_license.spdx_expression = OBI_TEXT_PROVIDER_SPDX;
+
+    out_meta->dependencies = OBI_TEXT_PROVIDER_TYPED_DEPS;
+    out_meta->dependency_count = OBI_TEXT_PROVIDER_TYPED_DEPS_COUNT;
+
+    if (out_meta->dependency_count == 0u && sizeof(OBI_TEXT_PROVIDER_DEPS_JSON) > sizeof("[]")) {
+        out_meta->effective_license.flags |= OBI_LEGAL_TERM_FLAG_CONSERVATIVE;
+        out_meta->effective_license.summary_utf8 =
+            "Legacy JSON declares dependencies but typed dependency closure is not yet populated";
+    }
+
+    return OBI_STATUS_OK;
+}
+
 static void _destroy(void* ctx) {
     obi_text_native_ctx_v0* p = (obi_text_native_ctx_v0*)ctx;
     if (!p) {
@@ -1537,6 +1602,7 @@ static const obi_provider_api_v0 OBI_TEXT_NATIVE_PROVIDER_API_V0 = {
     .provider_version = _provider_version,
     .get_profile = _get_profile,
     .describe_json = _describe_json,
+    .describe_legal_metadata = _describe_legal_metadata,
     .destroy = _destroy,
 };
 
