@@ -24,6 +24,9 @@ locally through `./obi-abi/`.
 - Added roadmap-complete mixed-runtime overlap coverage for the current provider
   set through the `provider_mix_smoke_roadmap` lane and documented the exact
   overlap matrix in `docs/mixed_runtime_poc_matrix.md`.
+- Added resident task adapters in mix-family shards so stateful optional profile
+  participants stay open across overlap loops with explicit open/step/close
+  teardown accounting in coverage ledgers.
 - Added roadmap providers `obi.provider:text.pango`,
   `obi.provider:text.stb`, and `obi.provider:media.stb`.
 - Added `gfx.gpu_device-0` support to `obi.provider:gfx.sdl3`.
@@ -44,6 +47,10 @@ locally through `./obi-abi/`.
   embedding parser implementation code inside the provider source.
 - Consolidated shared time-provider date logic in `providers/time_common/` and
   documented the civil-date helpers as local expressions of published formulas.
+- Updated dual-runtime mix policy to include non-SDL3 gfx providers
+  (`gfx.raylib`, `gfx.gpu.sokol`, `gfx.render3d.raylib`, `gfx.render3d.sokol`)
+  after adding shared process-local Sokol setup/shutdown refcounting to avoid
+  singleton collisions when two runtimes are interleaved in one process.
 - Updated `README.md`, `docs/profile_backend_matrix.md`, and
   `docs/mixed_runtime_poc_matrix.md` to reflect the current legal-selector,
   mixed-runtime, provenance, and backend-policy state.

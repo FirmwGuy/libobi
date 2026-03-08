@@ -94,6 +94,8 @@ static int _provider_loaded(obi_rt_v0* rt, const char* provider_id);
 static int _profile_provider_load_priority(const char* target_profile,
                                            const char* target_provider_id,
                                            const char* provider_path);
+static int _exercise_mixed_backend_mix_eligibility_sweep(obi_rt_v0* rt);
+static uint32_t _mix_current_cycle_index = UINT32_MAX;
 
 static void _usage(const char* argv0) {
     fprintf(stderr,
@@ -101,7 +103,17 @@ static void _usage(const char* argv0) {
             "  %s --load-only <provider_path>...\n"
             "  %s --profiles <provider_path>... -- <profile_id>...\n"
             "  %s --mix <provider_path>...\n"
+            "  %s --mix-pairwise <provider_path>...\n"
+            "  %s --mix-dual-runtime <provider_path>...\n"
+            "  %s --mix-media-routes <provider_path>...\n"
+            "  %s --mix-family-stateful <provider_path>...\n"
+            "  %s --mix-family-gfx <provider_path>...\n"
             "  %s --profile-provider <profile_id> <provider_id> <provider_path>...\n",
+            argv0,
+            argv0,
+            argv0,
+            argv0,
+            argv0,
             argv0,
             argv0,
             argv0,
@@ -10083,7 +10095,166 @@ typedef struct obi_mix_task_v0 {
     const char* provider_id;
 } obi_mix_task_v0;
 
+typedef struct obi_mix_coverage_entry_v0 {
+    const char* shard;
+    const char* profile_id;
+    const char* provider_id;
+    int object_created;
+    size_t tick_count;
+    size_t progress_count;
+    int teardown_ok;
+    const char* skip_reason;
+} obi_mix_coverage_entry_v0;
+
+typedef struct obi_mix_coverage_ledger_v0 {
+    obi_mix_coverage_entry_v0 entries[512];
+    size_t count;
+} obi_mix_coverage_ledger_v0;
+
 static void _mix_shuffle_tasks(obi_mix_task_v0* tasks, size_t count, uint32_t seed);
+
+static obi_mix_coverage_entry_v0* _mix_coverage_entry_get(obi_mix_coverage_ledger_v0* ledger,
+                                                          const char* shard,
+                                                          const char* profile_id,
+                                                          const char* provider_id) {
+    if (!ledger || !shard || !profile_id || !provider_id) {
+        return NULL;
+    }
+
+    for (size_t i = 0u; i < ledger->count; i++) {
+        obi_mix_coverage_entry_v0* entry = &ledger->entries[i];
+        if (entry->shard && entry->profile_id && entry->provider_id &&
+            strcmp(entry->shard, shard) == 0 &&
+            strcmp(entry->profile_id, profile_id) == 0 &&
+            strcmp(entry->provider_id, provider_id) == 0) {
+            return entry;
+        }
+    }
+
+    if (ledger->count >= sizeof(ledger->entries) / sizeof(ledger->entries[0])) {
+        return NULL;
+    }
+
+    obi_mix_coverage_entry_v0* created = &ledger->entries[ledger->count++];
+    memset(created, 0, sizeof(*created));
+    created->shard = shard;
+    created->profile_id = profile_id;
+    created->provider_id = provider_id;
+    return created;
+}
+
+static void _mix_coverage_mark_object_created(obi_mix_coverage_ledger_v0* ledger,
+                                              const char* shard,
+                                              const char* profile_id,
+                                              const char* provider_id) {
+    obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(ledger, shard, profile_id, provider_id);
+    if (entry) {
+        entry->object_created = 1;
+    }
+}
+
+static void _mix_coverage_mark_tick(obi_mix_coverage_ledger_v0* ledger,
+                                    const char* shard,
+                                    const char* profile_id,
+                                    const char* provider_id) {
+    obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(ledger, shard, profile_id, provider_id);
+    if (entry) {
+        entry->tick_count++;
+    }
+}
+
+static void _mix_coverage_mark_progress(obi_mix_coverage_ledger_v0* ledger,
+                                        const char* shard,
+                                        const char* profile_id,
+                                        const char* provider_id) {
+    obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(ledger, shard, profile_id, provider_id);
+    if (entry) {
+        entry->progress_count++;
+    }
+}
+
+static void _mix_coverage_mark_teardown(obi_mix_coverage_ledger_v0* ledger,
+                                        const char* shard,
+                                        const char* profile_id,
+                                        const char* provider_id) {
+    obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(ledger, shard, profile_id, provider_id);
+    if (entry) {
+        entry->teardown_ok = 1;
+    }
+}
+
+static void _mix_coverage_mark_skip(obi_mix_coverage_ledger_v0* ledger,
+                                    const char* shard,
+                                    const char* profile_id,
+                                    const char* provider_id,
+                                    const char* skip_reason) {
+    obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(ledger, shard, profile_id, provider_id);
+    if (entry) {
+        entry->skip_reason = skip_reason;
+    }
+}
+
+static void _mix_coverage_print_summary(const obi_mix_coverage_ledger_v0* ledger,
+                                        const char* label,
+                                        uint32_t seed) {
+    if (!ledger || !label) {
+        return;
+    }
+
+    printf("mix_coverage_summary=%s cycle=%u seed=0x%08x entries=%zu\n",
+           label,
+           (unsigned)_mix_current_cycle_index,
+           (unsigned)seed,
+           ledger->count);
+    for (size_t i = 0u; i < ledger->count; i++) {
+        const obi_mix_coverage_entry_v0* entry = &ledger->entries[i];
+        printf("mix_coverage[%s][%zu] shard=%s profile=%s provider=%s created=%d ticks=%zu progress=%zu teardown=%d",
+               label,
+               i,
+               entry->shard ? entry->shard : "<none>",
+               entry->profile_id ? entry->profile_id : "<none>",
+               entry->provider_id ? entry->provider_id : "<none>",
+               entry->object_created,
+               entry->tick_count,
+               entry->progress_count,
+               entry->teardown_ok);
+        if (entry->skip_reason && entry->skip_reason[0] != '\0') {
+            printf(" skip=%s", entry->skip_reason);
+        }
+        printf("\n");
+    }
+}
+
+static int _mix_coverage_require_teardown_complete(const obi_mix_coverage_ledger_v0* ledger,
+                                                   const char* label,
+                                                   uint32_t seed) {
+    if (!ledger || !label) {
+        return 0;
+    }
+
+    for (size_t i = 0u; i < ledger->count; i++) {
+        const obi_mix_coverage_entry_v0* entry = &ledger->entries[i];
+        if (!entry->object_created) {
+            continue;
+        }
+        if (entry->skip_reason && entry->skip_reason[0] != '\0') {
+            continue;
+        }
+        if (!entry->teardown_ok) {
+            fprintf(stderr,
+                    "mix coverage leak: summary=%s shard=%s profile=%s provider=%s cycle=%u seed=0x%08x\n",
+                    label,
+                    entry->shard ? entry->shard : "<none>",
+                    entry->profile_id ? entry->profile_id : "<none>",
+                    entry->provider_id ? entry->provider_id : "<none>",
+                    (unsigned)_mix_current_cycle_index,
+                    (unsigned)seed);
+            return 0;
+        }
+    }
+
+    return 1;
+}
 
 static int _provider_loaded(obi_rt_v0* rt, const char* provider_id) {
     if (!rt || !provider_id) {
@@ -10105,16 +10276,42 @@ static int _provider_loaded(obi_rt_v0* rt, const char* provider_id) {
     return 0;
 }
 
-static const char* _pick_loaded_provider(obi_rt_v0* rt, const char* const* candidates, size_t candidate_count) {
-    if (!rt || !candidates) {
-        return NULL;
+static int _provider_id_exists(const char* const* ids, size_t count, const char* provider_id) {
+    if (!ids || !provider_id) {
+        return 0;
     }
-    for (size_t i = 0u; i < candidate_count; i++) {
-        if (candidates[i] && _provider_loaded(rt, candidates[i])) {
-            return candidates[i];
+    for (size_t i = 0u; i < count; i++) {
+        if (ids[i] && strcmp(ids[i], provider_id) == 0) {
+            return 1;
         }
     }
-    return NULL;
+    return 0;
+}
+
+static size_t _collect_loaded_providers(obi_rt_v0* rt,
+                                        const char* const* candidates,
+                                        size_t candidate_count,
+                                        const char** out_ids,
+                                        size_t out_cap) {
+    if (!rt || !candidates || !out_ids || out_cap == 0u) {
+        return 0u;
+    }
+
+    size_t count = 0u;
+    for (size_t i = 0u; i < candidate_count; i++) {
+        const char* provider_id = candidates[i];
+        if (!provider_id || !_provider_loaded(rt, provider_id)) {
+            continue;
+        }
+        if (_provider_id_exists(out_ids, count, provider_id)) {
+            continue;
+        }
+        if (count >= out_cap) {
+            break;
+        }
+        out_ids[count++] = provider_id;
+    }
+    return count;
 }
 
 static int _provider_has_profile(obi_rt_v0* rt, const char* provider_id, const char* profile_id) {
@@ -10140,6 +10337,36 @@ static int _provider_has_profile(obi_rt_v0* rt, const char* provider_id, const c
                                                       sz);
     free(out_profile);
     return st == OBI_STATUS_OK;
+}
+
+static size_t _collect_loaded_providers_for_profile(obi_rt_v0* rt,
+                                                    const char* profile_id,
+                                                    const char* const* candidates,
+                                                    size_t candidate_count,
+                                                    const char** out_ids,
+                                                    size_t out_cap) {
+    if (!rt || !profile_id || !candidates || !out_ids || out_cap == 0u) {
+        return 0u;
+    }
+
+    size_t count = 0u;
+    for (size_t i = 0u; i < candidate_count; i++) {
+        const char* provider_id = candidates[i];
+        if (!provider_id || !_provider_loaded(rt, provider_id)) {
+            continue;
+        }
+        if (!_provider_has_profile(rt, provider_id, profile_id)) {
+            continue;
+        }
+        if (_provider_id_exists(out_ids, count, provider_id)) {
+            continue;
+        }
+        if (count >= out_cap) {
+            break;
+        }
+        out_ids[count++] = provider_id;
+    }
+    return count;
 }
 
 static const char* _pick_loaded_provider_for_profile(obi_rt_v0* rt,
@@ -10185,6 +10412,30 @@ static const char* _resolve_profile_provider_target(obi_rt_v0* rt,
     }
 
     return requested_provider_id;
+}
+
+static void _mix_append_task_unique(obi_mix_task_v0* tasks,
+                                    size_t task_cap,
+                                    size_t* task_count,
+                                    const char* profile_id,
+                                    const char* provider_id) {
+    if (!tasks || !task_count || !profile_id || !provider_id) {
+        return;
+    }
+
+    for (size_t i = 0u; i < *task_count; i++) {
+        if (tasks[i].profile_id && tasks[i].provider_id &&
+            strcmp(tasks[i].profile_id, profile_id) == 0 &&
+            strcmp(tasks[i].provider_id, provider_id) == 0) {
+            return;
+        }
+    }
+
+    if (*task_count >= task_cap) {
+        return;
+    }
+    tasks[*task_count] = (obi_mix_task_v0){ profile_id, provider_id };
+    (*task_count)++;
 }
 
 static int _mix_profile_is_visual_media_or_input(const char* profile_id) {
@@ -10314,17 +10565,29 @@ static int _mix_has_roadmap_provider_set(obi_rt_v0* rt) {
     static const char* k_text_candidates[] = { "obi.provider:text.stack", "obi.provider:text.icu" };
     static const char* k_data_candidates[] = { "obi.provider:data.gio", "obi.provider:data.magic" };
     static const char* k_media_candidates[] = { "obi.provider:media.image", "obi.provider:media.gdkpixbuf" };
+    const char* buf[4];
+    const size_t time_count = _collect_loaded_providers(rt,
+                                                        k_time_candidates,
+                                                        sizeof(k_time_candidates) / sizeof(k_time_candidates[0]),
+                                                        buf,
+                                                        sizeof(buf) / sizeof(buf[0]));
+    const size_t text_count = _collect_loaded_providers(rt,
+                                                        k_text_candidates,
+                                                        sizeof(k_text_candidates) / sizeof(k_text_candidates[0]),
+                                                        buf,
+                                                        sizeof(buf) / sizeof(buf[0]));
+    const size_t data_count = _collect_loaded_providers(rt,
+                                                        k_data_candidates,
+                                                        sizeof(k_data_candidates) / sizeof(k_data_candidates[0]),
+                                                        buf,
+                                                        sizeof(buf) / sizeof(buf[0]));
+    const size_t media_count = _collect_loaded_providers(rt,
+                                                         k_media_candidates,
+                                                         sizeof(k_media_candidates) / sizeof(k_media_candidates[0]),
+                                                         buf,
+                                                         sizeof(buf) / sizeof(buf[0]));
 
-    const char* time_provider =
-        _pick_loaded_provider(rt, k_time_candidates, sizeof(k_time_candidates) / sizeof(k_time_candidates[0]));
-    const char* text_provider =
-        _pick_loaded_provider(rt, k_text_candidates, sizeof(k_text_candidates) / sizeof(k_text_candidates[0]));
-    const char* data_provider =
-        _pick_loaded_provider(rt, k_data_candidates, sizeof(k_data_candidates) / sizeof(k_data_candidates[0]));
-    const char* media_provider =
-        _pick_loaded_provider(rt, k_media_candidates, sizeof(k_media_candidates) / sizeof(k_media_candidates[0]));
-
-    return time_provider && text_provider && data_provider && media_provider;
+    return time_count > 0u && text_count > 0u && data_count > 0u && media_count > 0u;
 }
 
 static int _exercise_mixed_backend_simultaneous(obi_rt_v0* rt) {
@@ -10350,117 +10613,259 @@ static int _exercise_mixed_backend_simultaneous(obi_rt_v0* rt) {
         "obi.provider:net.ws.wslay",
     };
 
-    const char* time_provider = _pick_loaded_provider(rt, k_time_candidates, sizeof(k_time_candidates) / sizeof(k_time_candidates[0]));
-    const char* text_provider = _pick_loaded_provider(rt, k_text_candidates, sizeof(k_text_candidates) / sizeof(k_text_candidates[0]));
-    const char* data_provider = _pick_loaded_provider(rt, k_data_candidates, sizeof(k_data_candidates) / sizeof(k_data_candidates[0]));
-    const char* media_provider = _pick_loaded_provider(rt, k_media_candidates, sizeof(k_media_candidates) / sizeof(k_media_candidates[0]));
-    const char* audio_device_provider = _pick_loaded_provider_for_profile(rt,
-                                                                           OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0,
-                                                                           k_audio_device_candidates,
-                                                                           sizeof(k_audio_device_candidates) / sizeof(k_audio_device_candidates[0]));
-    const char* audio_mix_provider = _pick_loaded_provider_for_profile(rt,
-                                                                        OBI_PROFILE_MEDIA_AUDIO_MIX_V0,
-                                                                        k_audio_mix_candidates,
-                                                                        sizeof(k_audio_mix_candidates) / sizeof(k_audio_mix_candidates[0]));
-    const char* audio_resample_provider = _pick_loaded_provider_for_profile(rt,
-                                                                             OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0,
-                                                                             k_audio_resample_candidates,
-                                                                             sizeof(k_audio_resample_candidates) / sizeof(k_audio_resample_candidates[0]));
-    const char* websocket_provider = _pick_loaded_provider_for_profile(rt,
-                                                                        OBI_PROFILE_NET_WEBSOCKET_V0,
-                                                                        k_websocket_candidates,
-                                                                        sizeof(k_websocket_candidates) / sizeof(k_websocket_candidates[0]));
+    const char* time_ids[4] = { 0 };
+    const char* text_ids[8] = { 0 };
+    const char* data_ids[4] = { 0 };
+    const char* media_ids[6] = { 0 };
+    const char* audio_device_ids[6] = { 0 };
+    const char* audio_mix_ids[6] = { 0 };
+    const char* audio_resample_ids[6] = { 0 };
+    const char* websocket_ids[6] = { 0 };
 
-    if (!time_provider || !text_provider || !data_provider || !media_provider) {
+    const size_t time_count = _collect_loaded_providers(rt,
+                                                        k_time_candidates,
+                                                        sizeof(k_time_candidates) / sizeof(k_time_candidates[0]),
+                                                        time_ids,
+                                                        sizeof(time_ids) / sizeof(time_ids[0]));
+    const size_t text_count = _collect_loaded_providers(rt,
+                                                        k_text_candidates,
+                                                        sizeof(k_text_candidates) / sizeof(k_text_candidates[0]),
+                                                        text_ids,
+                                                        sizeof(text_ids) / sizeof(text_ids[0]));
+    const size_t data_count = _collect_loaded_providers(rt,
+                                                        k_data_candidates,
+                                                        sizeof(k_data_candidates) / sizeof(k_data_candidates[0]),
+                                                        data_ids,
+                                                        sizeof(data_ids) / sizeof(data_ids[0]));
+    const size_t media_count = _collect_loaded_providers(rt,
+                                                         k_media_candidates,
+                                                         sizeof(k_media_candidates) / sizeof(k_media_candidates[0]),
+                                                         media_ids,
+                                                         sizeof(media_ids) / sizeof(media_ids[0]));
+    const size_t audio_device_count = _collect_loaded_providers_for_profile(rt,
+                                                                            OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0,
+                                                                            k_audio_device_candidates,
+                                                                            sizeof(k_audio_device_candidates) / sizeof(k_audio_device_candidates[0]),
+                                                                            audio_device_ids,
+                                                                            sizeof(audio_device_ids) / sizeof(audio_device_ids[0]));
+    const size_t audio_mix_count = _collect_loaded_providers_for_profile(rt,
+                                                                         OBI_PROFILE_MEDIA_AUDIO_MIX_V0,
+                                                                         k_audio_mix_candidates,
+                                                                         sizeof(k_audio_mix_candidates) / sizeof(k_audio_mix_candidates[0]),
+                                                                         audio_mix_ids,
+                                                                         sizeof(audio_mix_ids) / sizeof(audio_mix_ids[0]));
+    const size_t audio_resample_count = _collect_loaded_providers_for_profile(rt,
+                                                                              OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0,
+                                                                              k_audio_resample_candidates,
+                                                                              sizeof(k_audio_resample_candidates) / sizeof(k_audio_resample_candidates[0]),
+                                                                              audio_resample_ids,
+                                                                              sizeof(audio_resample_ids) / sizeof(audio_resample_ids[0]));
+    const size_t websocket_count = _collect_loaded_providers_for_profile(rt,
+                                                                         OBI_PROFILE_NET_WEBSOCKET_V0,
+                                                                         k_websocket_candidates,
+                                                                         sizeof(k_websocket_candidates) / sizeof(k_websocket_candidates[0]),
+                                                                         websocket_ids,
+                                                                         sizeof(websocket_ids) / sizeof(websocket_ids[0]));
+
+    if (time_count == 0u || text_count == 0u || data_count == 0u || media_count == 0u) {
         fprintf(stderr,
-                "mix roadmap: required providers missing time=%s text=%s data=%s media=%s\n",
-                time_provider ? time_provider : "<none>",
-                text_provider ? text_provider : "<none>",
-                data_provider ? data_provider : "<none>",
-                media_provider ? media_provider : "<none>");
+                "mix roadmap: required providers missing time=%zu text=%zu data=%zu media=%zu\n",
+                time_count,
+                text_count,
+                data_count,
+                media_count);
         return 0;
     }
 
-    obi_mix_task_v0 tasks[32];
+    obi_mix_task_v0 tasks[96];
     size_t task_count = 0u;
 
-    tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TIME_DATETIME_V0, time_provider };
-    tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SEGMENTER_V0, text_provider };
-    tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_DATA_FILE_TYPE_V0, data_provider };
-    tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_MEDIA_IMAGE_CODEC_V0, media_provider };
+    for (size_t i = 0u; i < time_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TIME_DATETIME_V0,
+                                time_ids[i]);
+    }
+    for (size_t i = 0u; i < text_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TEXT_SEGMENTER_V0,
+                                text_ids[i]);
+    }
+    for (size_t i = 0u; i < data_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_DATA_FILE_TYPE_V0,
+                                data_ids[i]);
+    }
+    for (size_t i = 0u; i < media_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_MEDIA_IMAGE_CODEC_V0,
+                                media_ids[i]);
+    }
 
     if (_provider_loaded(rt, "obi.provider:text.stack")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SHAPE_V0, "obi.provider:text.stack" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TEXT_SHAPE_V0,
+                                "obi.provider:text.stack");
     }
     if (_provider_loaded(rt, "obi.provider:text.pango")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_FONT_DB_V0, "obi.provider:text.pango" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TEXT_FONT_DB_V0,
+                                "obi.provider:text.pango");
     }
     if (_provider_loaded(rt, "obi.provider:text.stb")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_RASTER_CACHE_V0, "obi.provider:text.stb" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TEXT_RASTER_CACHE_V0,
+                                "obi.provider:text.stb");
     }
     if (_provider_loaded(rt, "obi.provider:text.icu")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SEGMENTER_V0, "obi.provider:text.icu" };
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_TEXT_SHAPE_V0, "obi.provider:text.icu" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TEXT_SEGMENTER_V0,
+                                "obi.provider:text.icu");
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_TEXT_SHAPE_V0,
+                                "obi.provider:text.icu");
     }
     if (_provider_loaded(rt, "obi.provider:data.magic")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_DATA_FILE_TYPE_V0, "obi.provider:data.magic" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_DATA_FILE_TYPE_V0,
+                                "obi.provider:data.magic");
     }
     if (_provider_loaded(rt, "obi.provider:data.gio")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_DATA_FILE_TYPE_V0, "obi.provider:data.gio" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_DATA_FILE_TYPE_V0,
+                                "obi.provider:data.gio");
     }
     if (_provider_loaded(rt, "obi.provider:media.image")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_MEDIA_IMAGE_CODEC_V0, "obi.provider:media.image" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_MEDIA_IMAGE_CODEC_V0,
+                                "obi.provider:media.image");
     }
     if (_provider_loaded(rt, "obi.provider:media.gdkpixbuf")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_MEDIA_IMAGE_CODEC_V0, "obi.provider:media.gdkpixbuf" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_MEDIA_IMAGE_CODEC_V0,
+                                "obi.provider:media.gdkpixbuf");
     }
     if (_provider_loaded(rt, "obi.provider:gfx.sdl3")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_WINDOW_INPUT_V0, "obi.provider:gfx.sdl3" };
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_RENDER2D_V0, "obi.provider:gfx.sdl3" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_GFX_WINDOW_INPUT_V0,
+                                "obi.provider:gfx.sdl3");
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_GFX_RENDER2D_V0,
+                                "obi.provider:gfx.sdl3");
     }
     if (_provider_loaded(rt, "obi.provider:gfx.raylib")) {
         if (_mix_provider_is_synthetic_visual_media("obi.provider:gfx.raylib")) {
             fprintf(stderr,
                     "mix roadmap: obi.provider:gfx.raylib SKIP (synthetic stand-in; not counted as real overlap coverage)\n");
         } else {
-            tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_WINDOW_INPUT_V0, "obi.provider:gfx.raylib" };
-            tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_RENDER2D_V0, "obi.provider:gfx.raylib" };
+            _mix_append_task_unique(tasks,
+                                    sizeof(tasks) / sizeof(tasks[0]),
+                                    &task_count,
+                                    OBI_PROFILE_GFX_WINDOW_INPUT_V0,
+                                    "obi.provider:gfx.raylib");
+            _mix_append_task_unique(tasks,
+                                    sizeof(tasks) / sizeof(tasks[0]),
+                                    &task_count,
+                                    OBI_PROFILE_GFX_RENDER2D_V0,
+                                    "obi.provider:gfx.raylib");
         }
     }
     if (_provider_loaded(rt, "obi.provider:gfx.gpu.sokol")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_GPU_DEVICE_V0, "obi.provider:gfx.gpu.sokol" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_GFX_GPU_DEVICE_V0,
+                                "obi.provider:gfx.gpu.sokol");
     }
     if (_provider_loaded(rt, "obi.provider:gfx.render3d.raylib")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_RENDER3D_V0, "obi.provider:gfx.render3d.raylib" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_GFX_RENDER3D_V0,
+                                "obi.provider:gfx.render3d.raylib");
     }
     if (_provider_loaded(rt, "obi.provider:gfx.render3d.sokol")) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_GFX_RENDER3D_V0, "obi.provider:gfx.render3d.sokol" };
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_GFX_RENDER3D_V0,
+                                "obi.provider:gfx.render3d.sokol");
     }
-    if (audio_device_provider) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0, audio_device_provider };
+
+    for (size_t i = 0u; i < audio_device_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0,
+                                audio_device_ids[i]);
     }
-    if (audio_mix_provider) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_MEDIA_AUDIO_MIX_V0, audio_mix_provider };
+    for (size_t i = 0u; i < audio_mix_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_MEDIA_AUDIO_MIX_V0,
+                                audio_mix_ids[i]);
     }
-    if (audio_resample_provider) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0, audio_resample_provider };
+    for (size_t i = 0u; i < audio_resample_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0,
+                                audio_resample_ids[i]);
     }
-    if (websocket_provider) {
-        tasks[task_count++] = (obi_mix_task_v0){ OBI_PROFILE_NET_WEBSOCKET_V0, websocket_provider };
+    for (size_t i = 0u; i < websocket_count; i++) {
+        _mix_append_task_unique(tasks,
+                                sizeof(tasks) / sizeof(tasks[0]),
+                                &task_count,
+                                OBI_PROFILE_NET_WEBSOCKET_V0,
+                                websocket_ids[i]);
     }
 
     const uint32_t iterations = 6u;
     for (uint32_t iter = 0u; iter < iterations; iter++) {
         obi_mix_task_v0 order[sizeof(tasks) / sizeof(tasks[0])];
         memcpy(order, tasks, task_count * sizeof(tasks[0]));
-        _mix_shuffle_tasks(order, task_count, 0xA11CE5A9u + iter * 17u);
+        const uint32_t seed = 0xA11CE5A9u + iter * 17u;
+        printf("mix_roadmap_shuffle iter=%u seed=0x%08x tasks=%zu\n", (unsigned)iter, (unsigned)seed, task_count);
+        _mix_shuffle_tasks(order, task_count, seed);
 
         for (size_t i = 0u; i < task_count; i++) {
             int allow_unsupported = _mix_profile_requires_target_gating(order[i].profile_id);
             if (!_exercise_profile_for_provider(rt, order[i].profile_id, order[i].provider_id, allow_unsupported)) {
                 fprintf(stderr,
-                        "mix roadmap: iter=%u profile=%s provider=%s failed\n",
+                        "mix roadmap: cycle=%u iter=%u seed=0x%08x profile=%s provider=%s failed\n",
+                        (unsigned)_mix_current_cycle_index,
                         (unsigned)iter,
+                        (unsigned)seed,
                         order[i].profile_id,
                         order[i].provider_id);
                 return 0;
@@ -10469,6 +10874,1571 @@ static int _exercise_mixed_backend_simultaneous(obi_rt_v0* rt) {
     }
 
     return 1;
+}
+
+static int _exercise_mixed_backend_core_resident_overlap(obi_rt_v0* rt) {
+    static const char* k_cancel_candidates[] = {
+        "obi.provider:core.cancel.atomic",
+        "obi.provider:core.cancel.glib",
+    };
+    static const char* k_pump_candidates[] = {
+        "obi.provider:core.pump.libuv",
+        "obi.provider:core.pump.glib",
+    };
+    static const char* k_waitset_candidates[] = {
+        "obi.provider:core.waitset.libuv",
+        "obi.provider:core.waitset.libevent",
+    };
+    static const char* k_time_candidates[] = {
+        "obi.provider:time.icu",
+        "obi.provider:time.glib",
+    };
+    static const char* k_regex_candidates[] = {
+        "obi.provider:text.regex.pcre2",
+        "obi.provider:text.regex.onig",
+    };
+    static const char* k_serde_candidates[] = {
+        "obi.provider:data.serde.yyjson",
+        "obi.provider:data.serde.jansson",
+        "obi.provider:data.serde.jsmn",
+    };
+
+    enum {
+        OBI_MIX_CORE_MAX = 8
+    };
+
+    typedef struct obi_mix_cancel_slot_v0 {
+        const char* provider_id;
+        obi_cancel_source_v0 source;
+        obi_cancel_token_v0 token;
+        int created;
+        int has_reset;
+        int seen_cancelled;
+        size_t checks;
+    } obi_mix_cancel_slot_v0;
+
+    typedef struct obi_mix_pump_slot_v0 {
+        const char* provider_id;
+        obi_pump_v0 pump;
+        int created;
+        size_t steps;
+    } obi_mix_pump_slot_v0;
+
+    typedef struct obi_mix_waitset_slot_v0 {
+        const char* provider_id;
+        obi_waitset_v0 waitset;
+        int created;
+        size_t queries;
+    } obi_mix_waitset_slot_v0;
+
+    typedef struct obi_mix_time_slot_v0 {
+        const char* provider_id;
+        obi_time_datetime_v0 dt;
+        int created;
+        int64_t running_unix_ns;
+        size_t steps;
+    } obi_mix_time_slot_v0;
+
+    typedef struct obi_mix_regex_slot_v0 {
+        const char* provider_id;
+        obi_text_regex_v0 root;
+        obi_regex_v0 regex;
+        int created;
+        uint64_t scan_offset;
+        size_t hits;
+    } obi_mix_regex_slot_v0;
+
+    typedef struct obi_mix_parser_slot_v0 {
+        const char* provider_id;
+        obi_data_serde_events_v0 root;
+        obi_serde_parser_v0 parser;
+        int created;
+        size_t events_seen;
+    } obi_mix_parser_slot_v0;
+
+    typedef struct obi_mix_emitter_slot_v0 {
+        const char* provider_id;
+        obi_data_serde_emit_v0 root;
+        obi_serde_emitter_v0 emitter;
+        mem_writer_ctx_v0 writer;
+        int created;
+        int finished;
+        size_t seq_index;
+        size_t events_written;
+    } obi_mix_emitter_slot_v0;
+
+    const char* cancel_ids[OBI_MIX_CORE_MAX] = { 0 };
+    const char* pump_ids[OBI_MIX_CORE_MAX] = { 0 };
+    const char* waitset_ids[OBI_MIX_CORE_MAX] = { 0 };
+    const char* time_ids[OBI_MIX_CORE_MAX] = { 0 };
+    const char* regex_ids[OBI_MIX_CORE_MAX] = { 0 };
+    const char* serde_events_ids[OBI_MIX_CORE_MAX] = { 0 };
+    const char* serde_emit_ids[OBI_MIX_CORE_MAX] = { 0 };
+
+    const size_t cancel_count = _collect_loaded_providers_for_profile(rt,
+                                                                      OBI_PROFILE_CORE_CANCEL_V0,
+                                                                      k_cancel_candidates,
+                                                                      sizeof(k_cancel_candidates) / sizeof(k_cancel_candidates[0]),
+                                                                      cancel_ids,
+                                                                      sizeof(cancel_ids) / sizeof(cancel_ids[0]));
+    const size_t pump_count = _collect_loaded_providers_for_profile(rt,
+                                                                    OBI_PROFILE_CORE_PUMP_V0,
+                                                                    k_pump_candidates,
+                                                                    sizeof(k_pump_candidates) / sizeof(k_pump_candidates[0]),
+                                                                    pump_ids,
+                                                                    sizeof(pump_ids) / sizeof(pump_ids[0]));
+    const size_t waitset_count = _collect_loaded_providers_for_profile(rt,
+                                                                       OBI_PROFILE_CORE_WAITSET_V0,
+                                                                       k_waitset_candidates,
+                                                                       sizeof(k_waitset_candidates) / sizeof(k_waitset_candidates[0]),
+                                                                       waitset_ids,
+                                                                       sizeof(waitset_ids) / sizeof(waitset_ids[0]));
+    const size_t time_count = _collect_loaded_providers_for_profile(rt,
+                                                                    OBI_PROFILE_TIME_DATETIME_V0,
+                                                                    k_time_candidates,
+                                                                    sizeof(k_time_candidates) / sizeof(k_time_candidates[0]),
+                                                                    time_ids,
+                                                                    sizeof(time_ids) / sizeof(time_ids[0]));
+    const size_t regex_count = _collect_loaded_providers_for_profile(rt,
+                                                                     OBI_PROFILE_TEXT_REGEX_V0,
+                                                                     k_regex_candidates,
+                                                                     sizeof(k_regex_candidates) / sizeof(k_regex_candidates[0]),
+                                                                     regex_ids,
+                                                                     sizeof(regex_ids) / sizeof(regex_ids[0]));
+    const size_t serde_events_count = _collect_loaded_providers_for_profile(rt,
+                                                                            OBI_PROFILE_DATA_SERDE_EVENTS_V0,
+                                                                            k_serde_candidates,
+                                                                            sizeof(k_serde_candidates) / sizeof(k_serde_candidates[0]),
+                                                                            serde_events_ids,
+                                                                            sizeof(serde_events_ids) / sizeof(serde_events_ids[0]));
+    const size_t serde_emit_count = _collect_loaded_providers_for_profile(rt,
+                                                                          OBI_PROFILE_DATA_SERDE_EMIT_V0,
+                                                                          k_serde_candidates,
+                                                                          sizeof(k_serde_candidates) / sizeof(k_serde_candidates[0]),
+                                                                          serde_emit_ids,
+                                                                          sizeof(serde_emit_ids) / sizeof(serde_emit_ids[0]));
+
+    size_t active_categories = 0u;
+    if (cancel_count > 0u) active_categories++;
+    if (pump_count > 0u) active_categories++;
+    if (waitset_count > 0u) active_categories++;
+    if (time_count > 0u) active_categories++;
+    if (regex_count > 0u) active_categories++;
+    if (serde_events_count > 0u) active_categories++;
+    if (serde_emit_count > 0u) active_categories++;
+
+    if (active_categories < 3u) {
+        fprintf(stderr,
+                "mix core_resident: SKIP active_categories=%zu cancel=%zu pump=%zu waitset=%zu time=%zu regex=%zu serde_events=%zu serde_emit=%zu\n",
+                active_categories,
+                cancel_count,
+                pump_count,
+                waitset_count,
+                time_count,
+                regex_count,
+                serde_events_count,
+                serde_emit_count);
+        return 1;
+    }
+
+    const char* const k_shard = "mix.core_resident";
+    obi_mix_coverage_ledger_v0 coverage;
+    memset(&coverage, 0, sizeof(coverage));
+
+    obi_mix_cancel_slot_v0 cancel_slots[OBI_MIX_CORE_MAX];
+    obi_mix_pump_slot_v0 pump_slots[OBI_MIX_CORE_MAX];
+    obi_mix_waitset_slot_v0 waitset_slots[OBI_MIX_CORE_MAX];
+    obi_mix_time_slot_v0 time_slots[OBI_MIX_CORE_MAX];
+    obi_mix_regex_slot_v0 regex_slots[OBI_MIX_CORE_MAX];
+    obi_mix_parser_slot_v0 parser_slots[OBI_MIX_CORE_MAX];
+    obi_mix_emitter_slot_v0 emitter_slots[OBI_MIX_CORE_MAX];
+    memset(cancel_slots, 0, sizeof(cancel_slots));
+    memset(pump_slots, 0, sizeof(pump_slots));
+    memset(waitset_slots, 0, sizeof(waitset_slots));
+    memset(time_slots, 0, sizeof(time_slots));
+    memset(regex_slots, 0, sizeof(regex_slots));
+    memset(parser_slots, 0, sizeof(parser_slots));
+    memset(emitter_slots, 0, sizeof(emitter_slots));
+
+    for (size_t i = 0u; i < cancel_count; i++) {
+        obi_mix_cancel_slot_v0* slot = &cancel_slots[i];
+        slot->provider_id = cancel_ids[i];
+        obi_cancel_v0 cancel_root;
+        memset(&cancel_root, 0, sizeof(cancel_root));
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_CORE_CANCEL_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &cancel_root,
+                                                          sizeof(cancel_root));
+        if (st != OBI_STATUS_OK || !cancel_root.api || !cancel_root.api->create_source) {
+            fprintf(stderr, "mix core_resident: cancel unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        obi_cancel_source_params_v0 params;
+        memset(&params, 0, sizeof(params));
+        params.struct_size = (uint32_t)sizeof(params);
+        st = cancel_root.api->create_source(cancel_root.ctx, &params, &slot->source);
+        if (st != OBI_STATUS_OK || !slot->source.api || !slot->source.api->token || !slot->source.api->cancel) {
+            fprintf(stderr, "mix core_resident: cancel create_source failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        st = slot->source.api->token(slot->source.ctx, &slot->token);
+        if (st != OBI_STATUS_OK || !slot->token.api || !slot->token.api->is_cancelled) {
+            fprintf(stderr, "mix core_resident: cancel token failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->has_reset = ((slot->source.api->caps & OBI_CANCEL_PROFILE_CAP_RESET) != 0u && slot->source.api->reset) ? 1 : 0;
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_CORE_CANCEL_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < pump_count; i++) {
+        obi_mix_pump_slot_v0* slot = &pump_slots[i];
+        slot->provider_id = pump_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_CORE_PUMP_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->pump,
+                                                          sizeof(slot->pump));
+        if (st != OBI_STATUS_OK || !slot->pump.api || !slot->pump.api->step) {
+            fprintf(stderr, "mix core_resident: pump unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < waitset_count; i++) {
+        obi_mix_waitset_slot_v0* slot = &waitset_slots[i];
+        slot->provider_id = waitset_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_CORE_WAITSET_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->waitset,
+                                                          sizeof(slot->waitset));
+        if (st != OBI_STATUS_OK || !slot->waitset.api || !slot->waitset.api->get_wait_handles) {
+            fprintf(stderr, "mix core_resident: waitset unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_CORE_WAITSET_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < time_count; i++) {
+        obi_mix_time_slot_v0* slot = &time_slots[i];
+        slot->provider_id = time_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_TIME_DATETIME_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->dt,
+                                                          sizeof(slot->dt));
+        if (st != OBI_STATUS_OK || !slot->dt.api || !slot->dt.api->add_ns || !slot->dt.api->diff_ns || !slot->dt.api->cmp) {
+            fprintf(stderr, "mix core_resident: time unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->running_unix_ns = 1719809430400500600ll + (int64_t)i * 1000ll;
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_TIME_DATETIME_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < regex_count; i++) {
+        obi_mix_regex_slot_v0* slot = &regex_slots[i];
+        slot->provider_id = regex_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_TEXT_REGEX_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->root,
+                                                          sizeof(slot->root));
+        if (st != OBI_STATUS_OK || !slot->root.api || !slot->root.api->compile_utf8) {
+            fprintf(stderr, "mix core_resident: regex root unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        st = slot->root.api->compile_utf8(slot->root.ctx,
+                                          (obi_utf8_view_v0){ "(obi|mix)", strlen("(obi|mix)") },
+                                          0u,
+                                          &slot->regex);
+        if (st != OBI_STATUS_OK || !slot->regex.api || !slot->regex.api->find_next_utf8 || !slot->regex.api->destroy) {
+            fprintf(stderr, "mix core_resident: regex compile failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_TEXT_REGEX_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < serde_events_count; i++) {
+        obi_mix_parser_slot_v0* slot = &parser_slots[i];
+        slot->provider_id = serde_events_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_DATA_SERDE_EVENTS_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->root,
+                                                          sizeof(slot->root));
+        if (st != OBI_STATUS_OK || !slot->root.api || !slot->root.api->open_bytes) {
+            fprintf(stderr, "mix core_resident: serde_events unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        const char* doc = "{\"items\":[1,2,3],\"ok\":true}";
+        st = slot->root.api->open_bytes(slot->root.ctx,
+                                        (obi_bytes_view_v0){ (const uint8_t*)doc, strlen(doc) },
+                                        &(obi_serde_open_params_v0){ .struct_size = (uint32_t)sizeof(obi_serde_open_params_v0),
+                                                                     .format_hint = "json" },
+                                        &slot->parser);
+        if (st != OBI_STATUS_OK || !slot->parser.api || !slot->parser.api->next_event || !slot->parser.api->destroy) {
+            fprintf(stderr, "mix core_resident: serde_events open_bytes failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EVENTS_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < serde_emit_count; i++) {
+        obi_mix_emitter_slot_v0* slot = &emitter_slots[i];
+        slot->provider_id = serde_emit_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_DATA_SERDE_EMIT_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->root,
+                                                          sizeof(slot->root));
+        if (st != OBI_STATUS_OK || !slot->root.api || !slot->root.api->open_writer) {
+            fprintf(stderr, "mix core_resident: serde_emit unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+
+        obi_writer_v0 out_writer;
+        memset(&out_writer, 0, sizeof(out_writer));
+        out_writer.api = &MEM_WRITER_API_V0;
+        out_writer.ctx = &slot->writer;
+
+        obi_serde_emit_open_params_v0 open_params;
+        memset(&open_params, 0, sizeof(open_params));
+        open_params.struct_size = (uint32_t)sizeof(open_params);
+        open_params.format_hint = "json";
+        st = slot->root.api->open_writer(slot->root.ctx, out_writer, &open_params, &slot->emitter);
+        if (st != OBI_STATUS_OK || !slot->emitter.api || !slot->emitter.api->emit || !slot->emitter.api->finish || !slot->emitter.api->destroy) {
+            fprintf(stderr, "mix core_resident: serde_emit open_writer failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto core_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EMIT_V0, slot->provider_id);
+    }
+
+    const char* const regex_haystack = "obi mix overlap check: obi providers stay live";
+    const size_t regex_haystack_len = strlen(regex_haystack);
+    const uint32_t iterations = 16u;
+    printf("mix_core_resident_begin iterations=%u\n", (unsigned)iterations);
+    for (uint32_t iter = 0u; iter < iterations; iter++) {
+        uint64_t loop_timeout_ns = 500000ull;
+
+        for (size_t i = 0u; i < waitset_count; i++) {
+            obi_mix_waitset_slot_v0* slot = &waitset_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_CORE_WAITSET_V0, slot->provider_id);
+            size_t need = 0u;
+            uint64_t wait_timeout_ns = UINT64_MAX;
+            obi_status st = slot->waitset.api->get_wait_handles(slot->waitset.ctx, NULL, 0u, &need, &wait_timeout_ns);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: waitset size failed provider=%s iter=%u status=%d\n",
+                        slot->provider_id,
+                        (unsigned)iter,
+                        (int)st);
+                goto core_overlap_fail;
+            }
+            slot->queries++;
+            _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_CORE_WAITSET_V0, slot->provider_id);
+            if (need > 0u) {
+                obi_wait_handle_v0* handles = (obi_wait_handle_v0*)calloc(need, sizeof(*handles));
+                if (!handles) {
+                    fprintf(stderr, "mix core_resident: waitset OOM provider=%s\n", slot->provider_id);
+                    goto core_overlap_fail;
+                }
+                size_t got = need;
+                st = slot->waitset.api->get_wait_handles(slot->waitset.ctx, handles, need, &got, &wait_timeout_ns);
+                free(handles);
+                if (st != OBI_STATUS_OK || got > need) {
+                    fprintf(stderr, "mix core_resident: waitset fill failed provider=%s iter=%u status=%d got=%zu need=%zu\n",
+                            slot->provider_id,
+                            (unsigned)iter,
+                            (int)st,
+                            got,
+                            need);
+                    goto core_overlap_fail;
+                }
+            }
+            if (wait_timeout_ns != UINT64_MAX && wait_timeout_ns < loop_timeout_ns) {
+                loop_timeout_ns = wait_timeout_ns;
+            }
+        }
+
+        for (size_t i = 0u; i < pump_count; i++) {
+            obi_mix_pump_slot_v0* slot = &pump_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, slot->provider_id);
+            obi_status st = slot->pump.api->step(slot->pump.ctx, loop_timeout_ns);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: pump step failed provider=%s iter=%u status=%d\n",
+                        slot->provider_id,
+                        (unsigned)iter,
+                        (int)st);
+                goto core_overlap_fail;
+            }
+            slot->steps++;
+            _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, slot->provider_id);
+        }
+
+        for (size_t i = 0u; i < cancel_count; i++) {
+            obi_mix_cancel_slot_v0* slot = &cancel_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_CORE_CANCEL_V0, slot->provider_id);
+            if (iter == 2u || iter == 12u) {
+                obi_status st = slot->source.api->cancel(slot->source.ctx,
+                                                         (obi_utf8_view_v0){ "mix.core_resident.cancel", strlen("mix.core_resident.cancel") });
+                if (st != OBI_STATUS_OK) {
+                    fprintf(stderr, "mix core_resident: cancel failed provider=%s iter=%u status=%d\n",
+                            slot->provider_id,
+                            (unsigned)iter,
+                            (int)st);
+                    goto core_overlap_fail;
+                }
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_CORE_CANCEL_V0, slot->provider_id);
+            }
+            if (slot->has_reset && iter == 8u) {
+                obi_status st = slot->source.api->reset(slot->source.ctx);
+                if (st != OBI_STATUS_OK) {
+                    fprintf(stderr, "mix core_resident: reset failed provider=%s status=%d\n",
+                            slot->provider_id,
+                            (int)st);
+                    goto core_overlap_fail;
+                }
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_CORE_CANCEL_V0, slot->provider_id);
+            }
+            slot->checks++;
+            if (slot->token.api->is_cancelled(slot->token.ctx)) {
+                slot->seen_cancelled = 1;
+            }
+        }
+
+        for (size_t i = 0u; i < time_count; i++) {
+            obi_mix_time_slot_v0* slot = &time_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_TIME_DATETIME_V0, slot->provider_id);
+            int64_t next_ns = 0ll;
+            int64_t delta = 0ll;
+            int32_t cmp = 0;
+            obi_status st = slot->dt.api->add_ns(slot->dt.ctx, slot->running_unix_ns, 1000000ll, &next_ns);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: time add_ns failed provider=%s status=%d\n",
+                        slot->provider_id,
+                        (int)st);
+                goto core_overlap_fail;
+            }
+            st = slot->dt.api->diff_ns(slot->dt.ctx, next_ns, slot->running_unix_ns, &delta);
+            if (st != OBI_STATUS_OK || delta != 1000000ll) {
+                fprintf(stderr, "mix core_resident: time diff_ns failed provider=%s status=%d delta=%lld\n",
+                        slot->provider_id,
+                        (int)st,
+                        (long long)delta);
+                goto core_overlap_fail;
+            }
+            st = slot->dt.api->cmp(slot->dt.ctx, slot->running_unix_ns, next_ns, &cmp);
+            if (st != OBI_STATUS_OK || cmp >= 0) {
+                fprintf(stderr, "mix core_resident: time cmp failed provider=%s status=%d cmp=%d\n",
+                        slot->provider_id,
+                        (int)st,
+                        (int)cmp);
+                goto core_overlap_fail;
+            }
+            slot->running_unix_ns = next_ns;
+            slot->steps++;
+            _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_TIME_DATETIME_V0, slot->provider_id);
+        }
+
+        for (size_t i = 0u; i < regex_count; i++) {
+            obi_mix_regex_slot_v0* slot = &regex_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_TEXT_REGEX_V0, slot->provider_id);
+            obi_regex_capture_span_v0 spans[8];
+            size_t span_count = 0u;
+            bool matched = false;
+            memset(spans, 0, sizeof(spans));
+            obi_status st = slot->regex.api->find_next_utf8(slot->regex.ctx,
+                                                            (obi_utf8_view_v0){ regex_haystack, regex_haystack_len },
+                                                            slot->scan_offset,
+                                                            0u,
+                                                            spans,
+                                                            sizeof(spans) / sizeof(spans[0]),
+                                                            &span_count,
+                                                            &matched);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: regex find failed provider=%s status=%d\n",
+                        slot->provider_id,
+                        (int)st);
+                goto core_overlap_fail;
+            }
+            if (matched && span_count > 0u && spans[0].matched &&
+                spans[0].byte_end > spans[0].byte_start && spans[0].byte_end <= regex_haystack_len) {
+                slot->hits++;
+                slot->scan_offset = spans[0].byte_end;
+                if (slot->scan_offset >= regex_haystack_len) {
+                    slot->scan_offset = 0u;
+                }
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_TEXT_REGEX_V0, slot->provider_id);
+            } else {
+                slot->scan_offset = 0u;
+            }
+        }
+
+        for (size_t i = 0u; i < serde_events_count; i++) {
+            obi_mix_parser_slot_v0* slot = &parser_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EVENTS_V0, slot->provider_id);
+            obi_serde_event_v0 ev;
+            bool has_event = false;
+            memset(&ev, 0, sizeof(ev));
+            obi_status st = slot->parser.api->next_event(slot->parser.ctx, &ev, &has_event);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: parser next_event failed provider=%s status=%d\n",
+                        slot->provider_id,
+                        (int)st);
+                goto core_overlap_fail;
+            }
+            if (has_event) {
+                slot->events_seen++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EVENTS_V0, slot->provider_id);
+            }
+        }
+
+        for (size_t i = 0u; i < serde_emit_count; i++) {
+            obi_mix_emitter_slot_v0* slot = &emitter_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EMIT_V0, slot->provider_id);
+            if (slot->finished) {
+                continue;
+            }
+
+            static const char* k_emit_key_stage = "stage";
+            static const char* k_emit_value_mode = "mix";
+            static const char* k_emit_key_tick = "tick";
+            static const char* k_emit_value_tick = "42";
+            static const char* k_emit_key_ok = "ok";
+            obi_serde_event_v0 ev;
+            memset(&ev, 0, sizeof(ev));
+            switch (slot->seq_index) {
+                case 0u: ev.kind = OBI_SERDE_EVENT_DOC_START; break;
+                case 1u: ev.kind = OBI_SERDE_EVENT_BEGIN_MAP; break;
+                case 2u:
+                    ev.kind = OBI_SERDE_EVENT_KEY;
+                    ev.text = (obi_utf8_view_v0){ k_emit_key_stage, strlen(k_emit_key_stage) };
+                    break;
+                case 3u:
+                    ev.kind = OBI_SERDE_EVENT_STRING;
+                    ev.text = (obi_utf8_view_v0){ k_emit_value_mode, strlen(k_emit_value_mode) };
+                    break;
+                case 4u:
+                    ev.kind = OBI_SERDE_EVENT_KEY;
+                    ev.text = (obi_utf8_view_v0){ k_emit_key_tick, strlen(k_emit_key_tick) };
+                    break;
+                case 5u:
+                    ev.kind = OBI_SERDE_EVENT_NUMBER;
+                    ev.text = (obi_utf8_view_v0){ k_emit_value_tick, strlen(k_emit_value_tick) };
+                    break;
+                case 6u:
+                    ev.kind = OBI_SERDE_EVENT_KEY;
+                    ev.text = (obi_utf8_view_v0){ k_emit_key_ok, strlen(k_emit_key_ok) };
+                    break;
+                case 7u:
+                    ev.kind = OBI_SERDE_EVENT_BOOL;
+                    ev.bool_value = 1u;
+                    break;
+                case 8u: ev.kind = OBI_SERDE_EVENT_END_MAP; break;
+                case 9u: ev.kind = OBI_SERDE_EVENT_DOC_END; break;
+                default:
+                    if (slot->emitter.api->finish(slot->emitter.ctx) != OBI_STATUS_OK) {
+                        fprintf(stderr, "mix core_resident: emitter finish failed provider=%s\n", slot->provider_id);
+                        goto core_overlap_fail;
+                    }
+                    slot->finished = 1;
+                    _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EMIT_V0, slot->provider_id);
+                    continue;
+            }
+            obi_status st = slot->emitter.api->emit(slot->emitter.ctx, &ev);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: emitter emit failed provider=%s seq=%zu status=%d\n",
+                        slot->provider_id,
+                        slot->seq_index,
+                        (int)st);
+                goto core_overlap_fail;
+            }
+            slot->events_written++;
+            slot->seq_index++;
+            _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EMIT_V0, slot->provider_id);
+        }
+    }
+
+    for (size_t i = 0u; i < cancel_count; i++) {
+        if (cancel_slots[i].created && (!cancel_slots[i].seen_cancelled || cancel_slots[i].checks == 0u)) {
+            fprintf(stderr, "mix core_resident: cancel made no forward progress provider=%s\n", cancel_slots[i].provider_id);
+            goto core_overlap_fail;
+        }
+    }
+    for (size_t i = 0u; i < pump_count; i++) {
+        if (pump_slots[i].created && pump_slots[i].steps == 0u) {
+            fprintf(stderr, "mix core_resident: pump made no forward progress provider=%s\n", pump_slots[i].provider_id);
+            goto core_overlap_fail;
+        }
+    }
+    for (size_t i = 0u; i < waitset_count; i++) {
+        if (waitset_slots[i].created && waitset_slots[i].queries == 0u) {
+            fprintf(stderr, "mix core_resident: waitset made no forward progress provider=%s\n", waitset_slots[i].provider_id);
+            goto core_overlap_fail;
+        }
+    }
+    for (size_t i = 0u; i < time_count; i++) {
+        if (time_slots[i].created && time_slots[i].steps == 0u) {
+            fprintf(stderr, "mix core_resident: time made no forward progress provider=%s\n", time_slots[i].provider_id);
+            goto core_overlap_fail;
+        }
+    }
+    for (size_t i = 0u; i < regex_count; i++) {
+        if (regex_slots[i].created && regex_slots[i].hits == 0u) {
+            fprintf(stderr, "mix core_resident: regex made no forward progress provider=%s\n", regex_slots[i].provider_id);
+            goto core_overlap_fail;
+        }
+    }
+    for (size_t i = 0u; i < serde_events_count; i++) {
+        if (parser_slots[i].created && parser_slots[i].events_seen == 0u) {
+            fprintf(stderr, "mix core_resident: serde_events made no forward progress provider=%s\n", parser_slots[i].provider_id);
+            goto core_overlap_fail;
+        }
+    }
+    for (size_t i = 0u; i < serde_emit_count; i++) {
+        obi_mix_emitter_slot_v0* slot = &emitter_slots[i];
+        if (!slot->created) {
+            continue;
+        }
+        if (!slot->finished) {
+            if (slot->emitter.api->finish(slot->emitter.ctx) != OBI_STATUS_OK) {
+                fprintf(stderr, "mix core_resident: serde_emit finish failed provider=%s\n", slot->provider_id);
+                goto core_overlap_fail;
+            }
+            slot->finished = 1;
+        }
+        if (slot->events_written == 0u || slot->writer.size == 0u) {
+            fprintf(stderr, "mix core_resident: serde_emit produced no output provider=%s\n", slot->provider_id);
+            goto core_overlap_fail;
+        }
+    }
+
+    for (size_t i = 0u; i < serde_emit_count; i++) {
+        obi_mix_emitter_slot_v0* slot = &emitter_slots[i];
+        if (slot->created && slot->emitter.api && slot->emitter.api->destroy) {
+            slot->emitter.api->destroy(slot->emitter.ctx);
+            memset(&slot->emitter, 0, sizeof(slot->emitter));
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EMIT_V0, slot->provider_id);
+        }
+        free(slot->writer.data);
+        slot->writer.data = NULL;
+        slot->writer.size = 0u;
+        slot->writer.cap = 0u;
+    }
+    for (size_t i = 0u; i < serde_events_count; i++) {
+        obi_mix_parser_slot_v0* slot = &parser_slots[i];
+        if (slot->created && slot->parser.api && slot->parser.api->destroy) {
+            slot->parser.api->destroy(slot->parser.ctx);
+            memset(&slot->parser, 0, sizeof(slot->parser));
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_DATA_SERDE_EVENTS_V0, slot->provider_id);
+        }
+    }
+    for (size_t i = 0u; i < regex_count; i++) {
+        obi_mix_regex_slot_v0* slot = &regex_slots[i];
+        if (slot->created && slot->regex.api && slot->regex.api->destroy) {
+            slot->regex.api->destroy(slot->regex.ctx);
+            memset(&slot->regex, 0, sizeof(slot->regex));
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_TEXT_REGEX_V0, slot->provider_id);
+        }
+    }
+    for (size_t i = 0u; i < cancel_count; i++) {
+        obi_mix_cancel_slot_v0* slot = &cancel_slots[i];
+        if (slot->created && slot->token.api && slot->token.api->destroy) {
+            slot->token.api->destroy(slot->token.ctx);
+            memset(&slot->token, 0, sizeof(slot->token));
+        }
+        if (slot->created && slot->source.api && slot->source.api->destroy) {
+            slot->source.api->destroy(slot->source.ctx);
+            memset(&slot->source, 0, sizeof(slot->source));
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_CORE_CANCEL_V0, slot->provider_id);
+        }
+    }
+    for (size_t i = 0u; i < pump_count; i++) {
+        if (pump_slots[i].created) {
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, pump_slots[i].provider_id);
+        }
+    }
+    for (size_t i = 0u; i < waitset_count; i++) {
+        if (waitset_slots[i].created) {
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_CORE_WAITSET_V0, waitset_slots[i].provider_id);
+        }
+    }
+    for (size_t i = 0u; i < time_count; i++) {
+        if (time_slots[i].created) {
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_TIME_DATETIME_V0, time_slots[i].provider_id);
+        }
+    }
+
+    if (!_mix_coverage_require_teardown_complete(&coverage, "core_resident", 0u)) {
+        _mix_coverage_print_summary(&coverage, "core_resident", 0u);
+        return 0;
+    }
+    _mix_coverage_print_summary(&coverage, "core_resident", 0u);
+    return 1;
+
+core_overlap_fail:
+    for (size_t i = 0u; i < serde_emit_count; i++) {
+        if (emitter_slots[i].emitter.api && emitter_slots[i].emitter.api->destroy) {
+            emitter_slots[i].emitter.api->destroy(emitter_slots[i].emitter.ctx);
+            memset(&emitter_slots[i].emitter, 0, sizeof(emitter_slots[i].emitter));
+        }
+        free(emitter_slots[i].writer.data);
+        emitter_slots[i].writer.data = NULL;
+        emitter_slots[i].writer.size = 0u;
+        emitter_slots[i].writer.cap = 0u;
+    }
+    for (size_t i = 0u; i < serde_events_count; i++) {
+        if (parser_slots[i].parser.api && parser_slots[i].parser.api->destroy) {
+            parser_slots[i].parser.api->destroy(parser_slots[i].parser.ctx);
+            memset(&parser_slots[i].parser, 0, sizeof(parser_slots[i].parser));
+        }
+    }
+    for (size_t i = 0u; i < regex_count; i++) {
+        if (regex_slots[i].regex.api && regex_slots[i].regex.api->destroy) {
+            regex_slots[i].regex.api->destroy(regex_slots[i].regex.ctx);
+            memset(&regex_slots[i].regex, 0, sizeof(regex_slots[i].regex));
+        }
+    }
+    for (size_t i = 0u; i < cancel_count; i++) {
+        if (cancel_slots[i].token.api && cancel_slots[i].token.api->destroy) {
+            cancel_slots[i].token.api->destroy(cancel_slots[i].token.ctx);
+            memset(&cancel_slots[i].token, 0, sizeof(cancel_slots[i].token));
+        }
+        if (cancel_slots[i].source.api && cancel_slots[i].source.api->destroy) {
+            cancel_slots[i].source.api->destroy(cancel_slots[i].source.ctx);
+            memset(&cancel_slots[i].source, 0, sizeof(cancel_slots[i].source));
+        }
+    }
+    _mix_coverage_print_summary(&coverage, "core_resident", 0u);
+    return 0;
+}
+
+static int _exercise_mixed_backend_io_resident_overlap(obi_rt_v0* rt) {
+    static const char* k_pump_candidates[] = {
+        "obi.provider:core.pump.libuv",
+        "obi.provider:core.pump.glib",
+    };
+    static const char* k_fs_watch_candidates[] = {
+        "obi.provider:os.fswatch.libuv",
+        "obi.provider:os.fswatch.glib",
+    };
+    static const char* k_ipc_bus_candidates[] = {
+        "obi.provider:ipc.bus.sdbus",
+        "obi.provider:ipc.bus.dbus1",
+    };
+    static const char* k_net_socket_candidates[] = {
+        "obi.provider:net.socket.libuv",
+        "obi.provider:net.socket.native",
+    };
+    static const char* k_http_candidates[] = {
+        "obi.provider:net.http.curl",
+        "obi.provider:net.http.libsoup",
+    };
+
+    enum {
+        OBI_MIX_IO_MAX = 8
+    };
+
+    typedef struct obi_mix_fswatch_slot_v0 {
+        const char* provider_id;
+        obi_fs_watcher_v0 watcher;
+        char watch_path[PATH_MAX];
+        uint64_t watch_id;
+        int watch_file_exists;
+        int created;
+        size_t batches;
+    } obi_mix_fswatch_slot_v0;
+
+    typedef struct obi_mix_pump_slot_v0 {
+        const char* provider_id;
+        obi_pump_v0 pump;
+        int created;
+        size_t steps;
+    } obi_mix_pump_slot_v0;
+
+    typedef struct obi_mix_bus_slot_v0 {
+        const char* provider_id;
+        obi_bus_conn_v0 conn;
+        obi_bus_subscription_v0 sub;
+        obi_ipc_bus_smoke_names_v0 names;
+        int created;
+        int name_acquired;
+        size_t calls;
+        size_t signals_emitted;
+        size_t signals_received;
+    } obi_mix_bus_slot_v0;
+
+    typedef struct obi_mix_http_slot_v0 {
+        const char* provider_id;
+        obi_http_client_v0 http;
+        int created;
+        size_t requests;
+    } obi_mix_http_slot_v0;
+
+#if !defined(_WIN32)
+    typedef struct obi_mix_socket_slot_v0 {
+        const char* provider_id;
+        obi_reader_v0 reader;
+        obi_writer_v0 writer;
+        int listener_fd;
+        int accepted_fd;
+        int created;
+        size_t server_sent;
+        size_t client_read;
+        size_t client_written;
+        size_t server_read;
+    } obi_mix_socket_slot_v0;
+#endif
+
+    const char* fswatch_ids[OBI_MIX_IO_MAX] = { 0 };
+    const char* bus_ids[OBI_MIX_IO_MAX] = { 0 };
+    const char* socket_ids[OBI_MIX_IO_MAX] = { 0 };
+    const char* http_ids[OBI_MIX_IO_MAX] = { 0 };
+    const char* pump_ids[OBI_MIX_IO_MAX] = { 0 };
+
+    const size_t pump_count = _collect_loaded_providers_for_profile(rt,
+                                                                    OBI_PROFILE_CORE_PUMP_V0,
+                                                                    k_pump_candidates,
+                                                                    sizeof(k_pump_candidates) / sizeof(k_pump_candidates[0]),
+                                                                    pump_ids,
+                                                                    sizeof(pump_ids) / sizeof(pump_ids[0]));
+    const size_t fswatch_count = _collect_loaded_providers_for_profile(rt,
+                                                                       OBI_PROFILE_OS_FS_WATCH_V0,
+                                                                       k_fs_watch_candidates,
+                                                                       sizeof(k_fs_watch_candidates) / sizeof(k_fs_watch_candidates[0]),
+                                                                       fswatch_ids,
+                                                                       sizeof(fswatch_ids) / sizeof(fswatch_ids[0]));
+    const size_t bus_count = _collect_loaded_providers_for_profile(rt,
+                                                                   OBI_PROFILE_IPC_BUS_V0,
+                                                                   k_ipc_bus_candidates,
+                                                                   sizeof(k_ipc_bus_candidates) / sizeof(k_ipc_bus_candidates[0]),
+                                                                   bus_ids,
+                                                                   sizeof(bus_ids) / sizeof(bus_ids[0]));
+    const size_t socket_count = _collect_loaded_providers_for_profile(rt,
+                                                                      OBI_PROFILE_NET_SOCKET_V0,
+                                                                      k_net_socket_candidates,
+                                                                      sizeof(k_net_socket_candidates) / sizeof(k_net_socket_candidates[0]),
+                                                                      socket_ids,
+                                                                      sizeof(socket_ids) / sizeof(socket_ids[0]));
+    const size_t http_count = _collect_loaded_providers_for_profile(rt,
+                                                                    OBI_PROFILE_NET_HTTP_CLIENT_V0,
+                                                                    k_http_candidates,
+                                                                    sizeof(k_http_candidates) / sizeof(k_http_candidates[0]),
+                                                                    http_ids,
+                                                                    sizeof(http_ids) / sizeof(http_ids[0]));
+
+    size_t active_categories = 0u;
+    if (pump_count > 0u) active_categories++;
+    if (fswatch_count > 0u) active_categories++;
+    if (bus_count > 0u) active_categories++;
+#if !defined(_WIN32)
+    if (socket_count > 0u) active_categories++;
+#endif
+    if (http_count > 0u) active_categories++;
+    if (active_categories < 2u) {
+        fprintf(stderr,
+                "mix io_resident: SKIP active_categories=%zu pump=%zu fswatch=%zu bus=%zu socket=%zu http=%zu\n",
+                active_categories,
+                pump_count,
+                fswatch_count,
+                bus_count,
+                socket_count,
+                http_count);
+        return 1;
+    }
+
+    const char* const k_shard = "mix.io_resident";
+    obi_mix_coverage_ledger_v0 coverage;
+    memset(&coverage, 0, sizeof(coverage));
+
+    obi_mix_fswatch_slot_v0 fswatch_slots[OBI_MIX_IO_MAX];
+    obi_mix_pump_slot_v0 pump_slots[OBI_MIX_IO_MAX];
+    obi_mix_bus_slot_v0 bus_slots[OBI_MIX_IO_MAX];
+    obi_mix_http_slot_v0 http_slots[OBI_MIX_IO_MAX];
+    memset(fswatch_slots, 0, sizeof(fswatch_slots));
+    memset(pump_slots, 0, sizeof(pump_slots));
+    memset(bus_slots, 0, sizeof(bus_slots));
+    memset(http_slots, 0, sizeof(http_slots));
+
+#if !defined(_WIN32)
+    obi_mix_socket_slot_v0 socket_slots[OBI_MIX_IO_MAX];
+    memset(socket_slots, 0, sizeof(socket_slots));
+    for (size_t i = 0u; i < OBI_MIX_IO_MAX; i++) {
+        socket_slots[i].listener_fd = -1;
+        socket_slots[i].accepted_fd = -1;
+    }
+    const uint8_t socket_server_payload[] = "srv->cli:obi-mix-io-resident";
+    const uint8_t socket_client_payload[] = "cli->srv:obi-mix-io-resident";
+#endif
+
+    for (size_t i = 0u; i < pump_count; i++) {
+        obi_mix_pump_slot_v0* slot = &pump_slots[i];
+        slot->provider_id = pump_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_CORE_PUMP_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->pump,
+                                                          sizeof(slot->pump));
+        if (st != OBI_STATUS_OK || !slot->pump.api || !slot->pump.api->step) {
+            fprintf(stderr, "mix io_resident: pump unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < fswatch_count; i++) {
+        obi_mix_fswatch_slot_v0* slot = &fswatch_slots[i];
+        slot->provider_id = fswatch_ids[i];
+        obi_os_fs_watch_v0 watch_root;
+        memset(&watch_root, 0, sizeof(watch_root));
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_OS_FS_WATCH_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &watch_root,
+                                                          sizeof(watch_root));
+        if (st != OBI_STATUS_OK || !watch_root.api || !watch_root.api->open_watcher) {
+            fprintf(stderr, "mix io_resident: fs_watch unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        _make_smoke_tmp_path("mixwatchr", slot->watch_path, sizeof(slot->watch_path));
+        FILE* f = fopen(slot->watch_path, "wb");
+        if (!f) {
+            fprintf(stderr, "mix io_resident: failed creating watch file provider=%s\n", slot->provider_id);
+            goto io_overlap_fail;
+        }
+        (void)fwrite("0", 1u, 1u, f);
+        fclose(f);
+        slot->watch_file_exists = 1;
+
+        obi_fs_watch_open_params_v0 open_params;
+        memset(&open_params, 0, sizeof(open_params));
+        open_params.struct_size = (uint32_t)sizeof(open_params);
+        st = watch_root.api->open_watcher(watch_root.ctx, &open_params, &slot->watcher);
+        if (st != OBI_STATUS_OK || !slot->watcher.api || !slot->watcher.api->add_watch ||
+            !slot->watcher.api->poll_events || !slot->watcher.api->remove_watch || !slot->watcher.api->destroy) {
+            fprintf(stderr, "mix io_resident: open_watcher failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        obi_fs_watch_add_params_v0 add_params;
+        memset(&add_params, 0, sizeof(add_params));
+        add_params.struct_size = (uint32_t)sizeof(add_params);
+        add_params.path = slot->watch_path;
+        st = slot->watcher.api->add_watch(slot->watcher.ctx, &add_params, &slot->watch_id);
+        if (st != OBI_STATUS_OK || slot->watch_id == 0u) {
+            fprintf(stderr, "mix io_resident: add_watch failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_OS_FS_WATCH_V0, slot->provider_id);
+    }
+
+    for (size_t i = 0u; i < bus_count; i++) {
+        obi_mix_bus_slot_v0* slot = &bus_slots[i];
+        slot->provider_id = bus_ids[i];
+        obi_ipc_bus_v0 bus_root;
+        memset(&bus_root, 0, sizeof(bus_root));
+        _ipc_bus_make_smoke_names(slot->provider_id, "mix", &slot->names);
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_IPC_BUS_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &bus_root,
+                                                          sizeof(bus_root));
+        if (st != OBI_STATUS_OK || !bus_root.api || !bus_root.api->connect) {
+            fprintf(stderr, "mix io_resident: ipc.bus unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        obi_bus_connect_params_v0 conn_params;
+        memset(&conn_params, 0, sizeof(conn_params));
+        conn_params.struct_size = (uint32_t)sizeof(conn_params);
+        conn_params.endpoint_kind = OBI_BUS_ENDPOINT_SESSION;
+        st = bus_root.api->connect(bus_root.ctx, &conn_params, (obi_cancel_token_v0){ 0 }, &slot->conn);
+        if (st != OBI_STATUS_OK || !slot->conn.api || !slot->conn.api->call_json || !slot->conn.api->subscribe_signals ||
+            !slot->conn.api->destroy) {
+            fprintf(stderr, "mix io_resident: bus connect failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        obi_bus_signal_filter_v0 filter;
+        memset(&filter, 0, sizeof(filter));
+        filter.struct_size = (uint32_t)sizeof(filter);
+        filter.member_name = (obi_utf8_view_v0){ "Tick", 4u };
+        st = slot->conn.api->subscribe_signals(slot->conn.ctx, &filter, &slot->sub);
+        if (st != OBI_STATUS_OK || !slot->sub.api || !slot->sub.api->next || !slot->sub.api->destroy) {
+            fprintf(stderr, "mix io_resident: subscribe_signals failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        if ((slot->conn.api->caps & OBI_IPC_BUS_CAP_OWN_NAME) != 0u && slot->conn.api->request_name) {
+            bool acquired = false;
+            st = slot->conn.api->request_name(slot->conn.ctx, _utf8_view_from_cstr(slot->names.bus_name), 0u, &acquired);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix io_resident: request_name failed provider=%s status=%d\n", slot->provider_id, (int)st);
+                goto io_overlap_fail;
+            }
+            slot->name_acquired = acquired ? 1 : 0;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_IPC_BUS_V0, slot->provider_id);
+    }
+
+#if !defined(_WIN32)
+    for (size_t i = 0u; i < socket_count; i++) {
+        obi_mix_socket_slot_v0* slot = &socket_slots[i];
+        slot->provider_id = socket_ids[i];
+        obi_net_socket_v0 net_sock;
+        memset(&net_sock, 0, sizeof(net_sock));
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_NET_SOCKET_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &net_sock,
+                                                          sizeof(net_sock));
+        if (st != OBI_STATUS_OK || !net_sock.api || !net_sock.api->tcp_connect ||
+            (net_sock.api->caps & OBI_SOCKET_CAP_TCP_CONNECT) == 0u) {
+            fprintf(stderr, "mix io_resident: net.socket unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        uint16_t port = 0u;
+        if (!_create_loopback_listener(&slot->listener_fd, &port)) {
+            fprintf(stderr, "mix io_resident: failed creating listener provider=%s\n", slot->provider_id);
+            goto io_overlap_fail;
+        }
+
+        obi_tcp_connect_params_v0 params;
+        memset(&params, 0, sizeof(params));
+        params.struct_size = (uint32_t)sizeof(params);
+        params.timeout_ns = 1000000000ull;
+        st = net_sock.api->tcp_connect(net_sock.ctx, "127.0.0.1", port, &params, &slot->reader, &slot->writer);
+        if (st != OBI_STATUS_OK || !slot->reader.api || !slot->reader.api->read || !slot->reader.api->destroy ||
+            !slot->writer.api || !slot->writer.api->write || !slot->writer.api->destroy) {
+            fprintf(stderr, "mix io_resident: tcp_connect failed provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+
+        slot->accepted_fd = accept(slot->listener_fd, NULL, NULL);
+        if (slot->accepted_fd < 0) {
+            fprintf(stderr, "mix io_resident: accept failed provider=%s\n", slot->provider_id);
+            goto io_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+    }
+#else
+    (void)socket_count;
+#endif
+
+    for (size_t i = 0u; i < http_count; i++) {
+        obi_mix_http_slot_v0* slot = &http_slots[i];
+        slot->provider_id = http_ids[i];
+        obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                          slot->provider_id,
+                                                          OBI_PROFILE_NET_HTTP_CLIENT_V0,
+                                                          OBI_CORE_ABI_MAJOR,
+                                                          &slot->http,
+                                                          sizeof(slot->http));
+        if (st != OBI_STATUS_OK || !slot->http.api || !slot->http.api->request) {
+            fprintf(stderr, "mix io_resident: http unavailable provider=%s status=%d\n", slot->provider_id, (int)st);
+            goto io_overlap_fail;
+        }
+        slot->created = 1;
+        _mix_coverage_mark_object_created(&coverage, k_shard, OBI_PROFILE_NET_HTTP_CLIENT_V0, slot->provider_id);
+    }
+
+    const uint32_t iterations = 40u;
+    printf("mix_io_resident_begin iterations=%u\n", (unsigned)iterations);
+    for (uint32_t iter = 0u; iter < iterations; iter++) {
+        for (size_t i = 0u; i < pump_count; i++) {
+            obi_mix_pump_slot_v0* slot = &pump_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, slot->provider_id);
+            obi_status st = slot->pump.api->step(slot->pump.ctx, 1000000ull);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix io_resident: pump step failed provider=%s iter=%u status=%d\n",
+                        slot->provider_id,
+                        (unsigned)iter,
+                        (int)st);
+                goto io_overlap_fail;
+            }
+            slot->steps++;
+            _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, slot->provider_id);
+        }
+
+        for (size_t i = 0u; i < fswatch_count; i++) {
+            obi_mix_fswatch_slot_v0* slot = &fswatch_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_OS_FS_WATCH_V0, slot->provider_id);
+            if (slot->watch_file_exists && (iter == 1u || iter == 7u || ((iter + (uint32_t)i) % 9u) == 0u)) {
+                FILE* f = fopen(slot->watch_path, "ab");
+                if (!f) {
+                    fprintf(stderr, "mix io_resident: mutate watch file failed provider=%s\n", slot->provider_id);
+                    goto io_overlap_fail;
+                }
+                (void)fwrite("x", 1u, 1u, f);
+                fclose(f);
+            }
+
+            obi_fs_watch_event_batch_v0 batch;
+            bool has_batch = false;
+            memset(&batch, 0, sizeof(batch));
+            obi_status st = slot->watcher.api->poll_events(slot->watcher.ctx, 1000000ull, &batch, &has_batch);
+            if (st != OBI_STATUS_OK) {
+                fprintf(stderr, "mix io_resident: poll_events failed provider=%s iter=%u status=%d\n",
+                        slot->provider_id,
+                        (unsigned)iter,
+                        (int)st);
+                goto io_overlap_fail;
+            }
+            if (has_batch && batch.count > 0u) {
+                slot->batches += batch.count;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_OS_FS_WATCH_V0, slot->provider_id);
+            }
+            if (batch.release) {
+                batch.release(batch.release_ctx, &batch);
+            }
+        }
+
+        for (size_t i = 0u; i < bus_count; i++) {
+            obi_mix_bus_slot_v0* slot = &bus_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_IPC_BUS_V0, slot->provider_id);
+            if (iter == 0u) {
+                obi_bus_call_params_v0 call;
+                memset(&call, 0, sizeof(call));
+                call.struct_size = (uint32_t)sizeof(call);
+                call.destination_name = _utf8_view_from_cstr(slot->names.bus_name);
+                call.object_path = _utf8_view_from_cstr(slot->names.object_path);
+                call.interface_name = _utf8_view_from_cstr(slot->names.interface_name);
+                call.member_name = (obi_utf8_view_v0){ "Ping", 4u };
+                call.args_json = (obi_utf8_view_v0){ "[]", 2u };
+                obi_bus_reply_v0 reply;
+                memset(&reply, 0, sizeof(reply));
+                obi_status st = slot->conn.api->call_json(slot->conn.ctx, &call, (obi_cancel_token_v0){ 0 }, &reply);
+                if (st != OBI_STATUS_OK || !reply.results_json.data || reply.results_json.size == 0u) {
+                    if (reply.release) {
+                        reply.release(reply.release_ctx, &reply);
+                    }
+                    fprintf(stderr, "mix io_resident: call_json failed provider=%s status=%d\n",
+                            slot->provider_id,
+                            (int)st);
+                    goto io_overlap_fail;
+                }
+                if (reply.release) {
+                    reply.release(reply.release_ctx, &reply);
+                }
+                slot->calls++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_IPC_BUS_V0, slot->provider_id);
+            }
+            if ((slot->conn.api->caps & OBI_IPC_BUS_CAP_SIGNAL_EMIT) != 0u &&
+                slot->conn.api->emit_signal_json &&
+                (iter % 2u) == 0u) {
+                obi_bus_signal_emit_v0 sig;
+                memset(&sig, 0, sizeof(sig));
+                sig.struct_size = (uint32_t)sizeof(sig);
+                sig.object_path = _utf8_view_from_cstr(slot->names.object_path);
+                sig.interface_name = _utf8_view_from_cstr(slot->names.interface_name);
+                sig.member_name = (obi_utf8_view_v0){ "Tick", 4u };
+                sig.args_json = (obi_utf8_view_v0){ "[42]", 4u };
+                obi_status st = slot->conn.api->emit_signal_json(slot->conn.ctx, &sig);
+                if (st != OBI_STATUS_OK) {
+                    fprintf(stderr, "mix io_resident: emit_signal_json failed provider=%s status=%d\n",
+                            slot->provider_id,
+                            (int)st);
+                    goto io_overlap_fail;
+                }
+                slot->signals_emitted++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_IPC_BUS_V0, slot->provider_id);
+            }
+            obi_bus_signal_v0 got;
+            bool has_signal = false;
+            memset(&got, 0, sizeof(got));
+            obi_status st = slot->sub.api->next(slot->sub.ctx, 0u, (obi_cancel_token_v0){ 0 }, &got, &has_signal);
+            if (st != OBI_STATUS_OK) {
+                if (got.release) {
+                    got.release(got.release_ctx, &got);
+                }
+                fprintf(stderr, "mix io_resident: sub next failed provider=%s status=%d\n",
+                        slot->provider_id,
+                        (int)st);
+                goto io_overlap_fail;
+            }
+            if (has_signal) {
+                slot->signals_received++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_IPC_BUS_V0, slot->provider_id);
+            }
+            if (got.release) {
+                got.release(got.release_ctx, &got);
+            }
+        }
+
+#if !defined(_WIN32)
+        for (size_t i = 0u; i < socket_count; i++) {
+            obi_mix_socket_slot_v0* slot = &socket_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+            if (slot->server_sent < sizeof(socket_server_payload) - 1u) {
+                ssize_t sent = send(slot->accepted_fd, socket_server_payload + slot->server_sent, 1u, 0);
+                if (sent != 1) {
+                    fprintf(stderr, "mix io_resident: server send failed provider=%s iter=%u\n",
+                            slot->provider_id,
+                            (unsigned)iter);
+                    goto io_overlap_fail;
+                }
+                slot->server_sent++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+            }
+            if (slot->client_read < slot->server_sent) {
+                uint8_t got = 0u;
+                size_t read_n = 0u;
+                obi_status st = slot->reader.api->read(slot->reader.ctx, &got, 1u, &read_n);
+                if (st != OBI_STATUS_OK || read_n != 1u || got != socket_server_payload[slot->client_read]) {
+                    fprintf(stderr, "mix io_resident: client read failed provider=%s iter=%u status=%d read=%zu\n",
+                            slot->provider_id,
+                            (unsigned)iter,
+                            (int)st,
+                            read_n);
+                    goto io_overlap_fail;
+                }
+                slot->client_read++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+            }
+            if (slot->client_written < sizeof(socket_client_payload) - 1u) {
+                size_t written = 0u;
+                obi_status st = slot->writer.api->write(slot->writer.ctx,
+                                                        socket_client_payload + slot->client_written,
+                                                        1u,
+                                                        &written);
+                if (st != OBI_STATUS_OK || written != 1u) {
+                    fprintf(stderr, "mix io_resident: client write failed provider=%s iter=%u status=%d written=%zu\n",
+                            slot->provider_id,
+                            (unsigned)iter,
+                            (int)st,
+                            written);
+                    goto io_overlap_fail;
+                }
+                slot->client_written++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+            }
+            if (slot->server_read < slot->client_written) {
+                uint8_t got = 0u;
+                if (!_fd_recv_all(slot->accepted_fd, &got, 1u) || got != socket_client_payload[slot->server_read]) {
+                    fprintf(stderr, "mix io_resident: server recv failed provider=%s iter=%u\n",
+                            slot->provider_id,
+                            (unsigned)iter);
+                    goto io_overlap_fail;
+                }
+                slot->server_read++;
+                _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+            }
+        }
+#endif
+
+        for (size_t i = 0u; i < http_count; i++) {
+            obi_mix_http_slot_v0* slot = &http_slots[i];
+            if (!slot->created) {
+                continue;
+            }
+            _mix_coverage_mark_tick(&coverage, k_shard, OBI_PROFILE_NET_HTTP_CLIENT_V0, slot->provider_id);
+            if ((iter % 4u) != 0u) {
+                continue;
+            }
+            const char* method = ((iter % 8u) == 0u) ? "GET" : "POST";
+            obi_http_request_v0 req;
+            memset(&req, 0, sizeof(req));
+            req.method = method;
+            req.url = "https://example.invalid/obi-mix-io";
+
+            obi_http_response_v0 resp;
+            memset(&resp, 0, sizeof(resp));
+            obi_status st = slot->http.api->request(slot->http.ctx, &req, &resp);
+            if (st != OBI_STATUS_OK || resp.status_code != 200 || !resp.body.api || !resp.body.api->read) {
+                if (resp.release) {
+                    resp.release(resp.release_ctx, &resp);
+                }
+                fprintf(stderr, "mix io_resident: http request failed provider=%s iter=%u status=%d\n",
+                        slot->provider_id,
+                        (unsigned)iter,
+                        (int)st);
+                goto io_overlap_fail;
+            }
+
+            uint8_t* body = NULL;
+            size_t body_size = 0u;
+            if (!_read_reader_fully(resp.body, &body, &body_size)) {
+                if (resp.release) {
+                    resp.release(resp.release_ctx, &resp);
+                }
+                fprintf(stderr, "mix io_resident: http body read failed provider=%s iter=%u\n",
+                        slot->provider_id,
+                        (unsigned)iter);
+                goto io_overlap_fail;
+            }
+            char expected[160];
+            (void)snprintf(expected, sizeof(expected), "obi_http_ok:%s https://example.invalid/obi-mix-io", method);
+            const int body_ok = (body_size == strlen(expected) && memcmp(body, expected, body_size) == 0);
+            free(body);
+            if (resp.release) {
+                resp.release(resp.release_ctx, &resp);
+            }
+            if (!body_ok) {
+                fprintf(stderr, "mix io_resident: http body mismatch provider=%s iter=%u\n",
+                        slot->provider_id,
+                        (unsigned)iter);
+                goto io_overlap_fail;
+            }
+            slot->requests++;
+            _mix_coverage_mark_progress(&coverage, k_shard, OBI_PROFILE_NET_HTTP_CLIENT_V0, slot->provider_id);
+        }
+    }
+
+    for (size_t i = 0u; i < pump_count; i++) {
+        if (pump_slots[i].created && pump_slots[i].steps == 0u) {
+            fprintf(stderr, "mix io_resident: pump made no forward progress provider=%s\n", pump_slots[i].provider_id);
+            goto io_overlap_fail;
+        }
+    }
+    size_t fswatch_progressed = 0u;
+    for (size_t i = 0u; i < fswatch_count; i++) {
+        obi_mix_fswatch_slot_v0* slot = &fswatch_slots[i];
+        if (!slot->created) {
+            continue;
+        }
+        if (slot->batches > 0u) {
+            fswatch_progressed++;
+            continue;
+        }
+        if (slot->provider_id && strstr(slot->provider_id, "os.fswatch.glib") != NULL) {
+            _mix_coverage_mark_skip(&coverage,
+                                    k_shard,
+                                    OBI_PROFILE_OS_FS_WATCH_V0,
+                                    slot->provider_id,
+                                    "no_events_under_headless_target");
+            continue;
+        }
+        fprintf(stderr, "mix io_resident: fs_watch made no forward progress provider=%s\n", slot->provider_id);
+        goto io_overlap_fail;
+    }
+    if (fswatch_count > 0u && fswatch_progressed == 0u) {
+        fprintf(stderr, "mix io_resident: no fs_watch backend showed forward progress\n");
+        goto io_overlap_fail;
+    }
+    for (size_t i = 0u; i < bus_count; i++) {
+        obi_mix_bus_slot_v0* slot = &bus_slots[i];
+        if (!slot->created) {
+            continue;
+        }
+        if (slot->calls == 0u) {
+            fprintf(stderr, "mix io_resident: ipc.bus made no call progress provider=%s\n", slot->provider_id);
+            goto io_overlap_fail;
+        }
+        if (slot->signals_emitted > 0u && slot->signals_received == 0u) {
+            fprintf(stderr, "mix io_resident: ipc.bus emitted but received none provider=%s\n", slot->provider_id);
+            goto io_overlap_fail;
+        }
+    }
+#if !defined(_WIN32)
+    for (size_t i = 0u; i < socket_count; i++) {
+        obi_mix_socket_slot_v0* slot = &socket_slots[i];
+        if (!slot->created) {
+            continue;
+        }
+        if (slot->client_read != sizeof(socket_server_payload) - 1u ||
+            slot->server_read != sizeof(socket_client_payload) - 1u) {
+            fprintf(stderr,
+                    "mix io_resident: socket progress incomplete provider=%s cli_read=%zu/%zu srv_read=%zu/%zu\n",
+                    slot->provider_id,
+                    slot->client_read,
+                    sizeof(socket_server_payload) - 1u,
+                    slot->server_read,
+                    sizeof(socket_client_payload) - 1u);
+            goto io_overlap_fail;
+        }
+    }
+#endif
+    for (size_t i = 0u; i < http_count; i++) {
+        if (http_slots[i].created && http_slots[i].requests == 0u) {
+            fprintf(stderr, "mix io_resident: http made no forward progress provider=%s\n", http_slots[i].provider_id);
+            goto io_overlap_fail;
+        }
+    }
+
+    for (size_t i = 0u; i < bus_count; i++) {
+        obi_mix_bus_slot_v0* slot = &bus_slots[i];
+        if (slot->created) {
+            if (slot->name_acquired && slot->conn.api && slot->conn.api->release_name) {
+                (void)slot->conn.api->release_name(slot->conn.ctx, _utf8_view_from_cstr(slot->names.bus_name));
+            }
+            if (slot->sub.api && slot->sub.api->destroy) {
+                slot->sub.api->destroy(slot->sub.ctx);
+                memset(&slot->sub, 0, sizeof(slot->sub));
+            }
+            if (slot->conn.api && slot->conn.api->destroy) {
+                slot->conn.api->destroy(slot->conn.ctx);
+                memset(&slot->conn, 0, sizeof(slot->conn));
+            }
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_IPC_BUS_V0, slot->provider_id);
+        }
+    }
+    for (size_t i = 0u; i < fswatch_count; i++) {
+        obi_mix_fswatch_slot_v0* slot = &fswatch_slots[i];
+        if (slot->created) {
+            if (slot->watch_id != 0u && slot->watcher.api && slot->watcher.api->remove_watch) {
+                (void)slot->watcher.api->remove_watch(slot->watcher.ctx, slot->watch_id);
+            }
+            if (slot->watcher.api && slot->watcher.api->destroy) {
+                slot->watcher.api->destroy(slot->watcher.ctx);
+                memset(&slot->watcher, 0, sizeof(slot->watcher));
+            }
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_OS_FS_WATCH_V0, slot->provider_id);
+        }
+        if (slot->watch_path[0] != '\0') {
+            (void)remove(slot->watch_path);
+        }
+    }
+#if !defined(_WIN32)
+    for (size_t i = 0u; i < socket_count; i++) {
+        obi_mix_socket_slot_v0* slot = &socket_slots[i];
+        if (slot->created) {
+            if (slot->reader.api && slot->reader.api->destroy) {
+                slot->reader.api->destroy(slot->reader.ctx);
+                memset(&slot->reader, 0, sizeof(slot->reader));
+            }
+            if (slot->writer.api && slot->writer.api->destroy) {
+                slot->writer.api->destroy(slot->writer.ctx);
+                memset(&slot->writer, 0, sizeof(slot->writer));
+            }
+            if (slot->accepted_fd >= 0) {
+                (void)close(slot->accepted_fd);
+                slot->accepted_fd = -1;
+            }
+            if (slot->listener_fd >= 0) {
+                (void)close(slot->listener_fd);
+                slot->listener_fd = -1;
+            }
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_NET_SOCKET_V0, slot->provider_id);
+        }
+    }
+#endif
+    for (size_t i = 0u; i < http_count; i++) {
+        if (http_slots[i].created) {
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_NET_HTTP_CLIENT_V0, http_slots[i].provider_id);
+        }
+    }
+    for (size_t i = 0u; i < pump_count; i++) {
+        if (pump_slots[i].created) {
+            _mix_coverage_mark_teardown(&coverage, k_shard, OBI_PROFILE_CORE_PUMP_V0, pump_slots[i].provider_id);
+        }
+    }
+
+    if (!_mix_coverage_require_teardown_complete(&coverage, "io_resident", 0u)) {
+        _mix_coverage_print_summary(&coverage, "io_resident", 0u);
+        return 0;
+    }
+    _mix_coverage_print_summary(&coverage, "io_resident", 0u);
+    return 1;
+
+io_overlap_fail:
+    for (size_t i = 0u; i < bus_count; i++) {
+        obi_mix_bus_slot_v0* slot = &bus_slots[i];
+        if (slot->sub.api && slot->sub.api->destroy) {
+            slot->sub.api->destroy(slot->sub.ctx);
+            memset(&slot->sub, 0, sizeof(slot->sub));
+        }
+        if (slot->name_acquired && slot->conn.api && slot->conn.api->release_name) {
+            (void)slot->conn.api->release_name(slot->conn.ctx, _utf8_view_from_cstr(slot->names.bus_name));
+        }
+        if (slot->conn.api && slot->conn.api->destroy) {
+            slot->conn.api->destroy(slot->conn.ctx);
+            memset(&slot->conn, 0, sizeof(slot->conn));
+        }
+    }
+    for (size_t i = 0u; i < fswatch_count; i++) {
+        obi_mix_fswatch_slot_v0* slot = &fswatch_slots[i];
+        if (slot->watch_id != 0u && slot->watcher.api && slot->watcher.api->remove_watch) {
+            (void)slot->watcher.api->remove_watch(slot->watcher.ctx, slot->watch_id);
+        }
+        if (slot->watcher.api && slot->watcher.api->destroy) {
+            slot->watcher.api->destroy(slot->watcher.ctx);
+            memset(&slot->watcher, 0, sizeof(slot->watcher));
+        }
+        if (slot->watch_path[0] != '\0') {
+            (void)remove(slot->watch_path);
+        }
+    }
+#if !defined(_WIN32)
+    for (size_t i = 0u; i < socket_count; i++) {
+        obi_mix_socket_slot_v0* slot = &socket_slots[i];
+        if (slot->reader.api && slot->reader.api->destroy) {
+            slot->reader.api->destroy(slot->reader.ctx);
+            memset(&slot->reader, 0, sizeof(slot->reader));
+        }
+        if (slot->writer.api && slot->writer.api->destroy) {
+            slot->writer.api->destroy(slot->writer.ctx);
+            memset(&slot->writer, 0, sizeof(slot->writer));
+        }
+        if (slot->accepted_fd >= 0) {
+            (void)close(slot->accepted_fd);
+            slot->accepted_fd = -1;
+        }
+        if (slot->listener_fd >= 0) {
+            (void)close(slot->listener_fd);
+            slot->listener_fd = -1;
+        }
+    }
+#endif
+    _mix_coverage_print_summary(&coverage, "io_resident", 0u);
+    return 0;
 }
 
 static int _exercise_mixed_backend_overlap(obi_rt_v0* rt) {
@@ -11654,6 +13624,128 @@ overlap_fail:
     return 0;
 }
 
+static int _exercise_mixed_backend_pairwise(obi_rt_v0* rt) {
+    typedef struct obi_mix_pair_case_v0 {
+        const char* profile_id;
+        const char* provider_a;
+        const char* provider_b;
+        int allow_unsupported;
+    } obi_mix_pair_case_v0;
+
+    static const obi_mix_pair_case_v0 k_cases[] = {
+        { OBI_PROFILE_CORE_CANCEL_V0, "obi.provider:core.cancel.atomic", "obi.provider:core.cancel.glib", 0 },
+        { OBI_PROFILE_CORE_PUMP_V0, "obi.provider:core.pump.libuv", "obi.provider:core.pump.glib", 0 },
+        { OBI_PROFILE_CORE_WAITSET_V0, "obi.provider:core.waitset.libuv", "obi.provider:core.waitset.libevent", 0 },
+        { OBI_PROFILE_OS_FS_WATCH_V0, "obi.provider:os.fswatch.libuv", "obi.provider:os.fswatch.glib", 0 },
+        { OBI_PROFILE_IPC_BUS_V0, "obi.provider:ipc.bus.sdbus", "obi.provider:ipc.bus.dbus1", 0 },
+        { OBI_PROFILE_NET_SOCKET_V0, "obi.provider:net.socket.libuv", "obi.provider:net.socket.native", 0 },
+        { OBI_PROFILE_NET_HTTP_CLIENT_V0, "obi.provider:net.http.curl", "obi.provider:net.http.libsoup", 0 },
+        { OBI_PROFILE_TIME_DATETIME_V0, "obi.provider:time.icu", "obi.provider:time.glib", 0 },
+        { OBI_PROFILE_TEXT_REGEX_V0, "obi.provider:text.regex.pcre2", "obi.provider:text.regex.onig", 0 },
+        { OBI_PROFILE_DATA_SERDE_EVENTS_V0, "obi.provider:data.serde.yyjson", "obi.provider:data.serde.jansson", 0 },
+        { OBI_PROFILE_DATA_SERDE_EVENTS_V0, "obi.provider:data.serde.yyjson", "obi.provider:data.serde.jsmn", 0 },
+        { OBI_PROFILE_DATA_SERDE_EVENTS_V0, "obi.provider:data.serde.jansson", "obi.provider:data.serde.jsmn", 0 },
+        { OBI_PROFILE_PHYS_WORLD2D_V0, "obi.provider:phys2d.box2d", "obi.provider:phys2d.chipmunk", 0 },
+        { OBI_PROFILE_PHYS_WORLD3D_V0, "obi.provider:phys3d.ode", "obi.provider:phys3d.bullet", 0 },
+        { OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0, "obi.provider:media.audio.sdl3", "obi.provider:media.audio.portaudio", 1 },
+        { OBI_PROFILE_MEDIA_AUDIO_MIX_V0, "obi.provider:media.audio.miniaudio", "obi.provider:media.audio.openal", 0 },
+        { OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0, "obi.provider:media.audio_resample.libsamplerate", "obi.provider:media.audio_resample.speexdsp", 0 },
+        { OBI_PROFILE_MEDIA_DEMUX_V0, "obi.provider:media.ffmpeg", "obi.provider:media.gstreamer", 0 },
+        { OBI_PROFILE_MEDIA_VIDEO_SCALE_CONVERT_V0, "obi.provider:media.scale.ffmpeg", "obi.provider:media.scale.libyuv", 0 },
+        { OBI_PROFILE_MEDIA_IMAGE_CODEC_V0, "obi.provider:media.image", "obi.provider:media.gdkpixbuf", 0 },
+        { OBI_PROFILE_MEDIA_IMAGE_CODEC_V0, "obi.provider:media.image", "obi.provider:media.stb", 0 },
+        { OBI_PROFILE_MEDIA_IMAGE_CODEC_V0, "obi.provider:media.gdkpixbuf", "obi.provider:media.stb", 0 },
+        { OBI_PROFILE_GFX_RENDER2D_V0, "obi.provider:gfx.sdl3", "obi.provider:gfx.raylib", 1 },
+        { OBI_PROFILE_GFX_GPU_DEVICE_V0, "obi.provider:gfx.gpu.sokol", "obi.provider:gfx.sdl3", 1 },
+        { OBI_PROFILE_GFX_RENDER3D_V0, "obi.provider:gfx.render3d.raylib", "obi.provider:gfx.render3d.sokol", 1 },
+        { OBI_PROFILE_DB_KV_V0, "obi.provider:db.kv.sqlite", "obi.provider:db.kv.lmdb", 0 },
+        { OBI_PROFILE_DB_SQL_V0, "obi.provider:db.sql.sqlite", "obi.provider:db.sql.postgres", 0 },
+        { OBI_PROFILE_TEXT_FONT_DB_V0, "obi.provider:text.pango", "obi.provider:text.stack", 0 },
+        { OBI_PROFILE_TEXT_RASTER_CACHE_V0, "obi.provider:text.stb", "obi.provider:text.stack", 0 },
+        { OBI_PROFILE_TEXT_SHAPE_V0, "obi.provider:text.icu", "obi.provider:text.stack", 0 },
+    };
+
+    if (!rt) {
+        return 0;
+    }
+
+    size_t available_pairs = 0u;
+    size_t considered = 0u;
+    size_t exercised = 0u;
+    for (size_t i = 0u; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        const obi_mix_pair_case_v0* pair = &k_cases[i];
+        if (!_provider_loaded(rt, pair->provider_a) || !_provider_loaded(rt, pair->provider_b)) {
+            continue;
+        }
+        available_pairs++;
+        if (!_provider_has_profile(rt, pair->provider_a, pair->profile_id) ||
+            !_provider_has_profile(rt, pair->provider_b, pair->profile_id)) {
+            fprintf(stderr,
+                    "mix pairwise: loaded providers missing required profile=%s a=%s b=%s\n",
+                    pair->profile_id,
+                    pair->provider_a,
+                    pair->provider_b);
+            return 0;
+        }
+        considered++;
+
+        printf("mix_pairwise_case[%zu]=profile:%s a:%s b:%s\n",
+               considered - 1u,
+               pair->profile_id,
+               pair->provider_a,
+               pair->provider_b);
+
+        for (uint32_t iter = 0u; iter < 4u; iter++) {
+            const uint32_t seed = 0xC01DCAFEu + (uint32_t)i * 31u + iter * 7u;
+            const int flip = (seed & 1u) ? 1 : 0;
+            const char* first = flip ? pair->provider_b : pair->provider_a;
+            const char* second = flip ? pair->provider_a : pair->provider_b;
+            printf("mix_pairwise_iter case=%zu iter=%u seed=0x%08x first=%s second=%s\n",
+                   considered - 1u,
+                   (unsigned)iter,
+                   (unsigned)seed,
+                   first,
+                   second);
+
+            if (!_exercise_profile_for_provider(rt, pair->profile_id, first, pair->allow_unsupported)) {
+                fprintf(stderr,
+                        "mix pairwise: first failed profile=%s provider=%s case=%zu iter=%u\n",
+                        pair->profile_id,
+                        first,
+                        considered - 1u,
+                        (unsigned)iter);
+                return 0;
+            }
+            if (!_exercise_profile_for_provider(rt, pair->profile_id, second, pair->allow_unsupported)) {
+                fprintf(stderr,
+                        "mix pairwise: second failed profile=%s provider=%s case=%zu iter=%u\n",
+                        pair->profile_id,
+                        second,
+                        considered - 1u,
+                        (unsigned)iter);
+                return 0;
+            }
+        }
+
+        exercised++;
+    }
+
+    if (available_pairs == 0u || considered == 0u || exercised == 0u) {
+        fprintf(stderr,
+                "mix pairwise: no same-profile pairs exercised available=%zu considered=%zu exercised=%zu\n",
+                available_pairs,
+                considered,
+                exercised);
+        return 0;
+    }
+
+    printf("mix_pairwise_summary available=%zu considered=%zu exercised=%zu\n",
+           available_pairs,
+           considered,
+           exercised);
+    return 1;
+}
+
 static uint32_t _mix_rand_next(uint32_t* state) {
     uint32_t x = *state;
     x ^= x << 13;
@@ -11689,6 +13781,16 @@ static int _exercise_mixed_backend_interleave(obi_rt_v0* rt, const char* time_in
         fprintf(stderr, "mix roadmap: skipping roadmap-only shuffle (required roadmap providers not loaded)\n");
     }
 
+    if (!_exercise_mixed_backend_core_resident_overlap(rt)) {
+        fprintf(stderr, "mix exercise failed: core resident overlap scenario failed\n");
+        return 0;
+    }
+
+    if (!_exercise_mixed_backend_io_resident_overlap(rt)) {
+        fprintf(stderr, "mix exercise failed: io resident overlap scenario failed\n");
+        return 0;
+    }
+
     if (!_exercise_mixed_backend_overlap(rt)) {
         fprintf(stderr, "mix exercise failed: overlap loop scenario failed\n");
         return 0;
@@ -11710,6 +13812,8 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
         fprintf(stderr, "mix lifecycle: cycle=%u rt_create failed (status=%d)\n", (unsigned)cycle_index, (int)st);
         return 0;
     }
+    _mix_current_cycle_index = cycle_index;
+    printf("mix_cycle_begin=%u load_mode=%u\n", (unsigned)cycle_index, (unsigned)(cycle_index % 3u));
 
     for (int i = 0; i < provider_count; i++) {
         int idx = i;
@@ -11734,6 +13838,7 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
                     (int)st,
                     obi_rt_last_error_utf8(rt));
             obi_rt_destroy(rt);
+            _mix_current_cycle_index = UINT32_MAX;
             return 0;
         }
     }
@@ -11748,6 +13853,7 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
                 loaded_count,
                 provider_count);
         obi_rt_destroy(rt);
+        _mix_current_cycle_index = UINT32_MAX;
         return 0;
     }
 
@@ -11761,6 +13867,7 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
                     i,
                     (int)st);
             obi_rt_destroy(rt);
+            _mix_current_cycle_index = UINT32_MAX;
             return 0;
         }
         printf("loaded[cycle=%u][%zu]=%s\n", (unsigned)cycle_index, i, provider_id);
@@ -11769,10 +13876,21 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
     if (!_exercise_mixed_backend_interleave(rt, NULL)) {
         fprintf(stderr, "mix lifecycle: cycle=%u interleave exercise failed\n", (unsigned)cycle_index);
         obi_rt_destroy(rt);
+        _mix_current_cycle_index = UINT32_MAX;
         return 0;
     }
 
+    if (cycle_index == 0u) {
+        if (!_exercise_mixed_backend_mix_eligibility_sweep(rt)) {
+            fprintf(stderr, "mix lifecycle: cycle=%u provider eligibility sweep failed\n", (unsigned)cycle_index);
+            obi_rt_destroy(rt);
+            _mix_current_cycle_index = UINT32_MAX;
+            return 0;
+        }
+    }
+
     obi_rt_destroy(rt);
+    _mix_current_cycle_index = UINT32_MAX;
     return 1;
 }
 
@@ -11792,6 +13910,1994 @@ static int _exercise_mixed_backend_lifecycle(const char* const* provider_paths, 
     return 1;
 }
 
+static int _exercise_mixed_backend_pairwise_once(const char* const* provider_paths, int provider_count) {
+    if (!provider_paths || provider_count <= 0) {
+        return 0;
+    }
+
+    obi_rt_v0* rt = NULL;
+    obi_status st = obi_rt_create(NULL, &rt);
+    if (st != OBI_STATUS_OK || !rt) {
+        fprintf(stderr, "mix pairwise: rt_create failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    for (int i = 0; i < provider_count; i++) {
+        st = obi_rt_load_provider_path(rt, provider_paths[i]);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr,
+                    "mix pairwise: load failed path=%s status=%d err=%s\n",
+                    provider_paths[i],
+                    (int)st,
+                    obi_rt_last_error_utf8(rt));
+            obi_rt_destroy(rt);
+            return 0;
+        }
+    }
+
+    size_t loaded_count = 0u;
+    st = obi_rt_provider_count(rt, &loaded_count);
+    if (st != OBI_STATUS_OK || loaded_count != (size_t)provider_count) {
+        fprintf(stderr,
+                "mix pairwise: provider_count mismatch status=%d got=%zu expected=%d\n",
+                (int)st,
+                loaded_count,
+                provider_count);
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    for (size_t i = 0u; i < loaded_count; i++) {
+        const char* provider_id = NULL;
+        st = obi_rt_provider_id(rt, i, &provider_id);
+        if (st != OBI_STATUS_OK || !provider_id) {
+            fprintf(stderr, "mix pairwise: provider_id failed index=%zu status=%d\n", i, (int)st);
+            obi_rt_destroy(rt);
+            return 0;
+        }
+        printf("pairwise_loaded[%zu]=%s\n", i, provider_id);
+    }
+
+    const int ok = _exercise_mixed_backend_pairwise(rt);
+    obi_rt_destroy(rt);
+    return ok;
+}
+
+static void _mix_collect_profile_tasks_from_candidates(obi_rt_v0* rt,
+                                                       const char* profile_id,
+                                                       const char* const* candidates,
+                                                       size_t candidate_count,
+                                                       obi_mix_task_v0* tasks,
+                                                       size_t task_cap,
+                                                       size_t* task_count) {
+    const char* provider_ids[16] = { 0 };
+    const size_t found = _collect_loaded_providers_for_profile(rt,
+                                                                profile_id,
+                                                                candidates,
+                                                                candidate_count,
+                                                                provider_ids,
+                                                                sizeof(provider_ids) / sizeof(provider_ids[0]));
+    for (size_t i = 0u; i < found; i++) {
+        _mix_append_task_unique(tasks, task_cap, task_count, profile_id, provider_ids[i]);
+    }
+}
+
+static int _mix_load_runtime_paths_selected(obi_rt_v0* rt,
+                                            const char* const* provider_paths,
+                                            int provider_count,
+                                            int subset_mode,
+                                            const char* label) {
+    if (!rt || !provider_paths || provider_count <= 0 || !label) {
+        return 0;
+    }
+
+    int selected_count = 0;
+    for (int i = 0; i < provider_count; i++) {
+        int include = 1;
+        if (subset_mode != 0) {
+            include = (i == 0) || ((i % 3) == 2);
+        }
+        if (!include) {
+            continue;
+        }
+
+        obi_status st = obi_rt_load_provider_path(rt, provider_paths[i]);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr,
+                    "mix %s: load failed path=%s status=%d err=%s\n",
+                    label,
+                    provider_paths[i],
+                    (int)st,
+                    obi_rt_last_error_utf8(rt));
+            return 0;
+        }
+        selected_count++;
+    }
+
+    size_t loaded_count = 0u;
+    obi_status st = obi_rt_provider_count(rt, &loaded_count);
+    if (st != OBI_STATUS_OK || loaded_count != (size_t)selected_count) {
+        fprintf(stderr,
+                "mix %s: provider_count mismatch status=%d got=%zu expected=%d\n",
+                label,
+                (int)st,
+                loaded_count,
+                selected_count);
+        return 0;
+    }
+
+    for (size_t i = 0u; i < loaded_count; i++) {
+        const char* provider_id = NULL;
+        st = obi_rt_provider_id(rt, i, &provider_id);
+        if (st != OBI_STATUS_OK || !provider_id) {
+            fprintf(stderr, "mix %s: provider_id failed index=%zu status=%d\n", label, i, (int)st);
+            return 0;
+        }
+        printf("mix_%s_loaded[%zu]=%s\n", label, i, provider_id);
+    }
+
+    return 1;
+}
+
+static int _mix_dual_runtime_path_allowed(const char* provider_path) {
+    if (!provider_path) {
+        return 0;
+    }
+
+    return strstr(provider_path, "provider_core_") != NULL ||
+           strstr(provider_path, "provider_gfx_sdl3") != NULL ||
+           strstr(provider_path, "provider_gfx_raylib") != NULL ||
+           strstr(provider_path, "provider_gfx_gpu_sokol") != NULL ||
+           strstr(provider_path, "provider_gfx_render3d_") != NULL ||
+           strstr(provider_path, "provider_media_audio_sdl3") != NULL ||
+           strstr(provider_path, "provider_os_fswatch_") != NULL ||
+           strstr(provider_path, "provider_ipc_bus_") != NULL ||
+           strstr(provider_path, "provider_net_socket_") != NULL ||
+           strstr(provider_path, "provider_net_http_") != NULL ||
+           strstr(provider_path, "provider_time_") != NULL ||
+           strstr(provider_path, "provider_text_regex_") != NULL ||
+           strstr(provider_path, "provider_text_pango") != NULL ||
+           strstr(provider_path, "provider_text_stack") != NULL ||
+           strstr(provider_path, "provider_data_serde_") != NULL ||
+           strstr(provider_path, "provider_data_gio") != NULL ||
+           strstr(provider_path, "provider_data_native") != NULL ||
+           strstr(provider_path, "provider_media_ffmpeg") != NULL ||
+           strstr(provider_path, "provider_media_gstreamer") != NULL;
+}
+
+static int _mix_compare_runtime_provider_sets(obi_rt_v0* rt_a,
+                                              obi_rt_v0* rt_b,
+                                              size_t* overlap_count,
+                                              size_t* only_a_count,
+                                              size_t* only_b_count) {
+    if (!rt_a || !rt_b || !overlap_count || !only_a_count || !only_b_count) {
+        return 0;
+    }
+
+    *overlap_count = 0u;
+    *only_a_count = 0u;
+    *only_b_count = 0u;
+
+    size_t count_a = 0u;
+    size_t count_b = 0u;
+    if (obi_rt_provider_count(rt_a, &count_a) != OBI_STATUS_OK ||
+        obi_rt_provider_count(rt_b, &count_b) != OBI_STATUS_OK) {
+        return 0;
+    }
+
+    for (size_t i = 0u; i < count_a; i++) {
+        const char* provider_id = NULL;
+        if (obi_rt_provider_id(rt_a, i, &provider_id) != OBI_STATUS_OK || !provider_id) {
+            continue;
+        }
+        if (_provider_loaded(rt_b, provider_id)) {
+            (*overlap_count)++;
+        } else {
+            (*only_a_count)++;
+        }
+    }
+
+    for (size_t i = 0u; i < count_b; i++) {
+        const char* provider_id = NULL;
+        if (obi_rt_provider_id(rt_b, i, &provider_id) != OBI_STATUS_OK || !provider_id) {
+            continue;
+        }
+        if (!_provider_loaded(rt_a, provider_id)) {
+            (*only_b_count)++;
+        }
+    }
+
+    return 1;
+}
+
+static size_t _mix_collect_dual_runtime_tasks(obi_rt_v0* rt, obi_mix_task_v0* tasks, size_t task_cap) {
+    static const char* k_cancel_candidates[] = { "obi.provider:core.cancel.atomic", "obi.provider:core.cancel.glib" };
+    static const char* k_pump_candidates[] = { "obi.provider:core.pump.libuv", "obi.provider:core.pump.glib" };
+    static const char* k_waitset_candidates[] = { "obi.provider:core.waitset.libuv", "obi.provider:core.waitset.libevent" };
+    static const char* k_fswatch_candidates[] = { "obi.provider:os.fswatch.libuv", "obi.provider:os.fswatch.glib" };
+    static const char* k_ipc_candidates[] = { "obi.provider:ipc.bus.sdbus", "obi.provider:ipc.bus.dbus1" };
+    static const char* k_socket_candidates[] = { "obi.provider:net.socket.libuv", "obi.provider:net.socket.native" };
+    static const char* k_http_candidates[] = { "obi.provider:net.http.curl", "obi.provider:net.http.libsoup" };
+    static const char* k_time_candidates[] = { "obi.provider:time.icu", "obi.provider:time.glib" };
+    static const char* k_regex_candidates[] = { "obi.provider:text.regex.pcre2", "obi.provider:text.regex.onig" };
+    static const char* k_serde_candidates[] = {
+        "obi.provider:data.serde.yyjson",
+        "obi.provider:data.serde.jansson",
+        "obi.provider:data.serde.jsmn",
+        "obi.provider:data.gio",
+        "obi.provider:data.inhouse",
+    };
+    static const char* k_media_demux_candidates[] = { "obi.provider:media.ffmpeg", "obi.provider:media.gstreamer" };
+    static const char* k_fontdb_candidates[] = { "obi.provider:text.pango", "obi.provider:text.stack" };
+    static const char* k_gfx_window_candidates[] = { "obi.provider:gfx.sdl3", "obi.provider:gfx.raylib" };
+    static const char* k_gfx_render2d_candidates[] = { "obi.provider:gfx.sdl3", "obi.provider:gfx.raylib" };
+    static const char* k_gfx_gpu_candidates[] = { "obi.provider:gfx.sdl3", "obi.provider:gfx.gpu.sokol" };
+    static const char* k_gfx_render3d_candidates[] = { "obi.provider:gfx.render3d.raylib", "obi.provider:gfx.render3d.sokol" };
+    static const char* k_media_audio_sdl3_candidates[] = { "obi.provider:media.audio.sdl3" };
+
+    size_t task_count = 0u;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_CORE_CANCEL_V0,
+                                               k_cancel_candidates,
+                                               sizeof(k_cancel_candidates) / sizeof(k_cancel_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_CORE_PUMP_V0,
+                                               k_pump_candidates,
+                                               sizeof(k_pump_candidates) / sizeof(k_pump_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_CORE_WAITSET_V0,
+                                               k_waitset_candidates,
+                                               sizeof(k_waitset_candidates) / sizeof(k_waitset_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_OS_FS_WATCH_V0,
+                                               k_fswatch_candidates,
+                                               sizeof(k_fswatch_candidates) / sizeof(k_fswatch_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_IPC_BUS_V0,
+                                               k_ipc_candidates,
+                                               sizeof(k_ipc_candidates) / sizeof(k_ipc_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_NET_SOCKET_V0,
+                                               k_socket_candidates,
+                                               sizeof(k_socket_candidates) / sizeof(k_socket_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_NET_HTTP_CLIENT_V0,
+                                               k_http_candidates,
+                                               sizeof(k_http_candidates) / sizeof(k_http_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_TIME_DATETIME_V0,
+                                               k_time_candidates,
+                                               sizeof(k_time_candidates) / sizeof(k_time_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_TEXT_REGEX_V0,
+                                               k_regex_candidates,
+                                               sizeof(k_regex_candidates) / sizeof(k_regex_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_DATA_SERDE_EVENTS_V0,
+                                               k_serde_candidates,
+                                               sizeof(k_serde_candidates) / sizeof(k_serde_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_DATA_SERDE_EMIT_V0,
+                                               k_serde_candidates,
+                                               sizeof(k_serde_candidates) / sizeof(k_serde_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_DEMUX_V0,
+                                               k_media_demux_candidates,
+                                               sizeof(k_media_demux_candidates) / sizeof(k_media_demux_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_TEXT_FONT_DB_V0,
+                                               k_fontdb_candidates,
+                                               sizeof(k_fontdb_candidates) / sizeof(k_fontdb_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_WINDOW_INPUT_V0,
+                                               k_gfx_window_candidates,
+                                               sizeof(k_gfx_window_candidates) / sizeof(k_gfx_window_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_RENDER2D_V0,
+                                               k_gfx_render2d_candidates,
+                                               sizeof(k_gfx_render2d_candidates) / sizeof(k_gfx_render2d_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_GPU_DEVICE_V0,
+                                               k_gfx_gpu_candidates,
+                                               sizeof(k_gfx_gpu_candidates) / sizeof(k_gfx_gpu_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_RENDER3D_V0,
+                                               k_gfx_render3d_candidates,
+                                               sizeof(k_gfx_render3d_candidates) / sizeof(k_gfx_render3d_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0,
+                                               k_media_audio_sdl3_candidates,
+                                               sizeof(k_media_audio_sdl3_candidates) / sizeof(k_media_audio_sdl3_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    return task_count;
+}
+
+static size_t _mix_collect_media_route_tasks(obi_rt_v0* rt, obi_mix_task_v0* tasks, size_t task_cap) {
+    static const char* k_media_av_candidates[] = { "obi.provider:media.ffmpeg", "obi.provider:media.gstreamer" };
+    static const char* k_media_scale_candidates[] = { "obi.provider:media.scale.ffmpeg", "obi.provider:media.scale.libyuv" };
+
+    size_t task_count = 0u;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_DEMUX_V0,
+                                               k_media_av_candidates,
+                                               sizeof(k_media_av_candidates) / sizeof(k_media_av_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_MUX_V0,
+                                               k_media_av_candidates,
+                                               sizeof(k_media_av_candidates) / sizeof(k_media_av_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_AV_DECODE_V0,
+                                               k_media_av_candidates,
+                                               sizeof(k_media_av_candidates) / sizeof(k_media_av_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_AV_ENCODE_V0,
+                                               k_media_av_candidates,
+                                               sizeof(k_media_av_candidates) / sizeof(k_media_av_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_VIDEO_SCALE_CONVERT_V0,
+                                               k_media_scale_candidates,
+                                               sizeof(k_media_scale_candidates) / sizeof(k_media_scale_candidates[0]),
+                                               tasks,
+                                               task_cap,
+                                               &task_count);
+    return task_count;
+}
+
+enum {
+    OBI_MIX_RESIDENT_KIND_DEFAULT = 0u,
+    OBI_MIX_RESIDENT_KIND_DB_KV = 1u,
+    OBI_MIX_RESIDENT_KIND_DB_SQL = 2u,
+    OBI_MIX_RESIDENT_KIND_PHYS2D = 3u,
+    OBI_MIX_RESIDENT_KIND_PHYS3D = 4u,
+};
+
+typedef struct obi_mix_resident_db_kv_state_v0 {
+    obi_db_kv_v0 kv;
+    obi_kv_db_v0 db;
+    uint32_t seq;
+    int opened;
+} obi_mix_resident_db_kv_state_v0;
+
+typedef struct obi_mix_resident_db_sql_state_v0 {
+    obi_db_sql_v0 sql;
+    obi_sql_conn_v0 conn;
+    uint32_t seq;
+    int opened;
+} obi_mix_resident_db_sql_state_v0;
+
+typedef struct obi_mix_resident_phys2d_state_v0 {
+    obi_phys_world2d_v0 phys;
+    obi_phys2d_world_v0 world;
+    obi_phys2d_body_id_v0 body;
+    int opened;
+} obi_mix_resident_phys2d_state_v0;
+
+typedef struct obi_mix_resident_phys3d_state_v0 {
+    obi_phys_world3d_v0 phys;
+    obi_phys3d_world_v0 world;
+    obi_phys3d_body_id_v0 body;
+    int opened;
+} obi_mix_resident_phys3d_state_v0;
+
+typedef struct obi_mix_resident_task_v0 {
+    const char* profile_id;
+    const char* provider_id;
+    uint32_t kind;
+    union {
+        obi_mix_resident_db_kv_state_v0 db_kv;
+        obi_mix_resident_db_sql_state_v0 db_sql;
+        obi_mix_resident_phys2d_state_v0 phys2d;
+        obi_mix_resident_phys3d_state_v0 phys3d;
+    } state;
+} obi_mix_resident_task_v0;
+
+static uint32_t _mix_resident_kind_for_task(const char* profile_id, const char* provider_id) {
+    if (!profile_id || !provider_id) {
+        return OBI_MIX_RESIDENT_KIND_DEFAULT;
+    }
+    if (strcmp(profile_id, OBI_PROFILE_DB_KV_V0) == 0) {
+        return OBI_MIX_RESIDENT_KIND_DB_KV;
+    }
+    if (strcmp(profile_id, OBI_PROFILE_DB_SQL_V0) == 0 &&
+        strcmp(provider_id, "obi.provider:db.sql.postgres") != 0) {
+        return OBI_MIX_RESIDENT_KIND_DB_SQL;
+    }
+    if (strcmp(profile_id, OBI_PROFILE_PHYS_WORLD2D_V0) == 0) {
+        return OBI_MIX_RESIDENT_KIND_PHYS2D;
+    }
+    if (strcmp(profile_id, OBI_PROFILE_PHYS_WORLD3D_V0) == 0) {
+        return OBI_MIX_RESIDENT_KIND_PHYS3D;
+    }
+    return OBI_MIX_RESIDENT_KIND_DEFAULT;
+}
+
+static void _mix_resident_task_init(obi_mix_resident_task_v0* dst, const obi_mix_task_v0* src) {
+    if (!dst || !src) {
+        return;
+    }
+    memset(dst, 0, sizeof(*dst));
+    dst->profile_id = src->profile_id;
+    dst->provider_id = src->provider_id;
+    dst->kind = _mix_resident_kind_for_task(src->profile_id, src->provider_id);
+}
+
+static int _mix_resident_open_db_kv(obi_rt_v0* rt, obi_mix_resident_task_v0* task) {
+    obi_mix_resident_db_kv_state_v0* s = &task->state.db_kv;
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      task->provider_id,
+                                                      OBI_PROFILE_DB_KV_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &s->kv,
+                                                      sizeof(s->kv));
+    if (st != OBI_STATUS_OK || !s->kv.api || !s->kv.api->open) {
+        return 0;
+    }
+
+    obi_kv_db_open_params_v0 open_params;
+    memset(&open_params, 0, sizeof(open_params));
+    open_params.struct_size = (uint32_t)sizeof(open_params);
+    open_params.flags = OBI_KV_DB_OPEN_CREATE;
+    open_params.path = ":memory:";
+
+    st = s->kv.api->open(s->kv.ctx, &open_params, &s->db);
+    if (st != OBI_STATUS_OK || !s->db.api || !s->db.api->begin_txn || !s->db.api->destroy) {
+        memset(&s->db, 0, sizeof(s->db));
+        memset(&s->kv, 0, sizeof(s->kv));
+        return 0;
+    }
+    s->opened = 1;
+    s->seq = 0u;
+    return 1;
+}
+
+static int _mix_resident_open_db_sql(obi_rt_v0* rt, obi_mix_resident_task_v0* task) {
+    obi_mix_resident_db_sql_state_v0* s = &task->state.db_sql;
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      task->provider_id,
+                                                      OBI_PROFILE_DB_SQL_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &s->sql,
+                                                      sizeof(s->sql));
+    if (st != OBI_STATUS_OK || !s->sql.api || !s->sql.api->open) {
+        return 0;
+    }
+
+    obi_sql_open_params_v0 open_params;
+    memset(&open_params, 0, sizeof(open_params));
+    open_params.struct_size = (uint32_t)sizeof(open_params);
+    open_params.flags = OBI_SQL_OPEN_CREATE;
+    open_params.uri = ":memory:";
+
+    st = s->sql.api->open(s->sql.ctx, &open_params, &s->conn);
+    if (st != OBI_STATUS_OK || !s->conn.api || !s->conn.api->exec || !s->conn.api->prepare || !s->conn.api->destroy) {
+        memset(&s->conn, 0, sizeof(s->conn));
+        memset(&s->sql, 0, sizeof(s->sql));
+        return 0;
+    }
+
+    st = s->conn.api->exec(s->conn.ctx, "CREATE TABLE IF NOT EXISTS t(id INTEGER, name TEXT)");
+    if (st != OBI_STATUS_OK) {
+        s->conn.api->destroy(s->conn.ctx);
+        memset(&s->conn, 0, sizeof(s->conn));
+        memset(&s->sql, 0, sizeof(s->sql));
+        return 0;
+    }
+
+    s->opened = 1;
+    s->seq = 0u;
+    return 1;
+}
+
+static int _mix_resident_open_phys2d(obi_rt_v0* rt, obi_mix_resident_task_v0* task) {
+    obi_mix_resident_phys2d_state_v0* s = &task->state.phys2d;
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      task->provider_id,
+                                                      OBI_PROFILE_PHYS_WORLD2D_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &s->phys,
+                                                      sizeof(s->phys));
+    if (st != OBI_STATUS_OK || !s->phys.api || !s->phys.api->world_create) {
+        return 0;
+    }
+
+    obi_phys2d_world_params_v0 wparams;
+    memset(&wparams, 0, sizeof(wparams));
+    wparams.struct_size = (uint32_t)sizeof(wparams);
+    wparams.gravity = (obi_vec2f_v0){ 0.0f, -9.8f };
+
+    st = s->phys.api->world_create(s->phys.ctx, &wparams, &s->world);
+    if (st != OBI_STATUS_OK || !s->world.api || !s->world.api->destroy ||
+        !s->world.api->body_create || !s->world.api->collider_create_box ||
+        !s->world.api->step || !s->world.api->body_set_linear_velocity) {
+        memset(&s->world, 0, sizeof(s->world));
+        memset(&s->phys, 0, sizeof(s->phys));
+        return 0;
+    }
+
+    obi_phys2d_body_def_v0 body_def;
+    memset(&body_def, 0, sizeof(body_def));
+    body_def.struct_size = (uint32_t)sizeof(body_def);
+    body_def.type = OBI_PHYS2D_BODY_DYNAMIC;
+    body_def.position = (obi_vec2f_v0){ 0.0f, 1.0f };
+
+    st = s->world.api->body_create(s->world.ctx, &body_def, &s->body);
+    if (st != OBI_STATUS_OK || s->body == 0u) {
+        s->world.api->destroy(s->world.ctx);
+        memset(&s->world, 0, sizeof(s->world));
+        memset(&s->phys, 0, sizeof(s->phys));
+        return 0;
+    }
+
+    obi_phys2d_box_collider_def_v0 box_def;
+    memset(&box_def, 0, sizeof(box_def));
+    box_def.common.struct_size = (uint32_t)sizeof(box_def.common);
+    box_def.half_extents = (obi_vec2f_v0){ 0.25f, 0.25f };
+    obi_phys2d_collider_id_v0 collider = 0u;
+    st = s->world.api->collider_create_box(s->world.ctx, s->body, &box_def, &collider);
+    if (st != OBI_STATUS_OK || collider == 0u) {
+        s->world.api->destroy(s->world.ctx);
+        memset(&s->world, 0, sizeof(s->world));
+        memset(&s->phys, 0, sizeof(s->phys));
+        return 0;
+    }
+
+    s->opened = 1;
+    return 1;
+}
+
+static int _mix_resident_open_phys3d(obi_rt_v0* rt, obi_mix_resident_task_v0* task) {
+    obi_mix_resident_phys3d_state_v0* s = &task->state.phys3d;
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      task->provider_id,
+                                                      OBI_PROFILE_PHYS_WORLD3D_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &s->phys,
+                                                      sizeof(s->phys));
+    if (st != OBI_STATUS_OK || !s->phys.api || !s->phys.api->world_create) {
+        return 0;
+    }
+
+    obi_phys3d_world_params_v0 wparams;
+    memset(&wparams, 0, sizeof(wparams));
+    wparams.struct_size = (uint32_t)sizeof(wparams);
+    wparams.gravity = (obi_vec3f_v0){ 0.0f, -9.8f, 0.0f };
+
+    st = s->phys.api->world_create(s->phys.ctx, &wparams, &s->world);
+    if (st != OBI_STATUS_OK || !s->world.api || !s->world.api->destroy ||
+        !s->world.api->body_create || !s->world.api->collider_create_sphere ||
+        !s->world.api->step || !s->world.api->body_set_linear_velocity) {
+        memset(&s->world, 0, sizeof(s->world));
+        memset(&s->phys, 0, sizeof(s->phys));
+        return 0;
+    }
+
+    obi_phys3d_body_def_v0 body_def;
+    memset(&body_def, 0, sizeof(body_def));
+    body_def.struct_size = (uint32_t)sizeof(body_def);
+    body_def.type = OBI_PHYS3D_BODY_DYNAMIC;
+    body_def.position = (obi_vec3f_v0){ 0.0f, 1.0f, 0.0f };
+    body_def.rotation = (obi_quatf_v0){ 0.0f, 0.0f, 0.0f, 1.0f };
+
+    st = s->world.api->body_create(s->world.ctx, &body_def, &s->body);
+    if (st != OBI_STATUS_OK || s->body == 0u) {
+        s->world.api->destroy(s->world.ctx);
+        memset(&s->world, 0, sizeof(s->world));
+        memset(&s->phys, 0, sizeof(s->phys));
+        return 0;
+    }
+
+    obi_phys3d_sphere_collider_def_v0 sphere_def;
+    memset(&sphere_def, 0, sizeof(sphere_def));
+    sphere_def.common.struct_size = (uint32_t)sizeof(sphere_def.common);
+    sphere_def.radius = 0.5f;
+    obi_phys3d_collider_id_v0 collider = 0u;
+    st = s->world.api->collider_create_sphere(s->world.ctx, s->body, &sphere_def, &collider);
+    if (st != OBI_STATUS_OK || collider == 0u) {
+        s->world.api->destroy(s->world.ctx);
+        memset(&s->world, 0, sizeof(s->world));
+        memset(&s->phys, 0, sizeof(s->phys));
+        return 0;
+    }
+
+    s->opened = 1;
+    return 1;
+}
+
+static int _mix_resident_task_open(obi_rt_v0* rt, obi_mix_resident_task_v0* task) {
+    if (!rt || !task || !task->profile_id || !task->provider_id) {
+        return 0;
+    }
+    switch (task->kind) {
+        case OBI_MIX_RESIDENT_KIND_DB_KV:
+            return _mix_resident_open_db_kv(rt, task);
+        case OBI_MIX_RESIDENT_KIND_DB_SQL:
+            return _mix_resident_open_db_sql(rt, task);
+        case OBI_MIX_RESIDENT_KIND_PHYS2D:
+            return _mix_resident_open_phys2d(rt, task);
+        case OBI_MIX_RESIDENT_KIND_PHYS3D:
+            return _mix_resident_open_phys3d(rt, task);
+        default:
+            return _provider_has_profile(rt, task->provider_id, task->profile_id);
+    }
+}
+
+static int _mix_resident_step_db_kv(obi_mix_resident_task_v0* task) {
+    obi_mix_resident_db_kv_state_v0* s = &task->state.db_kv;
+    if (!s->opened || !s->db.api) {
+        return 0;
+    }
+
+    char key[32];
+    char val[32];
+    (void)snprintf(key, sizeof(key), "k%u", (unsigned)s->seq);
+    (void)snprintf(val, sizeof(val), "v%u", (unsigned)s->seq);
+
+    obi_kv_txn_v0 txn;
+    memset(&txn, 0, sizeof(txn));
+    obi_kv_txn_params_v0 params;
+    memset(&params, 0, sizeof(params));
+    params.struct_size = (uint32_t)sizeof(params);
+    params.flags = 0u;
+
+    obi_status st = s->db.api->begin_txn(s->db.ctx, &params, &txn);
+    if (st != OBI_STATUS_OK || !txn.api || !txn.api->put || !txn.api->get || !txn.api->commit ||
+        !txn.api->abort || !txn.api->destroy) {
+        return 0;
+    }
+
+    st = txn.api->put(txn.ctx,
+                      (obi_bytes_view_v0){ (const uint8_t*)key, strlen(key) },
+                      (obi_bytes_view_v0){ (const uint8_t*)val, strlen(val) });
+    if (st != OBI_STATUS_OK) {
+        txn.api->abort(txn.ctx);
+        txn.api->destroy(txn.ctx);
+        return 0;
+    }
+
+    st = txn.api->commit(txn.ctx);
+    txn.api->destroy(txn.ctx);
+    if (st != OBI_STATUS_OK) {
+        return 0;
+    }
+
+    memset(&txn, 0, sizeof(txn));
+    params.flags = OBI_KV_TXN_READ_ONLY;
+    st = s->db.api->begin_txn(s->db.ctx, &params, &txn);
+    if (st != OBI_STATUS_OK || !txn.api || !txn.api->get || !txn.api->abort || !txn.api->destroy) {
+        return 0;
+    }
+
+    char out[64];
+    size_t out_sz = 0u;
+    bool found = false;
+    st = txn.api->get(txn.ctx,
+                      (obi_bytes_view_v0){ (const uint8_t*)key, strlen(key) },
+                      out,
+                      sizeof(out),
+                      &out_sz,
+                      &found);
+    txn.api->abort(txn.ctx);
+    txn.api->destroy(txn.ctx);
+    if (st != OBI_STATUS_OK || !found || out_sz != strlen(val) || memcmp(out, val, out_sz) != 0) {
+        return 0;
+    }
+
+    s->seq++;
+    return 1;
+}
+
+static int _mix_resident_step_db_sql(obi_mix_resident_task_v0* task) {
+    obi_mix_resident_db_sql_state_v0* s = &task->state.db_sql;
+    if (!s->opened || !s->conn.api) {
+        return 0;
+    }
+
+    char insert_sql[128];
+    (void)snprintf(insert_sql,
+                   sizeof(insert_sql),
+                   "INSERT INTO t(id,name) VALUES(%u,'mix')",
+                   (unsigned)s->seq);
+    obi_status st = s->conn.api->exec(s->conn.ctx, insert_sql);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "mix resident db.sql: insert failed provider=%s status=%d seq=%u\n",
+                task->provider_id ? task->provider_id : "<none>",
+                (int)st,
+                (unsigned)s->seq);
+        return 0;
+    }
+
+    s->seq++;
+    return 1;
+}
+
+static int _mix_resident_step_phys2d(obi_mix_resident_task_v0* task) {
+    obi_mix_resident_phys2d_state_v0* s = &task->state.phys2d;
+    if (!s->opened || !s->world.api) {
+        return 0;
+    }
+    obi_status st = s->world.api->step(s->world.ctx, 1.0f / 60.0f, 4u, 2u);
+    if (st != OBI_STATUS_OK) {
+        return 0;
+    }
+    obi_vec2f_v0 v = { 0.25f, -0.5f };
+    st = s->world.api->body_set_linear_velocity(s->world.ctx, s->body, v);
+    return st == OBI_STATUS_OK;
+}
+
+static int _mix_resident_step_phys3d(obi_mix_resident_task_v0* task) {
+    obi_mix_resident_phys3d_state_v0* s = &task->state.phys3d;
+    if (!s->opened || !s->world.api) {
+        return 0;
+    }
+    obi_status st = s->world.api->step(s->world.ctx, 1.0f / 60.0f, 1u);
+    if (st != OBI_STATUS_OK) {
+        return 0;
+    }
+    obi_vec3f_v0 v = { 0.1f, -0.2f, 0.3f };
+    st = s->world.api->body_set_linear_velocity(s->world.ctx, s->body, v);
+    return st == OBI_STATUS_OK;
+}
+
+static int _mix_resident_task_step(obi_rt_v0* rt, obi_mix_resident_task_v0* task, uint32_t iter) {
+    (void)iter;
+    if (!rt || !task) {
+        return 0;
+    }
+    switch (task->kind) {
+        case OBI_MIX_RESIDENT_KIND_DB_KV:
+            return _mix_resident_step_db_kv(task);
+        case OBI_MIX_RESIDENT_KIND_DB_SQL:
+            return _mix_resident_step_db_sql(task);
+        case OBI_MIX_RESIDENT_KIND_PHYS2D:
+            return _mix_resident_step_phys2d(task);
+        case OBI_MIX_RESIDENT_KIND_PHYS3D:
+            return _mix_resident_step_phys3d(task);
+        default:
+            return _exercise_profile_for_provider(rt, task->profile_id, task->provider_id, 1);
+    }
+}
+
+static void _mix_resident_task_close(obi_mix_resident_task_v0* task) {
+    if (!task) {
+        return;
+    }
+    switch (task->kind) {
+        case OBI_MIX_RESIDENT_KIND_DB_KV:
+            if (task->state.db_kv.opened && task->state.db_kv.db.api && task->state.db_kv.db.api->destroy) {
+                task->state.db_kv.db.api->destroy(task->state.db_kv.db.ctx);
+            }
+            break;
+        case OBI_MIX_RESIDENT_KIND_DB_SQL:
+            if (task->state.db_sql.opened && task->state.db_sql.conn.api && task->state.db_sql.conn.api->destroy) {
+                task->state.db_sql.conn.api->destroy(task->state.db_sql.conn.ctx);
+            }
+            break;
+        case OBI_MIX_RESIDENT_KIND_PHYS2D:
+            if (task->state.phys2d.opened && task->state.phys2d.world.api && task->state.phys2d.world.api->destroy) {
+                task->state.phys2d.world.api->destroy(task->state.phys2d.world.ctx);
+            }
+            break;
+        case OBI_MIX_RESIDENT_KIND_PHYS3D:
+            if (task->state.phys3d.opened && task->state.phys3d.world.api && task->state.phys3d.world.api->destroy) {
+                task->state.phys3d.world.api->destroy(task->state.phys3d.world.ctx);
+            }
+            break;
+        default:
+            break;
+    }
+    memset(task, 0, sizeof(*task));
+}
+
+static int _mix_run_resident_task_in_runtime(obi_rt_v0* rt,
+                                             const char* runtime_label,
+                                             const char* shard,
+                                             obi_mix_resident_task_v0* task,
+                                             uint32_t iter,
+                                             uint32_t seed,
+                                             obi_mix_coverage_ledger_v0* coverage) {
+    if (!rt || !runtime_label || !shard || !task || !task->profile_id || !task->provider_id || !coverage) {
+        return 0;
+    }
+
+    _mix_coverage_mark_tick(coverage, shard, task->profile_id, task->provider_id);
+    printf("mix_task_tick shard=%s rt=%s cycle=%u iter=%u seed=0x%08x profile=%s provider=%s\n",
+           shard,
+           runtime_label,
+           (unsigned)_mix_current_cycle_index,
+           (unsigned)iter,
+           (unsigned)seed,
+           task->profile_id,
+           task->provider_id);
+
+    if (!_mix_resident_task_step(rt, task, iter)) {
+        fprintf(stderr,
+                "mix %s: resident task failed rt=%s cycle=%u iter=%u seed=0x%08x profile=%s provider=%s\n",
+                shard,
+                runtime_label,
+                (unsigned)_mix_current_cycle_index,
+                (unsigned)iter,
+                (unsigned)seed,
+                task->profile_id,
+                task->provider_id);
+        return 0;
+    }
+
+    _mix_coverage_mark_progress(coverage, shard, task->profile_id, task->provider_id);
+    return 1;
+}
+
+static int _mix_run_task_in_runtime(obi_rt_v0* rt,
+                                    const char* runtime_label,
+                                    const char* shard,
+                                    const obi_mix_task_v0* task,
+                                    uint32_t iter,
+                                    uint32_t seed,
+                                    obi_mix_coverage_ledger_v0* coverage) {
+    if (!rt || !runtime_label || !shard || !task || !task->profile_id || !task->provider_id || !coverage) {
+        return 0;
+    }
+
+    _mix_coverage_mark_object_created(coverage, shard, task->profile_id, task->provider_id);
+    _mix_coverage_mark_tick(coverage, shard, task->profile_id, task->provider_id);
+    printf("mix_task_tick shard=%s rt=%s cycle=%u iter=%u seed=0x%08x profile=%s provider=%s\n",
+           shard,
+           runtime_label,
+           (unsigned)_mix_current_cycle_index,
+           (unsigned)iter,
+           (unsigned)seed,
+           task->profile_id,
+           task->provider_id);
+
+    if (!_exercise_profile_for_provider(rt, task->profile_id, task->provider_id, 1)) {
+        fprintf(stderr,
+                "mix %s: task failed rt=%s cycle=%u iter=%u seed=0x%08x profile=%s provider=%s\n",
+                shard,
+                runtime_label,
+                (unsigned)_mix_current_cycle_index,
+                (unsigned)iter,
+                (unsigned)seed,
+                task->profile_id,
+                task->provider_id);
+        return 0;
+    }
+    _mix_coverage_mark_progress(coverage, shard, task->profile_id, task->provider_id);
+    return 1;
+}
+
+static size_t _mix_provider_route_count(obi_rt_v0* rt, const char* provider_id) {
+    if (!rt || !provider_id) {
+        return 0u;
+    }
+
+    size_t idx = 0u;
+    if (!_provider_index_by_id(rt, provider_id, &idx)) {
+        return 0u;
+    }
+
+    const obi_provider_legal_metadata_v0* meta = NULL;
+    const obi_status st = obi_rt_provider_legal_metadata(rt, idx, &meta);
+    if (st != OBI_STATUS_OK || !meta || meta->struct_size < (uint32_t)sizeof(obi_provider_legal_metadata_v0)) {
+        return 0u;
+    }
+
+    return meta->route_count;
+}
+
+static int _mix_try_media_route_plan(obi_rt_v0* rt,
+                                     const obi_legal_selector_policy_v0* policy,
+                                     const char* route_label,
+                                     const char* profile_id,
+                                     const char* expected_provider_id,
+                                     const obi_legal_selector_term_v0* selectors,
+                                     size_t selector_count,
+                                     int require_selectable,
+                                     size_t* selected_route_count) {
+    if (!rt || !policy || !route_label || !profile_id || !expected_provider_id || !selected_route_count) {
+        return 0;
+    }
+
+    obi_legal_requirement_v0 req;
+    memset(&req, 0, sizeof(req));
+    req.struct_size = (uint32_t)sizeof(req);
+    req.profile_id = profile_id;
+    req.selectors = selectors;
+    req.selector_count = selector_count;
+
+    const obi_legal_plan_v0* plan = NULL;
+    obi_status st = obi_rt_legal_plan(rt, policy, &req, 1u, &plan);
+    if (st != OBI_STATUS_OK || !plan || plan->item_count != 1u) {
+        fprintf(stderr,
+                "mix media_routes: legal_plan failed route=%s profile=%s provider=%s status=%d\n",
+                route_label,
+                profile_id,
+                expected_provider_id,
+                (int)st);
+        return 0;
+    }
+
+    if (plan->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE) {
+        printf("mix_media_route_skip route=%s profile=%s provider=%s status=%u\n",
+               route_label,
+               profile_id,
+               expected_provider_id,
+               (unsigned)plan->items[0].status);
+        if (require_selectable) {
+            fprintf(stderr,
+                    "mix media_routes: required selectable route blocked route=%s profile=%s provider=%s\n",
+                    route_label,
+                    profile_id,
+                    expected_provider_id);
+            return 0;
+        }
+        return 1;
+    }
+
+    if (!plan->items[0].provider_id || strcmp(plan->items[0].provider_id, expected_provider_id) != 0) {
+        printf("mix_media_route_redirect route=%s requested=%s selected=%s\n",
+               route_label,
+               expected_provider_id,
+               plan->items[0].provider_id ? plan->items[0].provider_id : "<null>");
+    }
+
+    st = obi_rt_legal_apply_plan(rt, plan, OBI_RT_BIND_ALLOW_FALLBACK);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "mix media_routes: legal_apply_plan failed route=%s provider=%s status=%d\n",
+                route_label,
+                expected_provider_id,
+                (int)st);
+        return 0;
+    }
+
+    (*selected_route_count)++;
+    printf("mix_media_route_selected route=%s profile=%s provider=%s selectors=%zu\n",
+           route_label,
+           profile_id,
+           expected_provider_id,
+           selector_count);
+    return 1;
+}
+
+static int _exercise_mixed_backend_dual_runtime_cycle(const char* const* provider_paths,
+                                                      int provider_count,
+                                                      uint32_t cycle_index,
+                                                      int destroy_a_first) {
+    if (!provider_paths || provider_count <= 0) {
+        return 0;
+    }
+    _mix_current_cycle_index = cycle_index;
+
+    const char* dual_paths[256];
+    int dual_count = 0;
+    for (int i = 0; i < provider_count; i++) {
+        if (_mix_dual_runtime_path_allowed(provider_paths[i])) {
+            if (dual_count >= (int)(sizeof(dual_paths) / sizeof(dual_paths[0]))) {
+                break;
+            }
+            dual_paths[dual_count++] = provider_paths[i];
+        }
+    }
+    if (dual_count <= 0) {
+        fprintf(stderr, "mix dual_runtime: no eligible providers after filter\n");
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+    printf("mix_dual_runtime_path_filter cycle=%u selected=%d total=%d\n",
+           (unsigned)cycle_index,
+           dual_count,
+           provider_count);
+
+    obi_rt_v0* rt_a = NULL;
+    obi_rt_v0* rt_b = NULL;
+    if (obi_rt_create(NULL, &rt_a) != OBI_STATUS_OK || !rt_a) {
+        fprintf(stderr, "mix dual_runtime: rt_a create failed cycle=%u\n", (unsigned)cycle_index);
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+    if (obi_rt_create(NULL, &rt_b) != OBI_STATUS_OK || !rt_b) {
+        fprintf(stderr, "mix dual_runtime: rt_b create failed cycle=%u\n", (unsigned)cycle_index);
+        obi_rt_destroy(rt_a);
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+
+    if (!_mix_load_runtime_paths_selected(rt_a, dual_paths, dual_count, 0, "dual_a")) {
+        goto dual_fail;
+    }
+    if (!_mix_load_runtime_paths_selected(rt_b, dual_paths, dual_count, 1, "dual_b")) {
+        goto dual_fail;
+    }
+
+    size_t overlap_count = 0u;
+    size_t only_a_count = 0u;
+    size_t only_b_count = 0u;
+    if (!_mix_compare_runtime_provider_sets(rt_a, rt_b, &overlap_count, &only_a_count, &only_b_count)) {
+        fprintf(stderr, "mix dual_runtime: provider-set comparison failed cycle=%u\n", (unsigned)cycle_index);
+        goto dual_fail;
+    }
+    printf("mix_dual_runtime_provider_sets cycle=%u overlap=%zu only_a=%zu only_b=%zu\n",
+           (unsigned)cycle_index,
+           overlap_count,
+           only_a_count,
+           only_b_count);
+
+    if (overlap_count == 0u) {
+        fprintf(stderr, "mix dual_runtime: no overlapping providers across runtimes cycle=%u\n", (unsigned)cycle_index);
+        goto dual_fail;
+    }
+    if (only_a_count == 0u && only_b_count == 0u) {
+        fprintf(stderr,
+                "mix dual_runtime: runtime sets are identical (expected different+overlapping) cycle=%u\n",
+                (unsigned)cycle_index);
+        goto dual_fail;
+    }
+
+    obi_mix_task_v0 tasks_a[160];
+    obi_mix_task_v0 tasks_b[160];
+    size_t task_count_a = _mix_collect_dual_runtime_tasks(rt_a, tasks_a, sizeof(tasks_a) / sizeof(tasks_a[0]));
+    size_t task_count_b = _mix_collect_dual_runtime_tasks(rt_b, tasks_b, sizeof(tasks_b) / sizeof(tasks_b[0]));
+    if (task_count_a == 0u || task_count_b == 0u) {
+        fprintf(stderr,
+                "mix dual_runtime: insufficient active tasks cycle=%u tasks_a=%zu tasks_b=%zu\n",
+                (unsigned)cycle_index,
+                task_count_a,
+                task_count_b);
+        goto dual_fail;
+    }
+
+    obi_mix_coverage_ledger_v0 coverage;
+    memset(&coverage, 0, sizeof(coverage));
+    const char* shard_a = "dual_runtime.a";
+    const char* shard_b = "dual_runtime.b";
+
+    size_t max_tasks = task_count_a > task_count_b ? task_count_a : task_count_b;
+    uint32_t iterations = (uint32_t)(max_tasks * 2u + 8u);
+    if (iterations < 12u) {
+        iterations = 12u;
+    }
+
+    uint32_t seed = 0xD00A1000u ^ (cycle_index * 0x9E3779B9u);
+    uint32_t rng_state = seed;
+    printf("mix_dual_runtime_cycle_begin=%u seed=0x%08x destroy_first=%s iterations=%u\n",
+           (unsigned)cycle_index,
+           (unsigned)seed,
+           destroy_a_first ? "a" : "b",
+           (unsigned)iterations);
+
+    for (uint32_t iter = 0u; iter < iterations; iter++) {
+        const obi_mix_task_v0* task_a = &tasks_a[(size_t)(iter % (uint32_t)task_count_a)];
+        const obi_mix_task_v0* task_b = &tasks_b[(size_t)((iter + cycle_index + 1u) % (uint32_t)task_count_b)];
+        const int flip = (_mix_rand_next(&rng_state) & 1u) != 0u;
+
+        if (!flip) {
+            if (!_mix_run_task_in_runtime(rt_a, "a", shard_a, task_a, iter, seed, &coverage)) {
+                goto dual_fail;
+            }
+            if (!_mix_run_task_in_runtime(rt_b, "b", shard_b, task_b, iter, seed, &coverage)) {
+                goto dual_fail;
+            }
+        } else {
+            if (!_mix_run_task_in_runtime(rt_b, "b", shard_b, task_b, iter, seed, &coverage)) {
+                goto dual_fail;
+            }
+            if (!_mix_run_task_in_runtime(rt_a, "a", shard_a, task_a, iter, seed, &coverage)) {
+                goto dual_fail;
+            }
+        }
+    }
+
+    for (size_t i = 0u; i < task_count_a; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_a, tasks_a[i].profile_id, tasks_a[i].provider_id);
+    }
+    for (size_t i = 0u; i < task_count_b; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_b, tasks_b[i].profile_id, tasks_b[i].provider_id);
+    }
+
+    char summary_label[64];
+    (void)snprintf(summary_label, sizeof(summary_label), "dual_runtime_cycle_%u", (unsigned)cycle_index);
+    if (!_mix_coverage_require_teardown_complete(&coverage, summary_label, seed)) {
+        _mix_coverage_print_summary(&coverage, summary_label, seed);
+        goto dual_fail;
+    }
+    _mix_coverage_print_summary(&coverage, summary_label, seed);
+
+    printf("mix_dual_runtime_destroy_order cycle=%u first=%s second=%s\n",
+           (unsigned)cycle_index,
+           destroy_a_first ? "a" : "b",
+           destroy_a_first ? "b" : "a");
+    if (destroy_a_first) {
+        obi_rt_destroy(rt_a);
+        obi_rt_destroy(rt_b);
+    } else {
+        obi_rt_destroy(rt_b);
+        obi_rt_destroy(rt_a);
+    }
+    _mix_current_cycle_index = UINT32_MAX;
+    return 1;
+
+dual_fail:
+    if (rt_b) {
+        obi_rt_destroy(rt_b);
+    }
+    if (rt_a) {
+        obi_rt_destroy(rt_a);
+    }
+    _mix_current_cycle_index = UINT32_MAX;
+    return 0;
+}
+
+static int _exercise_mixed_backend_dual_runtime(const char* const* provider_paths, int provider_count) {
+    if (!provider_paths || provider_count <= 0) {
+        return 0;
+    }
+
+    const uint32_t cycles = 2u;
+    for (uint32_t cycle = 0u; cycle < cycles; cycle++) {
+        const int destroy_a_first = (cycle % 2u) == 0u;
+        if (!_exercise_mixed_backend_dual_runtime_cycle(provider_paths, provider_count, cycle, destroy_a_first)) {
+            return 0;
+        }
+        printf("mix_dual_runtime_cycle_ok=%u\n", (unsigned)cycle);
+    }
+
+    return 1;
+}
+
+static int _exercise_mixed_backend_media_routes_once(const char* const* provider_paths, int provider_count) {
+    if (!provider_paths || provider_count <= 0) {
+        return 0;
+    }
+    _mix_current_cycle_index = 0u;
+
+    obi_rt_v0* rt = NULL;
+    if (obi_rt_create(NULL, &rt) != OBI_STATUS_OK || !rt) {
+        fprintf(stderr, "mix media_routes: rt create failed\n");
+        return 0;
+    }
+
+    if (!_mix_load_runtime_paths_selected(rt, provider_paths, provider_count, 0, "media_routes")) {
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    obi_mix_task_v0 media_tasks[128];
+    size_t media_task_count = _mix_collect_media_route_tasks(rt,
+                                                             media_tasks,
+                                                             sizeof(media_tasks) / sizeof(media_tasks[0]));
+    if (media_task_count == 0u) {
+        fprintf(stderr, "mix media_routes: no route-sensitive media tasks available\n");
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    static const char* k_pump_candidates[] = { "obi.provider:core.pump.libuv", "obi.provider:core.pump.glib" };
+    obi_mix_task_v0 pump_tasks[16];
+    size_t pump_task_count = 0u;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_CORE_PUMP_V0,
+                                               k_pump_candidates,
+                                               sizeof(k_pump_candidates) / sizeof(k_pump_candidates[0]),
+                                               pump_tasks,
+                                               sizeof(pump_tasks) / sizeof(pump_tasks[0]),
+                                               &pump_task_count);
+    if (pump_task_count == 0u) {
+        fprintf(stderr, "mix media_routes: no core.pump provider available to interleave with media routes\n");
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    const size_t ffmpeg_route_count = _mix_provider_route_count(rt, "obi.provider:media.ffmpeg");
+    const size_t gst_route_count = _mix_provider_route_count(rt, "obi.provider:media.gstreamer");
+    const size_t scale_ffmpeg_route_count = _mix_provider_route_count(rt, "obi.provider:media.scale.ffmpeg");
+    printf("mix_media_route_counts ffmpeg=%zu gstreamer=%zu scale_ffmpeg=%zu\n",
+           ffmpeg_route_count,
+           gst_route_count,
+           scale_ffmpeg_route_count);
+
+    obi_legal_selector_policy_v0 route_policy;
+    memset(&route_policy, 0, sizeof(route_policy));
+    route_policy.struct_size = (uint32_t)sizeof(route_policy);
+    route_policy.preset = OBI_LEGAL_PRESET_UP_TO_STRONG_COPYLEFT;
+    route_policy.allowed_patent_postures = OBI_LEGAL_PATENT_MASK_ALL;
+    route_policy.flags = OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_COPYLEFT |
+                         OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_PATENT_POSTURE |
+                         OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_OPTIONAL_RUNTIME_COMPONENTS;
+
+    static const obi_legal_selector_term_v0 ffmpeg_vp9_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "vp9" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const obi_legal_selector_term_v0 ffmpeg_av1_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "av1" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "ffmpeg" },
+    };
+    static const obi_legal_selector_term_v0 gstreamer_vp9_selectors[] = {
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "vp9" },
+        { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "gstreamer" },
+    };
+
+    size_t selected_route_count = 0u;
+    if (_provider_loaded(rt, "obi.provider:media.ffmpeg") &&
+        _provider_has_profile(rt, "obi.provider:media.ffmpeg", OBI_PROFILE_MEDIA_AV_DECODE_V0)) {
+        const int require_selectable = ffmpeg_route_count > 0u ? 1 : 0;
+        if (!_mix_try_media_route_plan(rt,
+                                       &route_policy,
+                                       "ffmpeg.vp9.decode",
+                                       OBI_PROFILE_MEDIA_AV_DECODE_V0,
+                                       "obi.provider:media.ffmpeg",
+                                       ffmpeg_vp9_selectors,
+                                       sizeof(ffmpeg_vp9_selectors) / sizeof(ffmpeg_vp9_selectors[0]),
+                                       require_selectable,
+                                       &selected_route_count)) {
+            obi_rt_destroy(rt);
+            return 0;
+        }
+        if (!_mix_try_media_route_plan(rt,
+                                       &route_policy,
+                                       "ffmpeg.av1.decode",
+                                       OBI_PROFILE_MEDIA_AV_DECODE_V0,
+                                       "obi.provider:media.ffmpeg",
+                                       ffmpeg_av1_selectors,
+                                       sizeof(ffmpeg_av1_selectors) / sizeof(ffmpeg_av1_selectors[0]),
+                                       require_selectable,
+                                       &selected_route_count)) {
+            obi_rt_destroy(rt);
+            return 0;
+        }
+    }
+
+    if (_provider_loaded(rt, "obi.provider:media.gstreamer") &&
+        _provider_has_profile(rt, "obi.provider:media.gstreamer", OBI_PROFILE_MEDIA_AV_DECODE_V0)) {
+        if (!_mix_try_media_route_plan(rt,
+                                       &route_policy,
+                                       "gstreamer.vp9.decode",
+                                       OBI_PROFILE_MEDIA_AV_DECODE_V0,
+                                       "obi.provider:media.gstreamer",
+                                       gstreamer_vp9_selectors,
+                                       sizeof(gstreamer_vp9_selectors) / sizeof(gstreamer_vp9_selectors[0]),
+                                       0,
+                                       &selected_route_count)) {
+            obi_rt_destroy(rt);
+            return 0;
+        }
+    }
+
+    if (ffmpeg_route_count > 0u && selected_route_count < 2u) {
+        fprintf(stderr,
+                "mix media_routes: expected at least two selector-distinct ffmpeg routes selected (got=%zu)\n",
+                selected_route_count);
+        obi_rt_destroy(rt);
+        return 0;
+    }
+    if ((ffmpeg_route_count + gst_route_count + scale_ffmpeg_route_count) > 0u && selected_route_count == 0u) {
+        fprintf(stderr, "mix media_routes: no selectable media routes were activated\n");
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    obi_mix_coverage_ledger_v0 coverage;
+    memset(&coverage, 0, sizeof(coverage));
+    const char* shard_media = "media_routes.media";
+    const char* shard_pump = "media_routes.pump";
+    uint32_t seed = 0x5EA1A7E1u;
+    uint32_t state = seed;
+    uint32_t iterations = (uint32_t)(media_task_count * 2u + 10u);
+    if (iterations < 16u) {
+        iterations = 16u;
+    }
+
+    printf("mix_media_routes_begin seed=0x%08x iterations=%u media_tasks=%zu pump_tasks=%zu routes=%zu\n",
+           (unsigned)seed,
+           (unsigned)iterations,
+           media_task_count,
+           pump_task_count,
+           selected_route_count);
+
+    for (uint32_t iter = 0u; iter < iterations; iter++) {
+        const obi_mix_task_v0* media_task = &media_tasks[(size_t)(iter % (uint32_t)media_task_count)];
+        const obi_mix_task_v0* pump_task = &pump_tasks[(size_t)((iter + 1u) % (uint32_t)pump_task_count)];
+        const int flip = (_mix_rand_next(&state) & 1u) != 0u;
+
+        if (!flip) {
+            if (!_mix_run_task_in_runtime(rt, "media", shard_media, media_task, iter, seed, &coverage)) {
+                obi_rt_destroy(rt);
+                return 0;
+            }
+            if (!_mix_run_task_in_runtime(rt, "media", shard_pump, pump_task, iter, seed, &coverage)) {
+                obi_rt_destroy(rt);
+                return 0;
+            }
+        } else {
+            if (!_mix_run_task_in_runtime(rt, "media", shard_pump, pump_task, iter, seed, &coverage)) {
+                obi_rt_destroy(rt);
+                return 0;
+            }
+            if (!_mix_run_task_in_runtime(rt, "media", shard_media, media_task, iter, seed, &coverage)) {
+                obi_rt_destroy(rt);
+                return 0;
+            }
+        }
+    }
+
+    for (size_t i = 0u; i < media_task_count; i++) {
+        obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(&coverage,
+                                                                    shard_media,
+                                                                    media_tasks[i].profile_id,
+                                                                    media_tasks[i].provider_id);
+        if (!entry || entry->progress_count == 0u) {
+            fprintf(stderr,
+                    "mix media_routes: no media progress profile=%s provider=%s\n",
+                    media_tasks[i].profile_id,
+                    media_tasks[i].provider_id);
+            obi_rt_destroy(rt);
+            return 0;
+        }
+        _mix_coverage_mark_teardown(&coverage, shard_media, media_tasks[i].profile_id, media_tasks[i].provider_id);
+    }
+
+    for (size_t i = 0u; i < pump_task_count; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_pump, pump_tasks[i].profile_id, pump_tasks[i].provider_id);
+    }
+
+    if (!_mix_coverage_require_teardown_complete(&coverage, "media_routes", seed)) {
+        _mix_coverage_print_summary(&coverage, "media_routes", seed);
+        obi_rt_destroy(rt);
+        return 0;
+    }
+    _mix_coverage_print_summary(&coverage, "media_routes", seed);
+    obi_rt_destroy(rt);
+    _mix_current_cycle_index = UINT32_MAX;
+    return 1;
+}
+
+static int _exercise_mixed_backend_family_stateful_once(const char* const* provider_paths, int provider_count) {
+    if (!provider_paths || provider_count <= 0) {
+        return 0;
+    }
+    _mix_current_cycle_index = 0u;
+
+    obi_rt_v0* rt = NULL;
+    if (obi_rt_create(NULL, &rt) != OBI_STATUS_OK || !rt) {
+        fprintf(stderr, "mix family_stateful: rt create failed\n");
+        return 0;
+    }
+    if (!_mix_load_runtime_paths_selected(rt, provider_paths, provider_count, 0, "family_stateful")) {
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    static const char* k_text_font_candidates[] = { "obi.provider:text.pango", "obi.provider:text.stack" };
+    static const char* k_text_raster_candidates[] = { "obi.provider:text.stb", "obi.provider:text.stack" };
+    static const char* k_text_shape_candidates[] = { "obi.provider:text.icu", "obi.provider:text.stack" };
+    static const char* k_db_kv_candidates[] = { "obi.provider:db.kv.sqlite", "obi.provider:db.kv.lmdb" };
+    static const char* k_db_sql_candidates[] = { "obi.provider:db.sql.sqlite", "obi.provider:db.sql.postgres" };
+    static const char* k_phys2d_candidates[] = { "obi.provider:phys2d.box2d", "obi.provider:phys2d.chipmunk" };
+    static const char* k_phys3d_candidates[] = { "obi.provider:phys3d.ode", "obi.provider:phys3d.bullet" };
+    static const char* k_phys_debug_candidates[] = {
+        "obi.provider:phys2d.box2d",
+        "obi.provider:phys2d.chipmunk",
+        "obi.provider:phys3d.ode",
+        "obi.provider:phys3d.bullet",
+    };
+    static const char* k_ws_candidates[] = { "obi.provider:net.ws.libwebsockets", "obi.provider:net.ws.wslay" };
+    static const char* k_pump_candidates[] = { "obi.provider:core.pump.libuv", "obi.provider:core.pump.glib" };
+
+    obi_mix_task_v0 tasks[192];
+    size_t task_count = 0u;
+    size_t text_count = 0u;
+    size_t db_count = 0u;
+    size_t phys_count = 0u;
+
+    size_t before = task_count;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_TEXT_FONT_DB_V0,
+                                               k_text_font_candidates,
+                                               sizeof(k_text_font_candidates) / sizeof(k_text_font_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_TEXT_RASTER_CACHE_V0,
+                                               k_text_raster_candidates,
+                                               sizeof(k_text_raster_candidates) / sizeof(k_text_raster_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_TEXT_SHAPE_V0,
+                                               k_text_shape_candidates,
+                                               sizeof(k_text_shape_candidates) / sizeof(k_text_shape_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    text_count = task_count - before;
+
+    before = task_count;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_DB_KV_V0,
+                                               k_db_kv_candidates,
+                                               sizeof(k_db_kv_candidates) / sizeof(k_db_kv_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_DB_SQL_V0,
+                                               k_db_sql_candidates,
+                                               sizeof(k_db_sql_candidates) / sizeof(k_db_sql_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    db_count = task_count - before;
+
+    before = task_count;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_PHYS_WORLD2D_V0,
+                                               k_phys2d_candidates,
+                                               sizeof(k_phys2d_candidates) / sizeof(k_phys2d_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_PHYS_WORLD3D_V0,
+                                               k_phys3d_candidates,
+                                               sizeof(k_phys3d_candidates) / sizeof(k_phys3d_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_PHYS_DEBUG_DRAW_V0,
+                                               k_phys_debug_candidates,
+                                               sizeof(k_phys_debug_candidates) / sizeof(k_phys_debug_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    phys_count = task_count - before;
+
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_NET_WEBSOCKET_V0,
+                                               k_ws_candidates,
+                                               sizeof(k_ws_candidates) / sizeof(k_ws_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+
+    if (text_count == 0u || db_count == 0u || phys_count == 0u || task_count == 0u) {
+        fprintf(stderr,
+                "mix family_stateful: required family coverage missing text=%zu db=%zu phys=%zu total=%zu\n",
+                text_count,
+                db_count,
+                phys_count,
+                task_count);
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    obi_mix_task_v0 pump_tasks[16];
+    size_t pump_task_count = 0u;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_CORE_PUMP_V0,
+                                               k_pump_candidates,
+                                               sizeof(k_pump_candidates) / sizeof(k_pump_candidates[0]),
+                                               pump_tasks,
+                                               sizeof(pump_tasks) / sizeof(pump_tasks[0]),
+                                               &pump_task_count);
+    if (pump_task_count == 0u) {
+        fprintf(stderr, "mix family_stateful: no core.pump provider available\n");
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    obi_mix_coverage_ledger_v0 coverage;
+    memset(&coverage, 0, sizeof(coverage));
+    const char* shard_family = "family_stateful.main";
+    const char* shard_pump = "family_stateful.pump";
+    uint32_t seed = 0xF4A11A5Eu;
+    uint32_t state = seed;
+    uint32_t iterations = (uint32_t)(task_count * 2u + 8u);
+    if (iterations < 24u) {
+        iterations = 24u;
+    }
+
+    printf("mix_family_stateful_begin seed=0x%08x iterations=%u tasks=%zu pump=%zu text=%zu db=%zu phys=%zu\n",
+           (unsigned)seed,
+           (unsigned)iterations,
+           task_count,
+           pump_task_count,
+           text_count,
+           db_count,
+           phys_count);
+
+    obi_mix_resident_task_v0 resident_tasks[192];
+    memset(resident_tasks, 0, sizeof(resident_tasks));
+    size_t resident_opened = 0u;
+    int ok = 0;
+
+    for (size_t i = 0u; i < task_count; i++) {
+        _mix_resident_task_init(&resident_tasks[i], &tasks[i]);
+        if (!_mix_resident_task_open(rt, &resident_tasks[i])) {
+            fprintf(stderr,
+                    "mix family_stateful: resident open failed profile=%s provider=%s\n",
+                    tasks[i].profile_id,
+                    tasks[i].provider_id);
+            goto family_stateful_cleanup;
+        }
+        resident_opened++;
+        _mix_coverage_mark_object_created(&coverage, shard_family, tasks[i].profile_id, tasks[i].provider_id);
+    }
+
+    for (uint32_t iter = 0u; iter < iterations; iter++) {
+        obi_mix_resident_task_v0* main_task = &resident_tasks[(size_t)(iter % (uint32_t)task_count)];
+        const obi_mix_task_v0* pump_task = &pump_tasks[(size_t)((iter + 1u) % (uint32_t)pump_task_count)];
+        const int flip = (_mix_rand_next(&state) & 1u) != 0u;
+
+        if (!flip) {
+            if (!_mix_run_resident_task_in_runtime(rt, "family", shard_family, main_task, iter, seed, &coverage)) {
+                goto family_stateful_cleanup;
+            }
+            if (!_mix_run_task_in_runtime(rt, "family", shard_pump, pump_task, iter, seed, &coverage)) {
+                goto family_stateful_cleanup;
+            }
+        } else {
+            if (!_mix_run_task_in_runtime(rt, "family", shard_pump, pump_task, iter, seed, &coverage)) {
+                goto family_stateful_cleanup;
+            }
+            if (!_mix_run_resident_task_in_runtime(rt, "family", shard_family, main_task, iter, seed, &coverage)) {
+                goto family_stateful_cleanup;
+            }
+        }
+    }
+
+    for (size_t i = 0u; i < task_count; i++) {
+        obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(&coverage,
+                                                                    shard_family,
+                                                                    resident_tasks[i].profile_id,
+                                                                    resident_tasks[i].provider_id);
+        if (!entry || entry->progress_count == 0u) {
+            fprintf(stderr,
+                    "mix family_stateful: no progress profile=%s provider=%s\n",
+                    resident_tasks[i].profile_id,
+                    resident_tasks[i].provider_id);
+            goto family_stateful_cleanup;
+        }
+    }
+
+    for (size_t i = 0u; i < pump_task_count; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_pump, pump_tasks[i].profile_id, pump_tasks[i].provider_id);
+    }
+
+    ok = 1;
+
+family_stateful_cleanup:
+    for (size_t i = 0u; i < resident_opened; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_family, tasks[i].profile_id, tasks[i].provider_id);
+        _mix_resident_task_close(&resident_tasks[i]);
+    }
+
+    if (!ok) {
+        obi_rt_destroy(rt);
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+
+    if (!_mix_coverage_require_teardown_complete(&coverage, "family_stateful", seed)) {
+        _mix_coverage_print_summary(&coverage, "family_stateful", seed);
+        obi_rt_destroy(rt);
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+    _mix_coverage_print_summary(&coverage, "family_stateful", seed);
+    obi_rt_destroy(rt);
+    _mix_current_cycle_index = UINT32_MAX;
+    return 1;
+}
+
+static int _exercise_mixed_backend_family_gfx_once(const char* const* provider_paths, int provider_count) {
+    if (!provider_paths || provider_count <= 0) {
+        return 0;
+    }
+    _mix_current_cycle_index = 0u;
+
+    obi_rt_v0* rt = NULL;
+    if (obi_rt_create(NULL, &rt) != OBI_STATUS_OK || !rt) {
+        fprintf(stderr, "mix family_gfx: rt create failed\n");
+        return 0;
+    }
+    if (!_mix_load_runtime_paths_selected(rt, provider_paths, provider_count, 0, "family_gfx")) {
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    static const char* k_gfx_sdl3_candidates[] = { "obi.provider:gfx.sdl3", "obi.provider:gfx.raylib" };
+    static const char* k_gfx_gpu_candidates[] = { "obi.provider:gfx.gpu.sokol", "obi.provider:gfx.sdl3" };
+    static const char* k_gfx_render3d_candidates[] = { "obi.provider:gfx.render3d.raylib", "obi.provider:gfx.render3d.sokol" };
+    static const char* k_media_image_candidates[] = { "obi.provider:media.image", "obi.provider:media.gdkpixbuf", "obi.provider:media.stb" };
+    static const char* k_media_audio_device_candidates[] = { "obi.provider:media.audio.sdl3", "obi.provider:media.audio.portaudio" };
+    static const char* k_media_audio_mix_candidates[] = {
+        "obi.provider:media.audio.miniaudio",
+        "obi.provider:media.audio.openal",
+        "obi.provider:media.audio.sdlmixer12",
+    };
+    static const char* k_media_audio_rs_candidates[] = {
+        "obi.provider:media.audio_resample.libsamplerate",
+        "obi.provider:media.audio_resample.speexdsp",
+    };
+    static const char* k_pump_candidates[] = { "obi.provider:core.pump.libuv", "obi.provider:core.pump.glib" };
+
+    obi_mix_task_v0 tasks[192];
+    size_t task_count = 0u;
+    size_t gfx_count = 0u;
+    size_t media_count = 0u;
+
+    size_t before = task_count;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_WINDOW_INPUT_V0,
+                                               k_gfx_sdl3_candidates,
+                                               sizeof(k_gfx_sdl3_candidates) / sizeof(k_gfx_sdl3_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_RENDER2D_V0,
+                                               k_gfx_sdl3_candidates,
+                                               sizeof(k_gfx_sdl3_candidates) / sizeof(k_gfx_sdl3_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_GPU_DEVICE_V0,
+                                               k_gfx_gpu_candidates,
+                                               sizeof(k_gfx_gpu_candidates) / sizeof(k_gfx_gpu_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_GFX_RENDER3D_V0,
+                                               k_gfx_render3d_candidates,
+                                               sizeof(k_gfx_render3d_candidates) / sizeof(k_gfx_render3d_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    gfx_count = task_count - before;
+
+    before = task_count;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_IMAGE_CODEC_V0,
+                                               k_media_image_candidates,
+                                               sizeof(k_media_image_candidates) / sizeof(k_media_image_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0,
+                                               k_media_audio_device_candidates,
+                                               sizeof(k_media_audio_device_candidates) / sizeof(k_media_audio_device_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_AUDIO_MIX_V0,
+                                               k_media_audio_mix_candidates,
+                                               sizeof(k_media_audio_mix_candidates) / sizeof(k_media_audio_mix_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0,
+                                               k_media_audio_rs_candidates,
+                                               sizeof(k_media_audio_rs_candidates) / sizeof(k_media_audio_rs_candidates[0]),
+                                               tasks,
+                                               sizeof(tasks) / sizeof(tasks[0]),
+                                               &task_count);
+    media_count = task_count - before;
+
+    if (gfx_count == 0u || task_count == 0u) {
+        fprintf(stderr,
+                "mix family_gfx: required gfx coverage missing gfx=%zu total=%zu\n",
+                gfx_count,
+                task_count);
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    obi_mix_task_v0 pump_tasks[16];
+    size_t pump_task_count = 0u;
+    _mix_collect_profile_tasks_from_candidates(rt,
+                                               OBI_PROFILE_CORE_PUMP_V0,
+                                               k_pump_candidates,
+                                               sizeof(k_pump_candidates) / sizeof(k_pump_candidates[0]),
+                                               pump_tasks,
+                                               sizeof(pump_tasks) / sizeof(pump_tasks[0]),
+                                               &pump_task_count);
+    if (pump_task_count == 0u) {
+        fprintf(stderr, "mix family_gfx: no core.pump provider available\n");
+        obi_rt_destroy(rt);
+        return 0;
+    }
+
+    obi_mix_coverage_ledger_v0 coverage;
+    memset(&coverage, 0, sizeof(coverage));
+    const char* shard_main = "family_gfx.main";
+    const char* shard_pump = "family_gfx.pump";
+    uint32_t seed = 0x6F58A77Eu;
+    uint32_t state = seed;
+    uint32_t iterations = (uint32_t)(task_count * 2u + 8u);
+    if (iterations < 24u) {
+        iterations = 24u;
+    }
+
+    printf("mix_family_gfx_begin seed=0x%08x iterations=%u tasks=%zu pump=%zu gfx=%zu media=%zu\n",
+           (unsigned)seed,
+           (unsigned)iterations,
+           task_count,
+           pump_task_count,
+           gfx_count,
+           media_count);
+
+    obi_mix_resident_task_v0 resident_tasks[192];
+    memset(resident_tasks, 0, sizeof(resident_tasks));
+    size_t resident_opened = 0u;
+    int ok = 0;
+
+    for (size_t i = 0u; i < task_count; i++) {
+        _mix_resident_task_init(&resident_tasks[i], &tasks[i]);
+        if (!_mix_resident_task_open(rt, &resident_tasks[i])) {
+            fprintf(stderr,
+                    "mix family_gfx: resident open failed profile=%s provider=%s\n",
+                    tasks[i].profile_id,
+                    tasks[i].provider_id);
+            goto family_gfx_cleanup;
+        }
+        resident_opened++;
+        _mix_coverage_mark_object_created(&coverage, shard_main, tasks[i].profile_id, tasks[i].provider_id);
+    }
+
+    for (uint32_t iter = 0u; iter < iterations; iter++) {
+        obi_mix_resident_task_v0* main_task = &resident_tasks[(size_t)(iter % (uint32_t)task_count)];
+        const obi_mix_task_v0* pump_task = &pump_tasks[(size_t)((iter + 1u) % (uint32_t)pump_task_count)];
+        const int flip = (_mix_rand_next(&state) & 1u) != 0u;
+
+        if (!flip) {
+            if (!_mix_run_resident_task_in_runtime(rt, "family_gfx", shard_main, main_task, iter, seed, &coverage)) {
+                goto family_gfx_cleanup;
+            }
+            if (!_mix_run_task_in_runtime(rt, "family_gfx", shard_pump, pump_task, iter, seed, &coverage)) {
+                goto family_gfx_cleanup;
+            }
+        } else {
+            if (!_mix_run_task_in_runtime(rt, "family_gfx", shard_pump, pump_task, iter, seed, &coverage)) {
+                goto family_gfx_cleanup;
+            }
+            if (!_mix_run_resident_task_in_runtime(rt, "family_gfx", shard_main, main_task, iter, seed, &coverage)) {
+                goto family_gfx_cleanup;
+            }
+        }
+    }
+
+    for (size_t i = 0u; i < task_count; i++) {
+        obi_mix_coverage_entry_v0* entry = _mix_coverage_entry_get(&coverage,
+                                                                    shard_main,
+                                                                    resident_tasks[i].profile_id,
+                                                                    resident_tasks[i].provider_id);
+        if (!entry || entry->progress_count == 0u) {
+            fprintf(stderr,
+                    "mix family_gfx: no progress profile=%s provider=%s\n",
+                    resident_tasks[i].profile_id,
+                    resident_tasks[i].provider_id);
+            goto family_gfx_cleanup;
+        }
+    }
+
+    for (size_t i = 0u; i < pump_task_count; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_pump, pump_tasks[i].profile_id, pump_tasks[i].provider_id);
+    }
+
+    ok = 1;
+
+family_gfx_cleanup:
+    for (size_t i = 0u; i < resident_opened; i++) {
+        _mix_coverage_mark_teardown(&coverage, shard_main, tasks[i].profile_id, tasks[i].provider_id);
+        _mix_resident_task_close(&resident_tasks[i]);
+    }
+
+    if (!ok) {
+        obi_rt_destroy(rt);
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+
+    if (!_mix_coverage_require_teardown_complete(&coverage, "family_gfx", seed)) {
+        _mix_coverage_print_summary(&coverage, "family_gfx", seed);
+        obi_rt_destroy(rt);
+        _mix_current_cycle_index = UINT32_MAX;
+        return 0;
+    }
+    _mix_coverage_print_summary(&coverage, "family_gfx", seed);
+    obi_rt_destroy(rt);
+    _mix_current_cycle_index = UINT32_MAX;
+    return 1;
+}
+
+static int _exercise_mixed_backend_mix_eligibility_sweep(obi_rt_v0* rt) {
+    static const char* k_mix_profiles[] = {
+        OBI_PROFILE_CORE_CANCEL_V0,
+        OBI_PROFILE_CORE_PUMP_V0,
+        OBI_PROFILE_CORE_WAITSET_V0,
+        OBI_PROFILE_OS_FS_WATCH_V0,
+        OBI_PROFILE_IPC_BUS_V0,
+        OBI_PROFILE_NET_SOCKET_V0,
+        OBI_PROFILE_NET_HTTP_CLIENT_V0,
+        OBI_PROFILE_TIME_DATETIME_V0,
+        OBI_PROFILE_TEXT_REGEX_V0,
+        OBI_PROFILE_DATA_FILE_TYPE_V0,
+        OBI_PROFILE_DATA_SERDE_EVENTS_V0,
+        OBI_PROFILE_DATA_SERDE_EMIT_V0,
+        OBI_PROFILE_GFX_WINDOW_INPUT_V0,
+        OBI_PROFILE_GFX_RENDER2D_V0,
+        OBI_PROFILE_GFX_GPU_DEVICE_V0,
+        OBI_PROFILE_GFX_RENDER3D_V0,
+        OBI_PROFILE_MEDIA_IMAGE_CODEC_V0,
+        OBI_PROFILE_MEDIA_AUDIO_DEVICE_V0,
+        OBI_PROFILE_MEDIA_AUDIO_MIX_V0,
+        OBI_PROFILE_MEDIA_AUDIO_RESAMPLE_V0,
+        OBI_PROFILE_NET_WEBSOCKET_V0,
+        OBI_PROFILE_DB_KV_V0,
+        OBI_PROFILE_DB_SQL_V0,
+        OBI_PROFILE_PHYS_WORLD2D_V0,
+        OBI_PROFILE_PHYS_WORLD3D_V0,
+        OBI_PROFILE_PHYS_DEBUG_DRAW_V0,
+        OBI_PROFILE_TEXT_FONT_DB_V0,
+        OBI_PROFILE_TEXT_RASTER_CACHE_V0,
+        OBI_PROFILE_TEXT_SHAPE_V0,
+        OBI_PROFILE_MEDIA_DEMUX_V0,
+        OBI_PROFILE_MEDIA_MUX_V0,
+        OBI_PROFILE_MEDIA_AV_DECODE_V0,
+        OBI_PROFILE_MEDIA_AV_ENCODE_V0,
+        OBI_PROFILE_MEDIA_VIDEO_SCALE_CONVERT_V0,
+    };
+
+    if (!rt) {
+        return 0;
+    }
+
+    const int gpio_target = _is_gpio_hardware_target();
+    size_t provider_count = 0u;
+    if (obi_rt_provider_count(rt, &provider_count) != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "mix provider sweep: provider_count failed cycle=%u seed=0x%08x\n",
+                (unsigned)_mix_current_cycle_index,
+                0u);
+        return 0;
+    }
+
+    size_t eligible_count = 0u;
+    size_t exercised_count = 0u;
+
+    for (size_t i = 0u; i < provider_count; i++) {
+        const char* provider_id = NULL;
+        if (obi_rt_provider_id(rt, i, &provider_id) != OBI_STATUS_OK || !provider_id) {
+            fprintf(stderr,
+                    "mix provider sweep: provider_id failed cycle=%u seed=0x%08x index=%zu\n",
+                    (unsigned)_mix_current_cycle_index,
+                    0u,
+                    i);
+            return 0;
+        }
+
+        const char* selected_profile = NULL;
+        for (size_t j = 0u; j < sizeof(k_mix_profiles) / sizeof(k_mix_profiles[0]); j++) {
+            const char* profile_id = k_mix_profiles[j];
+            if (strcmp(profile_id, OBI_PROFILE_HW_GPIO_V0) == 0 && !gpio_target) {
+                continue;
+            }
+            if (_provider_has_profile(rt, provider_id, profile_id)) {
+                selected_profile = profile_id;
+                break;
+            }
+        }
+
+        if (!selected_profile) {
+            continue;
+        }
+
+        eligible_count++;
+        if (!_exercise_profile_for_provider(rt, selected_profile, provider_id, 1)) {
+            fprintf(stderr,
+                    "mix provider sweep: exercise failed cycle=%u seed=0x%08x provider=%s profile=%s index=%zu\n",
+                    (unsigned)_mix_current_cycle_index,
+                    0u,
+                    provider_id,
+                    selected_profile,
+                    i);
+            return 0;
+        }
+        exercised_count++;
+        printf("mix_provider_sweep provider=%s profile=%s\n", provider_id, selected_profile);
+    }
+
+    if (eligible_count != exercised_count) {
+        fprintf(stderr,
+                "mix provider sweep: coverage mismatch cycle=%u seed=0x%08x eligible=%zu exercised=%zu\n",
+                (unsigned)_mix_current_cycle_index,
+                0u,
+                eligible_count,
+                exercised_count);
+        return 0;
+    }
+
+    printf("mix_provider_sweep_summary cycle=%u seed=0x%08x eligible=%zu exercised=%zu\n",
+           (unsigned)_mix_current_cycle_index,
+           0u,
+           eligible_count,
+           exercised_count);
+    return 1;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) {
         _usage(argv[0]);
@@ -11800,6 +15906,11 @@ int main(int argc, char** argv) {
 
     int mode_profiles = 0;
     int mode_mix = 0;
+    int mode_mix_pairwise = 0;
+    int mode_mix_dual_runtime = 0;
+    int mode_mix_media_routes = 0;
+    int mode_mix_family_stateful = 0;
+    int mode_mix_family_gfx = 0;
     int mode_profile_provider = 0;
     if (strcmp(argv[1], "--load-only") == 0) {
         mode_profiles = 0;
@@ -11807,6 +15918,16 @@ int main(int argc, char** argv) {
         mode_profiles = 1;
     } else if (strcmp(argv[1], "--mix") == 0) {
         mode_mix = 1;
+    } else if (strcmp(argv[1], "--mix-pairwise") == 0) {
+        mode_mix_pairwise = 1;
+    } else if (strcmp(argv[1], "--mix-dual-runtime") == 0) {
+        mode_mix_dual_runtime = 1;
+    } else if (strcmp(argv[1], "--mix-media-routes") == 0) {
+        mode_mix_media_routes = 1;
+    } else if (strcmp(argv[1], "--mix-family-stateful") == 0) {
+        mode_mix_family_stateful = 1;
+    } else if (strcmp(argv[1], "--mix-family-gfx") == 0) {
+        mode_mix_family_gfx = 1;
     } else if (strcmp(argv[1], "--profile-provider") == 0) {
         mode_profile_provider = 1;
     } else {
@@ -11844,13 +15965,62 @@ int main(int argc, char** argv) {
         provider_begin = 4;
     }
 
-    if (mode_mix) {
+    if (mode_mix || mode_mix_pairwise || mode_mix_dual_runtime || mode_mix_media_routes ||
+        mode_mix_family_stateful || mode_mix_family_gfx) {
         _configure_mix_headless_hints();
+    }
+
+    if (mode_mix) {
         if (!_exercise_mixed_backend_lifecycle((const char* const*)&argv[provider_begin], provider_end - provider_begin)) {
             fprintf(stderr, "mixed-backend interleave lifecycle exercise failed\n");
             return 1;
         }
         printf("exercise_ok=mix.interleave.lifecycle\n");
+        return 0;
+    }
+
+    if (mode_mix_pairwise) {
+        if (!_exercise_mixed_backend_pairwise_once((const char* const*)&argv[provider_begin], provider_end - provider_begin)) {
+            fprintf(stderr, "mixed-backend pairwise exercise failed\n");
+            return 1;
+        }
+        printf("exercise_ok=mix.pairwise\n");
+        return 0;
+    }
+
+    if (mode_mix_dual_runtime) {
+        if (!_exercise_mixed_backend_dual_runtime((const char* const*)&argv[provider_begin], provider_end - provider_begin)) {
+            fprintf(stderr, "mixed-backend dual-runtime exercise failed\n");
+            return 1;
+        }
+        printf("exercise_ok=mix.dual_runtime\n");
+        return 0;
+    }
+
+    if (mode_mix_media_routes) {
+        if (!_exercise_mixed_backend_media_routes_once((const char* const*)&argv[provider_begin], provider_end - provider_begin)) {
+            fprintf(stderr, "mixed-backend media-routes exercise failed\n");
+            return 1;
+        }
+        printf("exercise_ok=mix.media_routes\n");
+        return 0;
+    }
+
+    if (mode_mix_family_stateful) {
+        if (!_exercise_mixed_backend_family_stateful_once((const char* const*)&argv[provider_begin], provider_end - provider_begin)) {
+            fprintf(stderr, "mixed-backend family-stateful exercise failed\n");
+            return 1;
+        }
+        printf("exercise_ok=mix.family_stateful\n");
+        return 0;
+    }
+
+    if (mode_mix_family_gfx) {
+        if (!_exercise_mixed_backend_family_gfx_once((const char* const*)&argv[provider_begin], provider_end - provider_begin)) {
+            fprintf(stderr, "mixed-backend family-gfx exercise failed\n");
+            return 1;
+        }
+        printf("exercise_ok=mix.family_gfx\n");
         return 0;
     }
 

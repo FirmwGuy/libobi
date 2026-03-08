@@ -440,6 +440,8 @@ Smoke validation:
 ```sh
 meson test -C build --no-rebuild \
   provider_load_smoke_roadmap provider_profile_smoke_roadmap provider_mix_smoke_roadmap \
+  provider_mix_smoke_roadmap_pairwise provider_mix_smoke_dual_runtime \
+  provider_mix_smoke_media_routes provider_mix_smoke_family_stateful provider_mix_smoke_family_gfx \
   provider_load_smoke_bootstrap provider_profile_smoke_bootstrap
 ```
 
@@ -450,6 +452,11 @@ meson test -C build --no-rebuild \
 `--mix` executes three lifecycle cycles (forward/reverse/rotated provider load order) to catch repeated
 setup/teardown and unload/reload collisions. Hardware/display dependent overlap tasks continue to emit `SKIP`
 on unsupported targets instead of synthetic pass paths.
+
+`--mix-family-stateful` and `--mix-family-gfx` now keep resident task objects open across overlap loops
+and close them with coverage-ledger teardown checks. `--mix-dual-runtime` includes non-SDL3 gfx providers
+(`gfx.raylib`, `gfx.gpu.sokol`, `gfx.render3d.raylib`, `gfx.render3d.sokol`) after shared Sokol setup/shutdown
+refcounting removed process-global singleton collisions.
 
 GPIO profile smoke/conformance registration is disabled by default in Meson (`-Dgpio_hardware_tests=false`).
 Enable GPIO test registration only on Raspberry Pi or dedicated jig targets with `-Dgpio_hardware_tests=true`.

@@ -217,12 +217,92 @@ if provider_modules.length() > 0
   endforeach
   roadmap_mix_ready = roadmap_mix_has_time and roadmap_mix_has_text and roadmap_mix_has_data and roadmap_mix_has_media
   roadmap_mix_ready = roadmap_mix_ready and roadmap_mix_has_overlap_profiles
+  roadmap_mix_media_route_profiles = [
+    'obi.profile:core.pump-0',
+    'obi.profile:media.demux-0',
+    'obi.profile:media.mux-0',
+    'obi.profile:media.av_decode-0',
+    'obi.profile:media.av_encode-0',
+    'obi.profile:media.video_scale_convert-0',
+  ]
+  roadmap_mix_has_media_route_profiles = true
+  foreach required_profile : roadmap_mix_media_route_profiles
+    if not roadmap_provider_profiles.contains(required_profile)
+      roadmap_mix_has_media_route_profiles = false
+    endif
+  endforeach
+  roadmap_mix_has_media_route_providers = roadmap_provider_ids.contains('obi.provider:media.ffmpeg')
+  roadmap_mix_has_media_route_providers = roadmap_mix_has_media_route_providers and roadmap_provider_ids.contains('obi.provider:media.gstreamer')
+  roadmap_mix_has_media_route_providers = roadmap_mix_has_media_route_providers and roadmap_provider_ids.contains('obi.provider:media.scale.ffmpeg')
+  roadmap_mix_has_media_route_providers = roadmap_mix_has_media_route_providers and roadmap_provider_ids.contains('obi.provider:media.scale.libyuv')
+  roadmap_mix_media_routes_ready = roadmap_mix_has_media_route_profiles and roadmap_mix_has_media_route_providers
+  roadmap_mix_family_stateful_profiles = [
+    'obi.profile:core.pump-0',
+    'obi.profile:text.font_db-0',
+    'obi.profile:text.raster_cache-0',
+    'obi.profile:text.shape-0',
+    'obi.profile:db.kv-0',
+    'obi.profile:db.sql-0',
+    'obi.profile:phys.world2d-0',
+    'obi.profile:phys.world3d-0',
+    'obi.profile:phys.debug_draw-0',
+  ]
+  roadmap_mix_has_family_stateful_profiles = true
+  foreach required_profile : roadmap_mix_family_stateful_profiles
+    if not roadmap_provider_profiles.contains(required_profile)
+      roadmap_mix_has_family_stateful_profiles = false
+    endif
+  endforeach
+  roadmap_mix_family_gfx_profiles = [
+    'obi.profile:core.pump-0',
+    'obi.profile:gfx.window_input-0',
+    'obi.profile:gfx.render2d-0',
+    'obi.profile:gfx.gpu_device-0',
+    'obi.profile:gfx.render3d-0',
+  ]
+  roadmap_mix_has_family_gfx_profiles = true
+  foreach required_profile : roadmap_mix_family_gfx_profiles
+    if not roadmap_provider_profiles.contains(required_profile)
+      roadmap_mix_has_family_gfx_profiles = false
+    endif
+  endforeach
   if roadmap_mix_ready and roadmap_provider_paths.length() > 0
     test(
       'provider_mix_smoke_roadmap',
       provider_smoke,
       args: ['--mix'] + roadmap_provider_paths,
     )
+    test(
+      'provider_mix_smoke_roadmap_pairwise',
+      provider_smoke,
+      args: ['--mix-pairwise'] + roadmap_provider_paths,
+    )
+    test(
+      'provider_mix_smoke_dual_runtime',
+      provider_smoke,
+      args: ['--mix-dual-runtime'] + roadmap_provider_paths,
+    )
+    if roadmap_mix_media_routes_ready
+      test(
+        'provider_mix_smoke_media_routes',
+        provider_smoke,
+        args: ['--mix-media-routes'] + roadmap_provider_paths,
+      )
+    endif
+    if roadmap_mix_has_family_stateful_profiles
+      test(
+        'provider_mix_smoke_family_stateful',
+        provider_smoke,
+        args: ['--mix-family-stateful'] + roadmap_provider_paths,
+      )
+    endif
+    if roadmap_mix_has_family_gfx_profiles
+      test(
+        'provider_mix_smoke_family_gfx',
+        provider_smoke,
+        args: ['--mix-family-gfx'] + roadmap_provider_paths,
+      )
+    endif
   endif
 
   # Mixed-runtime bootstrap overlap contract (mirrors docs/mixed_runtime_poc_matrix.md):

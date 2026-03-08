@@ -81,6 +81,37 @@ typedef struct obi_gfx_gpu_sokol_ctx_v0 {
     obi_gpu_pipeline_id_v0 next_pipeline_id;
 } obi_gfx_gpu_sokol_ctx_v0;
 
+/* sokol_gfx is process-global inside this provider module. Keep a local refcount so
+ * multiple runtimes in one process can acquire/release it without asserting in sg_setup().
+ */
+static size_t OBI_GFX_GPU_SOKOL_SG_REFCOUNT = 0u;
+
+static int _sokol_sg_acquire(void) {
+    if (OBI_GFX_GPU_SOKOL_SG_REFCOUNT == 0u) {
+        sg_desc sg_desc_cfg;
+        memset(&sg_desc_cfg, 0, sizeof(sg_desc_cfg));
+        sg_setup(&sg_desc_cfg);
+        if (!sg_isvalid()) {
+            return 0;
+        }
+    } else if (!sg_isvalid()) {
+        return 0;
+    }
+
+    OBI_GFX_GPU_SOKOL_SG_REFCOUNT++;
+    return 1;
+}
+
+static void _sokol_sg_release(void) {
+    if (OBI_GFX_GPU_SOKOL_SG_REFCOUNT == 0u) {
+        return;
+    }
+    OBI_GFX_GPU_SOKOL_SG_REFCOUNT--;
+    if (OBI_GFX_GPU_SOKOL_SG_REFCOUNT == 0u && sg_isvalid()) {
+        sg_shutdown();
+    }
+}
+
 static int _grow_slots(void** slots, size_t* cap, size_t elem_size) {
     size_t new_cap = (*cap == 0u) ? 8u : (*cap * 2u);
     if (new_cap < *cap) {
@@ -746,7 +777,7 @@ static void _destroy(void* ctx) {
     free(p->pipelines);
 
     if (p->sg_ready) {
-        sg_shutdown();
+        _sokol_sg_release();
     }
 
     if (p->host && p->host->free) {
@@ -795,10 +826,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
     ctx->next_shader_id = 1u;
     ctx->next_pipeline_id = 1u;
 
-    sg_desc sg_desc_cfg;
-    memset(&sg_desc_cfg, 0, sizeof(sg_desc_cfg));
-    sg_setup(&sg_desc_cfg);
-    if (!sg_isvalid()) {
+    if (!_sokol_sg_acquire()) {
         if (host->free) {
             host->free(host->ctx, ctx);
         } else {

@@ -152,6 +152,11 @@ Everything else currently implemented under `*.inhouse` / `*.bootstrap` (plus ex
 - `provider_profile_smoke_roadmap`
 - `provider_profile_smoke_bootstrap`
 - `provider_mix_smoke_roadmap` (release hard gate; registered only when baseline roadmap providers and overlap-gate profiles are all present)
+- `provider_mix_smoke_roadmap_pairwise`
+- `provider_mix_smoke_dual_runtime`
+- `provider_mix_smoke_media_routes`
+- `provider_mix_smoke_family_stateful`
+- `provider_mix_smoke_family_gfx`
 - `provider_profile_conformance_roadmap__<profile>__<provider>`
 - `provider_profile_conformance_bootstrap__<profile>__<provider>`
 - GPIO profile smoke/conformance rows are excluded unless Meson is configured with `-Dgpio_hardware_tests=true`.
@@ -163,9 +168,15 @@ Stage 3 mixed-runtime POC is complete for the current roadmap-complete provider 
 and remains hard-gated in Meson for the current async/stateful overlap set:
 `core.cancel-0`, `core.pump-0`, `core.waitset-0`, `os.fs_watch-0`, `ipc.bus-0`, `net.socket-0`,
 `net.http_client-0`, `time.datetime-0`, `text.regex-0`, `data.serde_events-0`, `data.serde_emit-0`.
-The mix lane now runs three lifecycle cycles (forward/reverse/rotated provider load order) and includes
-real overlap coverage for additional shared-resource profiles such as `media.audio_device-0`,
-`media.audio_mix-0`, `media.audio_resample-0`, and `net.websocket-0`.
+The lifecycle mix lane runs three load-order cycles (forward/reverse/rotated) and is complemented by
+dedicated roadmap shards for pairwise same-profile coexistence, dual-runtime coexistence,
+route-sensitive media interleave, and family-focused text/db/physics interleave.
+Family shards now keep resident task objects alive through overlap loops with
+coverage-ledger teardown checks (instead of one-shot-only stepping).
+Dual-runtime coexistence now includes non-SDL3 gfx providers
+(`gfx.raylib`, `gfx.gpu.sokol`, `gfx.render3d.raylib`, `gfx.render3d.sokol`);
+Sokol providers use shared process-local setup/shutdown refcounting to avoid
+runtime collision during interleaved two-runtime execution.
 
 Build policy note kept from the provider audit: backend resolution should prefer
 system shared libraries first, then vendored shared fallbacks. Static vendored
