@@ -110,8 +110,12 @@ static void _os_fswatch_batch_release(void* release_ctx, obi_fs_watch_event_batc
     if (b) {
         if (b->events) {
             for (size_t i = 0u; i < b->count; i++) {
-                free((void*)b->events[i].path.data);
-                free((void*)b->events[i].path2.data);
+                const char* path = b->events[i].path.data;
+                const char* path2 = b->events[i].path2.data;
+                free((void*)path);
+                if (path2 != path) {
+                    free((void*)path2);
+                }
             }
         }
         free(b->events);

@@ -3,7 +3,7 @@
 
 **Document Type:** Changelog
 **Status:** Draft
-**Last Updated:** 2026-03-08
+**Last Updated:** 2026-03-15
 
 ---
 
@@ -37,6 +37,9 @@ locally through `./obi-abi/`.
   source file that still exposes `describe_json()` now also exposes
   `describe_legal_metadata()`. Older external providers remain supported through
   conservative JSON fallback mapping.
+- Completed contract hardening across provider families, with
+  deterministic bad-argument/unsupported mapping for malformed params, strict
+  unknown-flag rejection, and tightened shared media/db/os/gfx validation paths.
 - Updated `obi.provider:phys2d.box2d` and `obi.provider:phys2d.chipmunk` to use
   direct backend delegation instead of shared native-wrapper behavior.
 - Changed vendored backend linkage policy to prefer system shared libraries
@@ -51,12 +54,12 @@ locally through `./obi-abi/`.
   (`gfx.raylib`, `gfx.gpu.sokol`, `gfx.render3d.raylib`, `gfx.render3d.sokol`)
   after adding shared process-local Sokol setup/shutdown refcounting to avoid
   singleton collisions when two runtimes are interleaved in one process.
+- Fixed a `data.uri.uriparser` error-path double-free in URI
+  `normalize_utf8`/`resolve_utf8` text conversion by removing redundant frees
+  after `_uri_make_text(...)` ownership transfer.
+- Hardened native fs-watch event polling to avoid possible event-array overflow
+  when filesystem state changes between pre-count and emit passes, and tightened
+  native recursive-mkdir trailing-slash trimming to pointer-safe bounds logic.
 - Updated `README.md`, `docs/profile_backend_matrix.md`, and
   `docs/mixed_runtime_poc_matrix.md` to reflect the current legal-selector,
   mixed-runtime, provenance, and backend-policy state.
-
-### Removed
-
-- Removed the temporary root planning and audit artifacts after preserving their
-  durable conclusions in permanent documentation:
-  `TODO.md`, the `*_TMP_*` reports, and `TT/`.

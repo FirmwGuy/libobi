@@ -29,6 +29,19 @@ typedef struct obi_file_type_hold_v0 {
     char* enc;
 } obi_file_type_hold_v0;
 
+static int _file_type_params_valid(const obi_file_type_params_v0* params) {
+    if (!params) {
+        return 1;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return 0;
+    }
+    if (params->flags != 0u) {
+        return 0;
+    }
+    return 1;
+}
+
 static char* _dup_str(const char* s) {
     if (!s) {
         return NULL;
@@ -107,7 +120,9 @@ static obi_status _detect_from_bytes(void* ctx,
                                      obi_bytes_view_v0 bytes,
                                      const obi_file_type_params_v0* params,
                                      obi_file_type_info_v0* out_info) {
-    (void)params;
+    if (!_file_type_params_valid(params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
     return _fill_info((obi_data_magic_ctx_v0*)ctx, bytes.data, bytes.size, out_info);
 }
 
@@ -116,6 +131,9 @@ static obi_status _detect_from_reader(void* ctx,
                                       const obi_file_type_params_v0* params,
                                       obi_file_type_info_v0* out_info) {
     if (!ctx || !reader.api || !reader.api->read || !out_info) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_file_type_params_valid(params)) {
         return OBI_STATUS_BAD_ARG;
     }
 

@@ -319,6 +319,12 @@ static obi_status _tcp_connect(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
 #if defined(_WIN32)
     (void)port;

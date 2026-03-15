@@ -224,6 +224,18 @@ static bool _streq(const char* a, const char* b) {
     return strcmp(a, b) == 0;
 }
 
+static size_t _input_struct_size_or_full(uint32_t struct_size, size_t full_size) {
+    size_t n = (size_t)struct_size;
+    if (n == 0u || n > full_size) {
+        return full_size;
+    }
+    return n;
+}
+
+static bool _input_struct_has_field(size_t struct_size, size_t field_end) {
+    return struct_size >= field_end;
+}
+
 static void _normalize_ascii_token_inplace(char* s) {
     if (!s) {
         return;
@@ -1532,6 +1544,17 @@ static obi_status _provider_legal_metadata_from_typed(obi_cached_provider_legal_
     if (!legal || !src) {
         return OBI_STATUS_BAD_ARG;
     }
+    if ((size_t)src->struct_size < sizeof(*src)) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    if ((src->dependency_count > 0u && !src->dependencies) ||
+        (src->route_count > 0u && !src->routes)) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    if (src->dependency_count > (SIZE_MAX / sizeof(obi_legal_dependency_v0)) ||
+        src->route_count > (SIZE_MAX / sizeof(obi_legal_route_v0))) {
+        return OBI_STATUS_OUT_OF_MEMORY;
+    }
 
     _legal_metadata_reset(legal);
     legal->meta.struct_size = (uint32_t)sizeof(legal->meta);
@@ -1547,6 +1570,11 @@ static obi_status _provider_legal_metadata_from_typed(obi_cached_provider_legal_
     }
 
     if (src->dependency_count > 0u && src->dependencies) {
+        for (size_t i = 0; i < src->dependency_count; i++) {
+            if ((size_t)src->dependencies[i].struct_size < sizeof(obi_legal_dependency_v0)) {
+                return OBI_STATUS_UNSUPPORTED;
+            }
+        }
         obi_legal_dependency_v0* deps =
             (obi_legal_dependency_v0*)_legal_track_alloc(legal,
                                                          src->dependency_count * sizeof(obi_legal_dependency_v0));
@@ -1586,6 +1614,28 @@ static obi_status _provider_legal_metadata_from_typed(obi_cached_provider_legal_
     }
 
     if (src->route_count > 0u && src->routes) {
+        for (size_t i = 0; i < src->route_count; i++) {
+            if ((size_t)src->routes[i].struct_size < sizeof(obi_legal_route_v0)) {
+                return OBI_STATUS_UNSUPPORTED;
+            }
+            if ((src->routes[i].selector_count > 0u && !src->routes[i].selectors) ||
+                (src->routes[i].dependency_id_count > 0u && !src->routes[i].dependency_ids)) {
+                return OBI_STATUS_UNSUPPORTED;
+            }
+            if (src->routes[i].selector_count >
+                (SIZE_MAX / sizeof(obi_legal_selector_term_v0))) {
+                return OBI_STATUS_OUT_OF_MEMORY;
+            }
+            if (src->routes[i].dependency_id_count > (SIZE_MAX / sizeof(const char*))) {
+                return OBI_STATUS_OUT_OF_MEMORY;
+            }
+            for (size_t j = 0; j < src->routes[i].selector_count; j++) {
+                if ((size_t)src->routes[i].selectors[j].struct_size <
+                    sizeof(obi_legal_selector_term_v0)) {
+                    return OBI_STATUS_UNSUPPORTED;
+                }
+            }
+        }
         obi_legal_route_v0* routes =
             (obi_legal_route_v0*)_legal_track_alloc(legal,
                                                     src->route_count * sizeof(obi_legal_route_v0));
@@ -1686,11 +1736,28 @@ static obi_status _provider_legal_metadata_from_typed(obi_cached_provider_legal_
 }
 
 static bool _provider_supports_typed_legal_metadata(const obi_provider_v0* provider) {
-    if (!provider || !provider->api || !provider->api->describe_legal_metadata) {
+    if (!provider || !provider->api) {
         return false;
     }
     if ((size_t)provider->api->struct_size <
         (offsetof(obi_provider_api_v0, describe_legal_metadata) + sizeof(provider->api->describe_legal_metadata))) {
+        return false;
+    }
+    if (!provider->api->describe_legal_metadata) {
+        return false;
+    }
+    return true;
+}
+
+static bool _provider_supports_describe_json(const obi_provider_v0* provider) {
+    if (!provider || !provider->api) {
+        return false;
+    }
+    if ((size_t)provider->api->struct_size <
+        (offsetof(obi_provider_api_v0, describe_json) + sizeof(provider->api->describe_json))) {
+        return false;
+    }
+    if (!provider->api->describe_json) {
         return false;
     }
     return true;
@@ -1715,18 +1782,27 @@ static obi_status _provider_capture_legal_metadata(obi_loaded_provider_v0* loade
             if (st == OBI_STATUS_OK) {
                 return OBI_STATUS_OK;
             }
+            if (st == OBI_STATUS_OUT_OF_MEMORY) {
+                return st;
+            }
+            /* Typed metadata was unavailable/incompatible. Fall through to legacy/fallback path. */
+        } else if (st == OBI_STATUS_OUT_OF_MEMORY) {
             return st;
         }
-        if (st != OBI_STATUS_UNSUPPORTED) {
-            return st;
-        }
+        /* Non-OK typed callback status is treated as advisory metadata failure; fallback below. */
     }
 
     const char* describe_json = NULL;
-    if (provider->api && provider->api->describe_json) {
+    if (_provider_supports_describe_json(provider)) {
         describe_json = provider->api->describe_json(provider->ctx);
     }
-    return _provider_legal_metadata_from_legacy_json(&loaded->legal, provider_id, describe_json);
+    obi_status st = _provider_legal_metadata_from_legacy_json(&loaded->legal, provider_id, describe_json);
+    if (st == OBI_STATUS_OK || st == OBI_STATUS_OUT_OF_MEMORY) {
+        return st;
+    }
+
+    /* Malformed legacy metadata should not block load; fallback to conservative unknown terms. */
+    return _provider_legal_metadata_from_legacy_json(&loaded->legal, provider_id, NULL);
 }
 
 static const obi_legal_term_v0* _provider_effective_license_term(const obi_rt_v0* rt, size_t provider_index) {
@@ -1975,6 +2051,55 @@ static obi_status _bindings_upsert(obi_rt_v0* rt,
     return OBI_STATUS_OK;
 }
 
+static obi_status _bindings_rebuild_with_legal_plan(const obi_rt_v0* rt,
+                                                     const obi_legal_plan_v0* plan,
+                                                     uint32_t bind_flags,
+                                                     obi_profile_binding_v0** out_bindings,
+                                                     size_t* out_binding_count,
+                                                     size_t* out_binding_cap) {
+    if (!rt || !plan || !out_bindings || !out_binding_count || !out_binding_cap) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    *out_bindings = NULL;
+    *out_binding_count = 0u;
+    *out_binding_cap = 0u;
+
+    obi_rt_v0 pending;
+    memset(&pending, 0, sizeof(pending));
+
+    for (size_t i = 0u; i < rt->binding_count; i++) {
+        const obi_profile_binding_v0* b = &rt->bindings[i];
+        obi_status st = _bindings_upsert(&pending,
+                                         b->key,
+                                         b->provider_id,
+                                         b->flags,
+                                         (b->is_prefix != 0u));
+        if (st != OBI_STATUS_OK) {
+            _bindings_clear(&pending);
+            return st;
+        }
+    }
+
+    for (size_t i = 0u; i < plan->item_count; i++) {
+        const obi_legal_plan_item_v0* item = &plan->items[i];
+        obi_status st =
+            _bindings_upsert(&pending, item->profile_id, item->provider_id, bind_flags, false);
+        if (st != OBI_STATUS_OK) {
+            _bindings_clear(&pending);
+            return st;
+        }
+    }
+
+    *out_bindings = pending.bindings;
+    *out_binding_count = pending.binding_count;
+    *out_binding_cap = pending.binding_cap;
+    pending.bindings = NULL;
+    pending.binding_count = 0u;
+    pending.binding_cap = 0u;
+    return OBI_STATUS_OK;
+}
+
 static ptrdiff_t _provider_index_by_id(const obi_rt_v0* rt, const char* provider_id) {
     if (!rt || !provider_id || provider_id[0] == '\0') {
         return -1;
@@ -2119,7 +2244,10 @@ static bool _find_prefix_binding(const obi_rt_v0* rt,
         }
 
         size_t n = strlen(b->key);
-        if (n == 0u || n < best_len) {
+        if (n == 0u) {
+            continue;
+        }
+        if (best && n <= best_len) {
             continue;
         }
 
@@ -2150,10 +2278,11 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
     }
 
     *out_handled = false;
+    const bool allow_fallback = ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) != 0u);
 
     ptrdiff_t pos = _provider_index_by_id(rt, binding->provider_id);
     if (pos < 0) {
-        if ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) == 0u) {
+        if (!allow_fallback) {
             _set_err_diag(rt,
                           OBI_LOG_WARN,
                           OBI_DIAG_SCOPE_PROFILE,
@@ -2175,7 +2304,7 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
     }
 
     if (_provider_is_denied(rt, idx)) {
-        if ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) == 0u) {
+        if (!allow_fallback) {
             _set_err_diag(rt,
                           OBI_LOG_WARN,
                           OBI_DIAG_SCOPE_PROFILE,
@@ -2187,6 +2316,7 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
                           binding->provider_id,
                           profile_id);
             *out_handled = true;
+            return OBI_STATUS_PERMISSION_DENIED;
         }
         return OBI_STATUS_UNSUPPORTED;
     }
@@ -2204,7 +2334,7 @@ static obi_status _try_bound_provider(obi_rt_v0* rt,
     }
 
     if (st == OBI_STATUS_UNSUPPORTED) {
-        if ((binding->flags & OBI_RT_BIND_ALLOW_FALLBACK) == 0u) {
+        if (!allow_fallback) {
             _set_err_diag(rt,
                           OBI_LOG_WARN,
                           OBI_DIAG_SCOPE_PROFILE,
@@ -2314,11 +2444,19 @@ obi_status obi_rt_create(const obi_rt_config_v0* config, obi_rt_v0** out_rt) {
     const obi_host_v0* host = NULL;
     uint32_t config_flags = 0u;
     if (config) {
-        if (config->struct_size != 0u && config->struct_size < sizeof(*config)) {
+        const size_t config_size = (size_t)config->struct_size;
+        const size_t required_flags_size =
+            offsetof(obi_rt_config_v0, flags) + sizeof(config->flags);
+        const size_t required_host_size = offsetof(obi_rt_config_v0, host) + sizeof(config->host);
+        if (config_size != 0u && config_size < required_flags_size) {
             return OBI_STATUS_BAD_ARG;
         }
-        host = config->host;
-        config_flags = config->flags;
+        if (config_size == 0u || config_size >= required_flags_size) {
+            config_flags = config->flags;
+        }
+        if (config_size == 0u || config_size >= required_host_size) {
+            host = config->host;
+        }
     }
 
     obi_rt_v0* rt = (obi_rt_v0*)calloc(1, sizeof(*rt));
@@ -2687,7 +2825,9 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
         return OBI_STATUS_UNSUPPORTED;
     }
 
-    if (factory->struct_size < sizeof(*factory) || !factory->create) {
+    const size_t required_factory_size =
+        offsetof(obi_provider_factory_desc_v0, create) + sizeof(factory->create);
+    if ((size_t)factory->struct_size < required_factory_size || !factory->create) {
         _set_err_diag(rt,
                       OBI_LOG_ERROR,
                       OBI_DIAG_SCOPE_RUNTIME,
@@ -2728,6 +2868,34 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
         return st;
     }
 
+    const size_t required_provider_api_size =
+        offsetof(obi_provider_api_v0, destroy) + sizeof(provider.api->destroy);
+    if (!provider.api ||
+        provider.api->abi_major != OBI_CORE_ABI_MAJOR ||
+        provider.api->abi_minor != OBI_CORE_ABI_MINOR ||
+        (size_t)provider.api->struct_size < required_provider_api_size ||
+        !provider.api->get_profile ||
+        !provider.api->destroy) {
+        if (provider.api && provider.api->destroy) {
+            provider.api->destroy(provider.ctx);
+        }
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      OBI_STATUS_UNSUPPORTED,
+                      "runtime.provider_api_invalid",
+                      NULL,
+                      NULL,
+                      "Invalid provider API emitted by '%s'",
+                      path);
+#if defined(_WIN32)
+        (void)FreeLibrary((HMODULE)h);
+#else
+        (void)dlclose(h);
+#endif
+        return OBI_STATUS_UNSUPPORTED;
+    }
+
     const char* provider_id = NULL;
     if (provider.api && provider.api->provider_id) {
         provider_id = provider.api->provider_id(provider.ctx);
@@ -2739,8 +2907,38 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
         provider_id = path;
     }
 
+    if (_provider_index_by_id(rt, provider_id) >= 0) {
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      OBI_STATUS_ERROR,
+                      "runtime.provider_duplicate_id",
+                      provider_id,
+                      NULL,
+                      "Provider id '%s' is already loaded",
+                      provider_id);
+        if (provider.api && provider.api->destroy) {
+            provider.api->destroy(provider.ctx);
+        }
+#if defined(_WIN32)
+        (void)FreeLibrary((HMODULE)h);
+#else
+        (void)dlclose(h);
+#endif
+        return OBI_STATUS_ERROR;
+    }
+
     char* provider_id_copy = _dup_str(provider_id);
     if (!provider_id_copy) {
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      OBI_STATUS_OUT_OF_MEMORY,
+                      "runtime.provider_id_copy_oom",
+                      provider_id,
+                      NULL,
+                      "Out of memory while copying provider id '%s'",
+                      provider_id);
         if (provider.api && provider.api->destroy) {
             provider.api->destroy(provider.ctx);
         }
@@ -2756,6 +2954,16 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
     memset(&pending, 0, sizeof(pending));
     st = _provider_capture_legal_metadata(&pending, provider_id, &provider);
     if (st != OBI_STATUS_OK) {
+        _set_err_diag(rt,
+                      OBI_LOG_ERROR,
+                      OBI_DIAG_SCOPE_PROVIDER,
+                      st,
+                      "runtime.provider_legal_metadata_capture_failed",
+                      provider_id_copy,
+                      NULL,
+                      "Failed to capture legal metadata for provider '%s' (status=%d)",
+                      provider_id_copy,
+                      (int)st);
         free(provider_id_copy);
         _legal_metadata_reset(&pending.legal);
         if (provider.api && provider.api->destroy) {
@@ -2766,16 +2974,6 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
 #else
         (void)dlclose(h);
 #endif
-        _set_err_diag(rt,
-                      OBI_LOG_ERROR,
-                      OBI_DIAG_SCOPE_PROVIDER,
-                      st,
-                      "runtime.provider_legal_metadata_capture_failed",
-                      provider_id,
-                      NULL,
-                      "Failed to capture legal metadata for provider '%s' (status=%d)",
-                      provider_id,
-                      (int)st);
         return st;
     }
 
@@ -2811,6 +3009,16 @@ obi_status obi_rt_load_provider_path(obi_rt_v0* rt, const char* path) {
     if (rt->provider_count == rt->provider_cap) {
         st = _providers_grow(rt);
         if (st != OBI_STATUS_OK) {
+            _set_err_diag(rt,
+                          OBI_LOG_ERROR,
+                          OBI_DIAG_SCOPE_RUNTIME,
+                          st,
+                          "runtime.provider_list_grow_failed",
+                          provider_id_copy,
+                          NULL,
+                          "Failed to grow provider list while loading '%s' (status=%d)",
+                          provider_id_copy,
+                          (int)st);
             free(provider_id_copy);
             _legal_metadata_reset(&pending.legal);
             if (provider.api && provider.api->destroy) {
@@ -2862,6 +3070,8 @@ obi_status obi_rt_load_provider_dir(obi_rt_v0* rt, const char* dir_path) {
     if (!rt || !dir_path || dir_path[0] == '\0') {
         return OBI_STATUS_BAD_ARG;
     }
+
+    rt->last_error[0] = '\0';
 
 #if defined(_WIN32)
     _set_err_diag(rt,
@@ -2981,6 +3191,7 @@ obi_status obi_rt_load_provider_dir(obi_rt_v0* rt, const char* dir_path) {
         return OBI_STATUS_UNAVAILABLE;
     }
 
+    rt->last_error[0] = '\0';
     return OBI_STATUS_OK;
 #endif
 }
@@ -3345,9 +3556,22 @@ static void _legal_policy_resolve(const obi_legal_selector_policy_v0* in_policy,
         return;
     }
 
-    out_policy->preset = in_policy->preset;
-    out_policy->flags = in_policy->flags;
-    if (in_policy->allowed_patent_postures != 0u) {
+    const size_t in_size = _input_struct_size_or_full(in_policy->struct_size, sizeof(*in_policy));
+
+    if (_input_struct_has_field(in_size,
+                                offsetof(obi_legal_selector_policy_v0, preset) +
+                                    sizeof(in_policy->preset))) {
+        out_policy->preset = in_policy->preset;
+    }
+    if (_input_struct_has_field(in_size,
+                                offsetof(obi_legal_selector_policy_v0, flags) +
+                                    sizeof(in_policy->flags))) {
+        out_policy->flags = in_policy->flags;
+    }
+    if (_input_struct_has_field(in_size,
+                                offsetof(obi_legal_selector_policy_v0, allowed_patent_postures) +
+                                    sizeof(in_policy->allowed_patent_postures)) &&
+        in_policy->allowed_patent_postures != 0u) {
         out_policy->allowed_patent_postures = in_policy->allowed_patent_postures;
     }
 
@@ -3364,7 +3588,11 @@ static void _legal_policy_resolve(const obi_legal_selector_policy_v0* in_policy,
         case OBI_LEGAL_PRESET_CUSTOM:
         default:
             out_policy->preset = OBI_LEGAL_PRESET_CUSTOM;
-            out_policy->max_copyleft_class = in_policy->max_copyleft_class;
+            if (_input_struct_has_field(in_size,
+                                        offsetof(obi_legal_selector_policy_v0, max_copyleft_class) +
+                                            sizeof(in_policy->max_copyleft_class))) {
+                out_policy->max_copyleft_class = in_policy->max_copyleft_class;
+            }
             if (out_policy->max_copyleft_class == 0u ||
                 out_policy->max_copyleft_class > OBI_LEGAL_COPYLEFT_STRONG) {
                 out_policy->max_copyleft_class = OBI_LEGAL_COPYLEFT_STRONG;
@@ -3574,6 +3802,9 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
         if (!requirements) {
             return OBI_STATUS_BAD_ARG;
         }
+        if (requirement_count > (SIZE_MAX / sizeof(obi_legal_plan_item_v0))) {
+            return OBI_STATUS_OUT_OF_MEMORY;
+        }
         out_snap->items = (obi_legal_plan_item_v0*)_plan_track_alloc(out_snap,
                                                                       requirement_count *
                                                                           sizeof(obi_legal_plan_item_v0));
@@ -3585,20 +3816,40 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
 
     for (size_t ri = 0u; ri < requirement_count; ri++) {
         const obi_legal_requirement_v0* req = &requirements[ri];
+        const size_t req_size = _input_struct_size_or_full(req->struct_size, sizeof(*req));
+        const bool has_profile_id =
+            _input_struct_has_field(req_size,
+                                    offsetof(obi_legal_requirement_v0, profile_id) +
+                                        sizeof(req->profile_id));
+        const bool has_selectors =
+            _input_struct_has_field(req_size,
+                                    offsetof(obi_legal_requirement_v0, selectors) +
+                                        sizeof(req->selectors)) &&
+            _input_struct_has_field(req_size,
+                                    offsetof(obi_legal_requirement_v0, selector_count) +
+                                        sizeof(req->selector_count));
+        const char* req_profile_id =
+            (has_profile_id && req->profile_id && req->profile_id[0] != '\0') ?
+                req->profile_id :
+                "(invalid)";
+        const obi_legal_selector_term_v0* req_selectors = NULL;
+        size_t req_selector_count = 0u;
+        if (has_selectors) {
+            req_selectors = req->selectors;
+            req_selector_count = req->selector_count;
+        }
+
         obi_legal_plan_item_v0* item = &out_snap->items[ri];
         item->struct_size = (uint32_t)sizeof(*item);
         item->requirement_index = (uint32_t)ri;
         item->status = OBI_LEGAL_PLAN_STATUS_BLOCKED;
 
-        const char* req_profile_id = (req->profile_id && req->profile_id[0] != '\0') ?
-                                         req->profile_id :
-                                         "(invalid)";
         item->profile_id = _plan_dup_str(out_snap, req_profile_id);
         if (!item->profile_id) {
             return OBI_STATUS_OUT_OF_MEMORY;
         }
 
-        if (!req->profile_id || req->profile_id[0] == '\0') {
+        if (!has_profile_id || !req->profile_id || req->profile_id[0] == '\0') {
             obi_status st = _plan_reason_storef(out_snap,
                                                 &item->reason_utf8,
                                                 "invalid requirement[%zu]: missing profile_id",
@@ -3609,6 +3860,44 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
             out_snap->plan.overall_status = OBI_LEGAL_PLAN_STATUS_BLOCKED;
             continue;
         }
+
+        if (req_selector_count > 0u && !req_selectors) {
+            obi_status st = _plan_reason_storef(out_snap,
+                                                &item->reason_utf8,
+                                                "invalid requirement[%zu]: selector_count without selectors",
+                                                ri);
+            if (st != OBI_STATUS_OK) {
+                return st;
+            }
+            out_snap->plan.overall_status = OBI_LEGAL_PLAN_STATUS_BLOCKED;
+            continue;
+        }
+        for (size_t si = 0u; si < req_selector_count; si++) {
+            if ((size_t)req_selectors[si].struct_size < sizeof(obi_legal_selector_term_v0)) {
+                obi_status st = _plan_reason_storef(out_snap,
+                                                    &item->reason_utf8,
+                                                    "invalid requirement[%zu]: selector[%zu] struct_size too small",
+                                                    ri,
+                                                    si);
+                if (st != OBI_STATUS_OK) {
+                    return st;
+                }
+                out_snap->plan.overall_status = OBI_LEGAL_PLAN_STATUS_BLOCKED;
+                req_selector_count = 0u;
+                req_selectors = NULL;
+                break;
+            }
+        }
+        if (item->reason_utf8) {
+            continue;
+        }
+
+        obi_legal_requirement_v0 req_view;
+        memset(&req_view, 0, sizeof(req_view));
+        req_view.struct_size = (uint32_t)sizeof(req_view);
+        req_view.profile_id = has_profile_id ? req->profile_id : NULL;
+        req_view.selectors = req_selectors;
+        req_view.selector_count = req_selector_count;
 
         uint8_t* tried = (uint8_t*)calloc(rt->provider_count, sizeof(uint8_t));
         if (!tried) {
@@ -3640,7 +3929,7 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
             const char* reason = NULL;
             if (_evaluate_provider_for_requirement(rt,
                                                    provider_index,
-                                                   req,
+                                                   &req_view,
                                                    &resolved_policy,
                                                    &route,
                                                    &reason,
@@ -3672,7 +3961,7 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
             const char* reason = NULL;
             if (_evaluate_provider_for_requirement(rt,
                                                    provider_index,
-                                                   req,
+                                                   &req_view,
                                                    &resolved_policy,
                                                    &route,
                                                    &reason,
@@ -3712,7 +4001,7 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
             obi_status st = _plan_reason_storef(out_snap,
                                                 &item->reason_utf8,
                                                 "no loaded provider supports profile '%s'",
-                                                req->profile_id);
+                                                req_view.profile_id);
             if (st != OBI_STATUS_OK) {
                 return st;
             }
@@ -3724,7 +4013,7 @@ static obi_status _legal_plan_build(obi_rt_v0* rt,
         obi_status st = _plan_reason_storef(out_snap,
                                             &item->reason_utf8,
                                             "profile '%s' blocked: %s",
-                                            req->profile_id,
+                                            req_view.profile_id,
                                             first_reason);
         if (st != OBI_STATUS_OK) {
             return st;
@@ -3763,6 +4052,7 @@ obi_status obi_rt_legal_plan(obi_rt_v0* rt,
     }
 
     rt->last_error[0] = '\0';
+    _preset_report_reset(&rt->last_preset_report);
     obi_status st = _legal_plan_build(rt, policy, requirements, requirement_count, &rt->last_plan);
     if (st != OBI_STATUS_OK) {
         return st;
@@ -3791,6 +4081,7 @@ obi_status obi_rt_legal_report_presets(obi_rt_v0* rt,
     }
 
     rt->last_error[0] = '\0';
+    _plan_snapshot_reset(&rt->last_plan);
     _preset_report_reset(&rt->last_preset_report);
 
     const uint32_t presets[] = {
@@ -3844,18 +4135,38 @@ obi_status obi_rt_legal_report_presets(obi_rt_v0* rt,
                 if (tmp_plan.plan.items[j].profile_id) {
                     copied_items[j].profile_id = _preset_dup_str(&rt->last_preset_report,
                                                                  tmp_plan.plan.items[j].profile_id);
+                    if (!copied_items[j].profile_id) {
+                        _plan_snapshot_reset(&tmp_plan);
+                        _preset_report_reset(&rt->last_preset_report);
+                        return OBI_STATUS_OUT_OF_MEMORY;
+                    }
                 }
                 if (tmp_plan.plan.items[j].provider_id) {
                     copied_items[j].provider_id = _preset_dup_str(&rt->last_preset_report,
                                                                   tmp_plan.plan.items[j].provider_id);
+                    if (!copied_items[j].provider_id) {
+                        _plan_snapshot_reset(&tmp_plan);
+                        _preset_report_reset(&rt->last_preset_report);
+                        return OBI_STATUS_OUT_OF_MEMORY;
+                    }
                 }
                 if (tmp_plan.plan.items[j].route_id) {
                     copied_items[j].route_id = _preset_dup_str(&rt->last_preset_report,
                                                                tmp_plan.plan.items[j].route_id);
+                    if (!copied_items[j].route_id) {
+                        _plan_snapshot_reset(&tmp_plan);
+                        _preset_report_reset(&rt->last_preset_report);
+                        return OBI_STATUS_OUT_OF_MEMORY;
+                    }
                 }
                 if (tmp_plan.plan.items[j].reason_utf8) {
                     copied_items[j].reason_utf8 = _preset_dup_str(&rt->last_preset_report,
                                                                   tmp_plan.plan.items[j].reason_utf8);
+                    if (!copied_items[j].reason_utf8) {
+                        _plan_snapshot_reset(&tmp_plan);
+                        _preset_report_reset(&rt->last_preset_report);
+                        return OBI_STATUS_OUT_OF_MEMORY;
+                    }
                 }
             }
             results[i].items = copied_items;
@@ -3895,13 +4206,23 @@ obi_status obi_rt_legal_apply_plan(obi_rt_v0* rt,
         }
     }
 
-    for (size_t i = 0u; i < plan->item_count; i++) {
-        const obi_legal_plan_item_v0* item = &plan->items[i];
-        obi_status st = _bindings_upsert(rt, item->profile_id, item->provider_id, bind_flags, false);
-        if (st != OBI_STATUS_OK) {
-            return st;
-        }
+    obi_profile_binding_v0* next_bindings = NULL;
+    size_t next_binding_count = 0u;
+    size_t next_binding_cap = 0u;
+    obi_status st = _bindings_rebuild_with_legal_plan(rt,
+                                                      plan,
+                                                      bind_flags,
+                                                      &next_bindings,
+                                                      &next_binding_count,
+                                                      &next_binding_cap);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
+
+    _bindings_clear(rt);
+    rt->bindings = next_bindings;
+    rt->binding_count = next_binding_count;
+    rt->binding_cap = next_binding_cap;
 
     _selector_outputs_reset(rt);
     rt->last_error[0] = '\0';

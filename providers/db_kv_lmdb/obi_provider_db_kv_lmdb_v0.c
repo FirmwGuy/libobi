@@ -60,6 +60,12 @@ typedef struct obi_kv_cursor_lmdb_ctx_v0 {
     int has_item;
 } obi_kv_cursor_lmdb_ctx_v0;
 
+#define OBI_DB_KV_LMDB_OPEN_KNOWN_FLAGS \
+    (OBI_KV_DB_OPEN_READ_ONLY | OBI_KV_DB_OPEN_CREATE)
+
+#define OBI_DB_KV_LMDB_TXN_KNOWN_FLAGS \
+    (OBI_KV_TXN_READ_ONLY)
+
 static char* _dup_n(const char* s, size_t n) {
     if (!s && n > 0u) {
         return NULL;
@@ -497,6 +503,9 @@ static obi_status _kv_db_begin_txn(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && (params->flags & ~OBI_DB_KV_LMDB_TXN_KNOWN_FLAGS) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     int read_only = db->read_only || (params && ((params->flags & OBI_KV_TXN_READ_ONLY) != 0u));
 
@@ -564,6 +573,9 @@ static obi_status _kv_open(void* ctx,
     if (params->options_json.size > 0u && !params->options_json.data) {
         return OBI_STATUS_BAD_ARG;
     }
+    if ((params->flags & ~OBI_DB_KV_LMDB_OPEN_KNOWN_FLAGS) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     int read_only = ((params->flags & OBI_KV_DB_OPEN_READ_ONLY) != 0u) ? 1 : 0;
     int create = ((params->flags & OBI_KV_DB_OPEN_CREATE) != 0u) ? 1 : 0;
@@ -581,7 +593,7 @@ static obi_status _kv_open(void* ctx,
     }
 
     if (!_ensure_dir(env_path, create)) {
-        free(temp_dir);
+        _cleanup_temp_dir(temp_dir);
         return OBI_STATUS_UNAVAILABLE;
     }
 
@@ -603,7 +615,7 @@ static obi_status _kv_open(void* ctx,
         if (env) {
             mdb_env_close(env);
         }
-        free(temp_dir);
+        _cleanup_temp_dir(temp_dir);
         return _lmdb_to_status(rc);
     }
 

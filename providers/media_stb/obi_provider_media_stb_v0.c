@@ -62,6 +62,32 @@ static int _ascii_eq_nocase(const char* a, const char* b) {
     return (*a == '\0' && *b == '\0');
 }
 
+static obi_status _validate_decode_params(const obi_image_decode_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_encode_params(const obi_image_encode_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static obi_status _read_reader_all(obi_reader_v0 reader, uint8_t** out_data, size_t* out_size) {
     if (!reader.api || !reader.api->read || !out_data || !out_size) {
         return OBI_STATUS_BAD_ARG;
@@ -156,9 +182,12 @@ static obi_status _decode_from_bytes(void* ctx,
                                      const obi_image_decode_params_v0* params,
                                      obi_image_v0* out_image) {
     (void)ctx;
-    (void)params;
     if (!out_image || !bytes.data || bytes.size == 0u || bytes.size > (size_t)INT32_MAX) {
         return OBI_STATUS_BAD_ARG;
+    }
+    obi_status st = _validate_decode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     memset(out_image, 0, sizeof(*out_image));
@@ -185,10 +214,14 @@ static obi_status _decode_from_reader(void* ctx,
     if (!out_image) {
         return OBI_STATUS_BAD_ARG;
     }
+    obi_status st = _validate_decode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
 
     uint8_t* data = NULL;
     size_t size = 0u;
-    obi_status st = _read_reader_all(reader, &data, &size);
+    st = _read_reader_all(reader, &data, &size);
     if (st != OBI_STATUS_OK) {
         return st;
     }
@@ -349,12 +382,16 @@ static obi_status _encode_to_writer(void* ctx,
     if (!codec_id || !image || !out_bytes_written) {
         return OBI_STATUS_BAD_ARG;
     }
+    obi_status st = _validate_encode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
 
     *out_bytes_written = 0u;
 
     uint8_t* rgba = NULL;
     size_t rgba_size = 0u;
-    obi_status st = _to_rgba8_buffer(image, &rgba, &rgba_size);
+    st = _to_rgba8_buffer(image, &rgba, &rgba_size);
     if (st != OBI_STATUS_OK) {
         return st;
     }

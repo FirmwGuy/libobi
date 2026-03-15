@@ -29,6 +29,33 @@ static int _valid_transpose(obi_blas_transpose_v0 trans) {
     return (trans == OBI_BLAS_NO_TRANS || trans == OBI_BLAS_TRANS || trans == OBI_BLAS_CONJ_TRANS);
 }
 
+static int32_t _i32_max(int32_t a, int32_t b) {
+    return (a > b) ? a : b;
+}
+
+static int _valid_leading_dims(obi_blas_layout_v0 layout,
+                               obi_blas_transpose_v0 trans_a,
+                               obi_blas_transpose_v0 trans_b,
+                               int32_t m,
+                               int32_t n,
+                               int32_t k,
+                               int32_t lda,
+                               int32_t ldb,
+                               int32_t ldc) {
+    int32_t a_rows = (trans_a == OBI_BLAS_NO_TRANS) ? m : k;
+    int32_t a_cols = (trans_a == OBI_BLAS_NO_TRANS) ? k : m;
+    int32_t b_rows = (trans_b == OBI_BLAS_NO_TRANS) ? k : n;
+    int32_t b_cols = (trans_b == OBI_BLAS_NO_TRANS) ? n : k;
+
+    int32_t lda_min = (layout == OBI_BLAS_ROW_MAJOR) ? a_cols : a_rows;
+    int32_t ldb_min = (layout == OBI_BLAS_ROW_MAJOR) ? b_cols : b_rows;
+    int32_t ldc_min = (layout == OBI_BLAS_ROW_MAJOR) ? n : m;
+
+    return (lda >= _i32_max(1, lda_min) &&
+            ldb >= _i32_max(1, ldb_min) &&
+            ldc >= _i32_max(1, ldc_min));
+}
+
 static enum CBLAS_ORDER _to_cblas_layout(obi_blas_layout_v0 layout) {
     return (layout == OBI_BLAS_ROW_MAJOR) ? CblasRowMajor : CblasColMajor;
 }
@@ -65,6 +92,9 @@ static obi_status _blas_sgemm(void* ctx,
     }
     if (m == 0 || n == 0 || k == 0) {
         return OBI_STATUS_OK;
+    }
+    if (!_valid_leading_dims(layout, trans_a, trans_b, m, n, k, lda, ldb, ldc)) {
+        return OBI_STATUS_BAD_ARG;
     }
 
     cblas_sgemm(_to_cblas_layout(layout),
@@ -107,6 +137,9 @@ static obi_status _blas_dgemm(void* ctx,
     }
     if (m == 0 || n == 0 || k == 0) {
         return OBI_STATUS_OK;
+    }
+    if (!_valid_leading_dims(layout, trans_a, trans_b, m, n, k, lda, ldb, ldc)) {
+        return OBI_STATUS_BAD_ARG;
     }
 
     cblas_dgemm(_to_cblas_layout(layout),

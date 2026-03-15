@@ -3,7 +3,7 @@
 
 #include <obi/obi_core_v0.h>
 #include <obi/obi_legal_v0.h>
-#include <obi/profiles/obi_pump_v0.h>
+#include <obi/profiles/obi_waitset_v0.h>
 
 #include <glib.h>
 
@@ -13,82 +13,158 @@
 
 #if defined(_WIN32)
 #  define OBI_EXPORT __declspec(dllexport)
+#  define OBI_CORE_WAITSET_GLIB_CAPS 0u
 #else
 #  define OBI_EXPORT __attribute__((visibility("default")))
+#  define OBI_CORE_WAITSET_GLIB_CAPS OBI_WAITSET_CAP_FD
 #endif
 
-typedef struct obi_core_pump_glib_ctx_v0 {
+typedef struct obi_core_waitset_glib_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
     GMainContext* main_ctx;  /* owned */
     GThread* owner_thread;   /* owned ref */
-} obi_core_pump_glib_ctx_v0;
+    GPollFD* pollfds;        /* owned */
+    gint pollfd_cap;
+} obi_core_waitset_glib_ctx_v0;
 
-static int _on_owner_thread(const obi_core_pump_glib_ctx_v0* p) {
+static int _on_owner_thread(const obi_core_waitset_glib_ctx_v0* p) {
     if (!p || !p->owner_thread) {
         return 0;
     }
     return g_thread_self() == p->owner_thread;
 }
 
-static obi_status _pump_step(void* ctx, uint64_t timeout_ns) {
-    obi_core_pump_glib_ctx_v0* p = (obi_core_pump_glib_ctx_v0*)ctx;
-    if (!p || !p->main_ctx) {
+static uint32_t _map_wait_events(gushort events) {
+    uint32_t mapped = 0u;
+    if ((events & (G_IO_IN | G_IO_PRI)) != 0u) {
+        mapped |= OBI_WAIT_EVENT_READ;
+    }
+    if ((events & G_IO_OUT) != 0u) {
+        mapped |= OBI_WAIT_EVENT_WRITE;
+    }
+    if ((events & (G_IO_ERR | G_IO_HUP | G_IO_NVAL)) != 0u) {
+        mapped |= OBI_WAIT_EVENT_ERROR;
+    }
+    return mapped;
+}
+
+static obi_status _waitset_get_wait_handles(void* ctx,
+                                            obi_wait_handle_v0* handles,
+                                            size_t handle_cap,
+                                            size_t* out_handle_count,
+                                            uint64_t* out_timeout_ns) {
+    obi_core_waitset_glib_ctx_v0* p = (obi_core_waitset_glib_ctx_v0*)ctx;
+    if (!p || !p->main_ctx || !out_handle_count || !out_timeout_ns) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_on_owner_thread(p)) {
         return OBI_STATUS_BAD_ARG;
     }
-
-    (void)g_main_context_iteration(p->main_ctx, FALSE);
-    if (timeout_ns == 0u) {
-        return OBI_STATUS_OK;
-    }
-
-    uint64_t bounded_ns = timeout_ns;
-    if (bounded_ns > 2000000ull) {
-        bounded_ns = 2000000ull;
-    }
-
-    guint64 wait_us = (bounded_ns + 999ull) / 1000ull;
-    if (wait_us == 0u) {
-        wait_us = 1u;
-    }
-    if (wait_us > (guint64)G_MAXULONG) {
-        wait_us = (guint64)G_MAXULONG;
-    }
-
-    g_usleep((gulong)wait_us);
-    (void)g_main_context_iteration(p->main_ctx, FALSE);
-    return OBI_STATUS_OK;
-}
-
-static obi_status _pump_get_wait_hint(void* ctx, obi_pump_wait_hint_v0* out_hint) {
-    obi_core_pump_glib_ctx_v0* p = (obi_core_pump_glib_ctx_v0*)ctx;
-    if (!p || !p->main_ctx || !out_hint) {
-        return OBI_STATUS_BAD_ARG;
-    }
-    if (!_on_owner_thread(p)) {
+    if (!g_main_context_acquire(p->main_ctx)) {
         return OBI_STATUS_BAD_ARG;
     }
 
-    out_hint->next_timeout_ns = g_main_context_pending(p->main_ctx) ? 0u : 1000000ull;
-    out_hint->flags = 0u;
-    return OBI_STATUS_OK;
+    obi_status status = OBI_STATUS_OK;
+    gint priority = G_PRIORITY_DEFAULT;
+    gboolean ready_now = g_main_context_prepare(p->main_ctx, &priority);
+    gint timeout_ms = -1;
+    gint poll_count = g_main_context_query(p->main_ctx, priority, &timeout_ms, NULL, 0);
+    if (poll_count < 0) {
+        poll_count = 0;
+    }
+
+    if (poll_count > p->pollfd_cap) {
+        if ((size_t)poll_count > (SIZE_MAX / sizeof(*p->pollfds))) {
+            status = OBI_STATUS_BAD_ARG;
+            goto done;
+        }
+        GPollFD* resized = (GPollFD*)realloc(p->pollfds, ((size_t)poll_count) * sizeof(*p->pollfds));
+        if (!resized) {
+            status = OBI_STATUS_OUT_OF_MEMORY;
+            goto done;
+        }
+        p->pollfds = resized;
+        p->pollfd_cap = poll_count;
+    }
+
+    if (poll_count > 0) {
+        poll_count = g_main_context_query(p->main_ctx, priority, &timeout_ms, p->pollfds, p->pollfd_cap);
+        if (poll_count < 0) {
+            poll_count = 0;
+        }
+    }
+
+    if (ready_now) {
+        *out_timeout_ns = 0u;
+    } else if (timeout_ms < 0) {
+        *out_timeout_ns = UINT64_MAX;
+    } else {
+        *out_timeout_ns = ((uint64_t)(unsigned int)timeout_ms) * 1000000ull;
+    }
+
+    size_t need = 0u;
+#if !defined(_WIN32)
+    for (gint i = 0; i < poll_count; ++i) {
+        const GPollFD* pfd = &p->pollfds[i];
+        if (pfd->fd < 0) {
+            continue;
+        }
+        uint32_t events = _map_wait_events((gushort)(pfd->events | pfd->revents));
+        if (events != 0u) {
+            need++;
+        }
+    }
+#endif
+    *out_handle_count = need;
+
+    if (!handles || handle_cap == 0u) {
+        status = OBI_STATUS_OK;
+        goto done;
+    }
+    if (handle_cap < need) {
+        status = OBI_STATUS_BUFFER_TOO_SMALL;
+        goto done;
+    }
+
+#if !defined(_WIN32)
+    size_t out_i = 0u;
+    for (gint i = 0; i < poll_count && out_i < need; ++i) {
+        const GPollFD* pfd = &p->pollfds[i];
+        if (pfd->fd < 0) {
+            continue;
+        }
+        uint32_t events = _map_wait_events((gushort)(pfd->events | pfd->revents));
+        if (events == 0u) {
+            continue;
+        }
+        handles[out_i].kind = OBI_WAIT_HANDLE_FD;
+        handles[out_i].events = events;
+        handles[out_i].handle = (int64_t)pfd->fd;
+        handles[out_i].tag = (uint64_t)(unsigned int)i;
+        out_i++;
+    }
+#else
+    (void)handles;
+    (void)handle_cap;
+#endif
+
+done:
+    g_main_context_release(p->main_ctx);
+    return status;
 }
 
-static const obi_pump_api_v0 OBI_CORE_PUMP_GLIB_API_V0 = {
+static const obi_waitset_api_v0 OBI_CORE_WAITSET_GLIB_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
-    .struct_size = (uint32_t)sizeof(obi_pump_api_v0),
+    .struct_size = (uint32_t)sizeof(obi_waitset_api_v0),
     .reserved = 0u,
-    .caps = 0u,
-    .step = _pump_step,
-    .get_wait_hint = _pump_get_wait_hint,
+    .caps = OBI_CORE_WAITSET_GLIB_CAPS,
+    .get_wait_handles = _waitset_get_wait_handles,
 };
 
 static const char* _provider_id(void* ctx) {
     (void)ctx;
-    return "obi.provider:core.pump.glib";
+    return "obi.provider:core.waitset.glib";
 }
 
 static const char* _provider_version(void* ctx) {
@@ -108,12 +184,12 @@ static obi_status _get_profile(void* ctx,
         return OBI_STATUS_UNSUPPORTED;
     }
 
-    if (strcmp(profile_id, OBI_PROFILE_CORE_PUMP_V0) == 0) {
-        if (out_profile_size < sizeof(obi_pump_v0)) {
+    if (strcmp(profile_id, OBI_PROFILE_CORE_WAITSET_V0) == 0) {
+        if (out_profile_size < sizeof(obi_waitset_v0)) {
             return OBI_STATUS_BUFFER_TOO_SMALL;
         }
-        obi_pump_v0* p = (obi_pump_v0*)out_profile;
-        p->api = &OBI_CORE_PUMP_GLIB_API_V0;
+        obi_waitset_v0* p = (obi_waitset_v0*)out_profile;
+        p->api = &OBI_CORE_WAITSET_GLIB_API_V0;
         p->ctx = ctx;
         return OBI_STATUS_OK;
     }
@@ -123,8 +199,8 @@ static obi_status _get_profile(void* ctx,
 
 static const char* _describe_json(void* ctx) {
     (void)ctx;
-    return "{\"provider_id\":\"obi.provider:core.pump.glib\",\"provider_version\":\"0.1.0\","
-           "\"profiles\":[\"obi.profile:core.pump-0\"],"
+    return "{\"provider_id\":\"obi.provider:core.waitset.glib\",\"provider_version\":\"0.1.0\","
+           "\"profiles\":[\"obi.profile:core.waitset-0\"],"
            "\"license\":{\"spdx_expression\":\"MPL-2.0\",\"class\":\"weak_copyleft\"},"
            "\"behavior\":{\"diagnostics\":\"host\",\"writes_stdout\":false,\"writes_stderr\":false,\"may_exit_process\":false},"
            "\"deps\":["
@@ -176,10 +252,16 @@ static obi_status _describe_legal_metadata(void* ctx,
 }
 
 static void _destroy(void* ctx) {
-    obi_core_pump_glib_ctx_v0* p = (obi_core_pump_glib_ctx_v0*)ctx;
+    obi_core_waitset_glib_ctx_v0* p = (obi_core_waitset_glib_ctx_v0*)ctx;
     if (!p) {
         return;
     }
+
+    if (p->pollfds) {
+        free(p->pollfds);
+        p->pollfds = NULL;
+    }
+    p->pollfd_cap = 0;
 
     if (p->main_ctx) {
         g_main_context_unref(p->main_ctx);
@@ -197,7 +279,7 @@ static void _destroy(void* ctx) {
     }
 }
 
-static const obi_provider_api_v0 OBI_CORE_PUMP_GLIB_PROVIDER_API_V0 = {
+static const obi_provider_api_v0 OBI_CORE_WAITSET_GLIB_PROVIDER_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_provider_api_v0),
@@ -219,11 +301,11 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_UNSUPPORTED;
     }
 
-    obi_core_pump_glib_ctx_v0* ctx = NULL;
+    obi_core_waitset_glib_ctx_v0* ctx = NULL;
     if (host->alloc) {
-        ctx = (obi_core_pump_glib_ctx_v0*)host->alloc(host->ctx, sizeof(*ctx));
+        ctx = (obi_core_waitset_glib_ctx_v0*)host->alloc(host->ctx, sizeof(*ctx));
     } else {
-        ctx = (obi_core_pump_glib_ctx_v0*)malloc(sizeof(*ctx));
+        ctx = (obi_core_waitset_glib_ctx_v0*)malloc(sizeof(*ctx));
     }
     if (!ctx) {
         return OBI_STATUS_OUT_OF_MEMORY;
@@ -238,7 +320,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    out_provider->api = &OBI_CORE_PUMP_GLIB_PROVIDER_API_V0;
+    out_provider->api = &OBI_CORE_WAITSET_GLIB_PROVIDER_API_V0;
     out_provider->ctx = ctx;
     return OBI_STATUS_OK;
 }
@@ -248,7 +330,7 @@ OBI_EXPORT const obi_provider_factory_desc_v0 obi_provider_factory_v0 = {
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_provider_factory_desc_v0),
     .reserved = 0u,
-    .provider_id = "obi.provider:core.pump.glib",
+    .provider_id = "obi.provider:core.waitset.glib",
     .provider_version = "0.1.0",
     .create = _create,
 };

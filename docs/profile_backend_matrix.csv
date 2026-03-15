@@ -15,6 +15,7 @@ obi.profile:core.pump-0,obi.provider:core.pump.libuv,implemented,libuv,roadmap,f
 obi.profile:core.pump-0,obi.provider:core.pump.glib,implemented,GLib_main_context,roadmap,final
 obi.profile:core.waitset-0,obi.provider:core.waitset.libuv,implemented,libuv_backend_fd,roadmap,final
 obi.profile:core.waitset-0,obi.provider:core.waitset.libevent,implemented,libevent_event_base,roadmap,final
+obi.profile:core.waitset-0,obi.provider:core.waitset.glib,implemented,GLib_main_context_poll,roadmap,final
 obi.profile:os.env-0,obi.provider:os.env.native,implemented,native_libc_env,roadmap,final
 obi.profile:os.env-0,obi.provider:os.env.glib,implemented,glib_environment,roadmap,final
 obi.profile:os.fs-0,obi.provider:os.fs.native,implemented,native_stdio_posix_fs,roadmap,final

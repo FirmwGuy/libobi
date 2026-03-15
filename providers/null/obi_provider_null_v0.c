@@ -33,10 +33,12 @@ static obi_status _get_profile(void* ctx,
                                void* out_profile,
                                size_t out_profile_size) {
     (void)ctx;
-    (void)profile_id;
-    (void)profile_abi_major;
-    (void)out_profile;
-    (void)out_profile_size;
+    if (!profile_id || !out_profile || out_profile_size == 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (profile_abi_major != OBI_CORE_ABI_MAJOR) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
     return OBI_STATUS_UNSUPPORTED;
 }
 

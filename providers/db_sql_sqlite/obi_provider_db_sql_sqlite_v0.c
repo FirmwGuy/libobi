@@ -8,6 +8,7 @@
 #include <sqlite3.h>
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -32,6 +33,9 @@ typedef struct obi_sqlite_stmt_ctx_v0 {
     obi_sqlite_conn_ctx_v0* conn;
     sqlite3_stmt* stmt;
 } obi_sqlite_stmt_ctx_v0;
+
+#define OBI_DB_SQL_SQLITE_OPEN_KNOWN_FLAGS \
+    (OBI_SQL_OPEN_READ_ONLY | OBI_SQL_OPEN_CREATE)
 
 static char* _dup_n(const char* s, size_t n) {
     if (!s && n > 0u) {
@@ -88,23 +92,34 @@ static void _set_error(obi_sqlite_conn_ctx_v0* conn, const char* msg) {
     conn->last_error = _dup_n(msg, strlen(msg));
 }
 
+static obi_status _sqlite_status_from_rc(int rc) {
+    switch (rc) {
+        case SQLITE_NOMEM:
+            return OBI_STATUS_OUT_OF_MEMORY;
+        case SQLITE_BUSY:
+        case SQLITE_LOCKED:
+            return OBI_STATUS_NOT_READY;
+        case SQLITE_READONLY:
+        case SQLITE_PERM:
+            return OBI_STATUS_PERMISSION_DENIED;
+        case SQLITE_CANTOPEN:
+            return OBI_STATUS_UNAVAILABLE;
+        default:
+            return OBI_STATUS_ERROR;
+    }
+}
+
 static obi_status _sqlite_fail(obi_sqlite_conn_ctx_v0* conn, int rc) {
     if (!conn) {
         return OBI_STATUS_ERROR;
     }
     const char* emsg = conn->db ? sqlite3_errmsg(conn->db) : NULL;
     _set_error(conn, emsg ? emsg : "sqlite error");
+    return _sqlite_status_from_rc(rc);
+}
 
-    if (rc == SQLITE_NOMEM) {
-        return OBI_STATUS_OUT_OF_MEMORY;
-    }
-    if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
-        return OBI_STATUS_NOT_READY;
-    }
-    if (rc == SQLITE_READONLY || rc == SQLITE_PERM) {
-        return OBI_STATUS_PERMISSION_DENIED;
-    }
-    return OBI_STATUS_ERROR;
+static int _sqlite_bind_size_fits(size_t size) {
+    return size <= (size_t)INT_MAX;
 }
 
 static obi_status _stmt_bind_null(void* ctx, uint32_t index) {
@@ -148,6 +163,9 @@ static obi_status _stmt_bind_text_utf8(void* ctx, uint32_t index, obi_utf8_view_
     if (!s || !s->stmt || index == 0u || (!text.data && text.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_sqlite_bind_size_fits(text.size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     int rc = sqlite3_bind_text(s->stmt,
                                (int)index,
@@ -163,6 +181,9 @@ static obi_status _stmt_bind_text_utf8(void* ctx, uint32_t index, obi_utf8_view_
 static obi_status _stmt_bind_blob(void* ctx, uint32_t index, obi_bytes_view_v0 blob) {
     obi_sqlite_stmt_ctx_v0* s = (obi_sqlite_stmt_ctx_v0*)ctx;
     if (!s || !s->stmt || index == 0u || (!blob.data && blob.size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_sqlite_bind_size_fits(blob.size)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -502,6 +523,9 @@ static obi_status _sql_open(void* ctx,
     if (params->options_json.size > 0u && !params->options_json.data) {
         return OBI_STATUS_BAD_ARG;
     }
+    if ((params->flags & ~OBI_DB_SQL_SQLITE_OPEN_KNOWN_FLAGS) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     int flags = SQLITE_OPEN_NOMUTEX;
     if ((params->flags & OBI_SQL_OPEN_READ_ONLY) != 0u) {
@@ -519,7 +543,7 @@ static obi_status _sql_open(void* ctx,
         if (db) {
             sqlite3_close(db);
         }
-        return OBI_STATUS_ERROR;
+        return (rc == SQLITE_OK) ? OBI_STATUS_UNAVAILABLE : _sqlite_status_from_rc(rc);
     }
 
     obi_sqlite_conn_ctx_v0* conn = (obi_sqlite_conn_ctx_v0*)calloc(1u, sizeof(*conn));

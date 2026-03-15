@@ -9,6 +9,7 @@
 #include <pango/pango.h>
 
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -19,6 +20,7 @@
 
 typedef struct obi_text_pango_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
+    int fontconfig_acquired;
 } obi_text_pango_ctx_v0;
 
 typedef struct obi_font_source_hold_v0 {
@@ -26,6 +28,43 @@ typedef struct obi_font_source_hold_v0 {
     char* family;
     char* style;
 } obi_font_source_hold_v0;
+
+static atomic_flag g_fontconfig_global_spin = ATOMIC_FLAG_INIT;
+static atomic_uint g_fontconfig_global_refcount = 0u;
+
+static void _fontconfig_global_spin_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&g_fontconfig_global_spin, memory_order_acquire)) {
+    }
+}
+
+static void _fontconfig_global_spin_unlock(void) {
+    atomic_flag_clear_explicit(&g_fontconfig_global_spin, memory_order_release);
+}
+
+static obi_status _fontconfig_global_acquire(void) {
+    _fontconfig_global_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_fontconfig_global_refcount, memory_order_relaxed);
+    if (refs == 0u && !FcInit()) {
+        _fontconfig_global_spin_unlock();
+        return OBI_STATUS_UNAVAILABLE;
+    }
+    atomic_store_explicit(&g_fontconfig_global_refcount, refs + 1u, memory_order_relaxed);
+    _fontconfig_global_spin_unlock();
+    return OBI_STATUS_OK;
+}
+
+static void _fontconfig_global_release(void) {
+    _fontconfig_global_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_fontconfig_global_refcount, memory_order_relaxed);
+    if (refs > 0u) {
+        refs--;
+        atomic_store_explicit(&g_fontconfig_global_refcount, refs, memory_order_relaxed);
+        if (refs == 0u) {
+            FcFini();
+        }
+    }
+    _fontconfig_global_spin_unlock();
+}
 
 static char* _dup_str(const char* s) {
     if (!s) {
@@ -149,10 +188,6 @@ static obi_status _fontdb_match_face(void* ctx,
     }
 
     memset(out_source, 0, sizeof(*out_source));
-
-    if (!FcInit()) {
-        return OBI_STATUS_UNAVAILABLE;
-    }
 
     PangoFontDescription* pdesc = pango_font_description_new();
     if (!pdesc) {
@@ -386,6 +421,10 @@ static void _destroy(void* ctx) {
         return;
     }
 
+    if (p->fontconfig_acquired) {
+        _fontconfig_global_release();
+    }
+
     if (p->host && p->host->free) {
         p->host->free(p->host->ctx, p);
     } else {
@@ -416,6 +455,11 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_UNSUPPORTED;
     }
 
+    obi_status st = _fontconfig_global_acquire();
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
+
     obi_text_pango_ctx_v0* ctx = NULL;
     if (host->alloc) {
         ctx = (obi_text_pango_ctx_v0*)host->alloc(host->ctx, sizeof(*ctx));
@@ -423,11 +467,13 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         ctx = (obi_text_pango_ctx_v0*)malloc(sizeof(*ctx));
     }
     if (!ctx) {
+        _fontconfig_global_release();
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
     memset(ctx, 0, sizeof(*ctx));
     ctx->host = host;
+    ctx->fontconfig_acquired = 1;
 
     out_provider->api = &OBI_TEXT_PANGO_PROVIDER_API_V0;
     out_provider->ctx = ctx;

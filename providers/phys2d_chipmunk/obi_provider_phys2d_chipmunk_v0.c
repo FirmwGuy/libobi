@@ -7,6 +7,7 @@
 
 #include <chipmunk/chipmunk.h>
 
+#include <limits.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,6 +37,9 @@
 #define OBI_PHYS_CHIPMUNK_MAX_BODIES     512u
 #define OBI_PHYS_CHIPMUNK_MAX_COLLIDERS 1024u
 #define OBI_PHYS_CHIPMUNK_MAX_EVENTS    1024u
+#define OBI_PHYS_DEBUG_FLAGS_MASK \
+    (OBI_PHYS_DEBUG_FLAG_SHAPES | OBI_PHYS_DEBUG_FLAG_AABBS | \
+     OBI_PHYS_DEBUG_FLAG_CONTACTS | OBI_PHYS_DEBUG_FLAG_JOINTS)
 
 typedef struct obi_phys2d_chipmunk_body_slot_v0 {
     int used;
@@ -74,6 +78,25 @@ typedef struct obi_phys2d_chipmunk_provider_ctx_v0 {
 static const obi_phys2d_world_api_v0 OBI_PHYS_CHIPMUNK_WORLD2D_API_V0;
 static const obi_phys_world2d_api_v0 OBI_PHYS_CHIPMUNK_WORLD2D_ROOT_API_V0;
 static const obi_phys_debug_draw_api_v0 OBI_PHYS_CHIPMUNK_DEBUG_DRAW_API_V0;
+
+static bool _chipmunk_body_type_valid(obi_phys2d_body_type_v0 t) {
+    return t == OBI_PHYS2D_BODY_STATIC ||
+           t == OBI_PHYS2D_BODY_DYNAMIC ||
+           t == OBI_PHYS2D_BODY_KINEMATIC;
+}
+
+static bool _chipmunk_debug_params_valid(const obi_phys_debug_draw_params_v0* params) {
+    if (!params) {
+        return true;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return false;
+    }
+    if ((params->flags & ~OBI_PHYS_DEBUG_FLAGS_MASK) != 0u) {
+        return false;
+    }
+    return true;
+}
 
 static cpBodyType _chipmunk_body_type_from_obi(obi_phys2d_body_type_v0 t) {
     switch (t) {
@@ -231,6 +254,9 @@ static obi_status _chipmunk_world_step(void* ctx, float dt, uint32_t vel_iters, 
     if (!w || !w->space || dt < 0.0f) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (vel_iters > (uint32_t)INT_MAX) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (vel_iters > 0u) {
         cpSpaceSetIterations(w->space, (int)vel_iters);
     }
@@ -246,6 +272,9 @@ static obi_status _chipmunk_body_create(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (def->struct_size != 0u && def->struct_size < sizeof(*def)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (def->flags != 0u || !_chipmunk_body_type_valid(def->type)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -407,6 +436,9 @@ static obi_status _chipmunk_collider_create_circle(void* ctx,
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (def->common.flags != 0u || def->radius <= 0.0f) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_phys2d_chipmunk_body_slot_v0* body_slot = _chipmunk_body_slot_by_id(w, body);
     if (!body_slot || !body_slot->handle) {
@@ -459,6 +491,11 @@ static obi_status _chipmunk_collider_create_box(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (def->common.flags != 0u ||
+        def->half_extents.x <= 0.0f ||
+        def->half_extents.y <= 0.0f) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -649,6 +686,9 @@ static obi_status _chipmunk_world_create(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_phys2d_chipmunk_world_ctx_v0* w =
         (obi_phys2d_chipmunk_world_ctx_v0*)calloc(1u, sizeof(*w));
@@ -699,8 +739,10 @@ static obi_status _chipmunk_debug_collect_world2d(void* ctx,
                                                   size_t tri_cap,
                                                   size_t* out_tri_count) {
     (void)ctx;
-    (void)params;
     if (!world || !world->api || !out_line_count || !out_tri_count) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_chipmunk_debug_params_valid(params)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (world->api != &OBI_PHYS_CHIPMUNK_WORLD2D_API_V0 || !world->ctx) {

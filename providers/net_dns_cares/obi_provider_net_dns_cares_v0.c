@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -32,6 +33,7 @@
 
 typedef struct obi_net_dns_cares_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
+    int cares_initialized;
 } obi_net_dns_cares_ctx_v0;
 
 typedef struct obi_dns_resolve_accum_v0 {
@@ -49,6 +51,45 @@ typedef struct obi_dns_family_cb_v0 {
     obi_dns_resolve_accum_v0* accum;
     int family;
 } obi_dns_family_cb_v0;
+
+static atomic_flag g_cares_global_spin = ATOMIC_FLAG_INIT;
+static atomic_uint g_cares_global_refcount = 0u;
+
+static void _cares_global_spin_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&g_cares_global_spin, memory_order_acquire)) {
+    }
+}
+
+static void _cares_global_spin_unlock(void) {
+    atomic_flag_clear_explicit(&g_cares_global_spin, memory_order_release);
+}
+
+static obi_status _cares_global_acquire(void) {
+    _cares_global_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_cares_global_refcount, memory_order_relaxed);
+    if (refs == 0u) {
+        if (ares_library_init(ARES_LIB_INIT_ALL) != ARES_SUCCESS) {
+            _cares_global_spin_unlock();
+            return OBI_STATUS_UNAVAILABLE;
+        }
+    }
+    atomic_store_explicit(&g_cares_global_refcount, refs + 1u, memory_order_relaxed);
+    _cares_global_spin_unlock();
+    return OBI_STATUS_OK;
+}
+
+static void _cares_global_release(void) {
+    _cares_global_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_cares_global_refcount, memory_order_relaxed);
+    if (refs > 0u) {
+        refs--;
+        atomic_store_explicit(&g_cares_global_refcount, refs, memory_order_relaxed);
+        if (refs == 0u) {
+            ares_library_cleanup();
+        }
+    }
+    _cares_global_spin_unlock();
+}
 
 #if !defined(_WIN32)
 static void _append_ip_addr(obi_dns_resolve_accum_v0* acc, int family, const void* raw) {
@@ -159,10 +200,6 @@ static obi_status _resolve(void* ctx,
     acc.status_v4 = ARES_ENOTFOUND;
     acc.status_v6 = ARES_ENOTFOUND;
 
-    if (ares_library_init(ARES_LIB_INIT_ALL) != ARES_SUCCESS) {
-        return OBI_STATUS_UNAVAILABLE;
-    }
-
     ares_channel_t* channel = NULL;
     if (ares_init(&channel) == ARES_SUCCESS && channel) {
         obi_dns_family_cb_v0 cb4;
@@ -185,7 +222,6 @@ static obi_status _resolve(void* ctx,
             if (params->cancel_token.api && params->cancel_token.api->is_cancelled &&
                 params->cancel_token.api->is_cancelled(params->cancel_token.ctx)) {
                 ares_destroy(channel);
-                ares_library_cleanup();
                 return OBI_STATUS_CANCELLED;
             }
 
@@ -215,8 +251,6 @@ static obi_status _resolve(void* ctx,
 
         ares_destroy(channel);
     }
-
-    ares_library_cleanup();
 
     if (acc.count == 0u) {
         _append_from_getaddrinfo(&acc, name, params->flags);
@@ -338,6 +372,10 @@ static void _destroy(void* ctx) {
         return;
     }
 
+    if (p->cares_initialized) {
+        _cares_global_release();
+    }
+
     if (p->host && p->host->free) {
         p->host->free(p->host->ctx, p);
     } else {
@@ -367,6 +405,11 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_UNSUPPORTED;
     }
 
+    obi_status st = _cares_global_acquire();
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
+
     obi_net_dns_cares_ctx_v0* ctx = NULL;
     if (host->alloc) {
         ctx = (obi_net_dns_cares_ctx_v0*)host->alloc(host->ctx, sizeof(*ctx));
@@ -374,10 +417,12 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         ctx = (obi_net_dns_cares_ctx_v0*)malloc(sizeof(*ctx));
     }
     if (!ctx) {
+        _cares_global_release();
         return OBI_STATUS_OUT_OF_MEMORY;
     }
     memset(ctx, 0, sizeof(*ctx));
     ctx->host = host;
+    ctx->cares_initialized = 1;
 
     out_provider->api = &OBI_NET_DNS_CARES_PROVIDER_API_V0;
     out_provider->ctx = ctx;

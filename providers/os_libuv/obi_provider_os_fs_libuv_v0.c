@@ -12,8 +12,8 @@
 #include <obi/obi_legal_v0.h>
 #include <obi/profiles/obi_os_fs_v0.h>
 
-#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -144,6 +144,10 @@ static void _fs_req_cleanup(uv_fs_t* req) {
     uv_fs_req_cleanup(req);
 }
 
+static int _has_malformed_view(obi_utf8_view_v0 view) {
+    return view.size > 0u && !view.data;
+}
+
 static uint64_t _mtime_unix_ns(const uv_stat_t* st) {
     if (!st) {
         return 0u;
@@ -212,12 +216,10 @@ static obi_status _mkdir_recursive(uv_loop_t* loop, const char* path) {
         }
         char keep = *p;
         *p = '\0';
-        if (tmp[0] != '\0') {
-            int rc = _mkdir_single(loop, tmp);
-            if (rc != 0) {
-                free(tmp);
-                return _status_from_uv(rc);
-            }
+        int rc = _mkdir_single(loop, tmp);
+        if (rc != 0) {
+            free(tmp);
+            return _status_from_uv(rc);
         }
         *p = keep;
     }
@@ -227,32 +229,14 @@ static obi_status _mkdir_recursive(uv_loop_t* loop, const char* path) {
     return _status_from_uv(rc);
 }
 
-static obi_status _writer_write_all(obi_writer_v0 writer, const void* src, size_t size) {
-    if (!writer.api || !writer.api->write || (!src && size > 0u)) {
-        return OBI_STATUS_BAD_ARG;
-    }
-
-    size_t off = 0u;
-    while (off < size) {
-        size_t wrote = 0u;
-        obi_status st = writer.api->write(writer.ctx, (const uint8_t*)src + off, size - off, &wrote);
-        if (st != OBI_STATUS_OK) {
-            return st;
-        }
-        if (wrote == 0u) {
-            return OBI_STATUS_IO_ERROR;
-        }
-        off += wrote;
-    }
-
-    return OBI_STATUS_OK;
-}
-
 /* ---------------- reader/writer ---------------- */
 
 static obi_status _reader_read(void* ctx, void* dst, size_t dst_cap, size_t* out_n) {
     obi_reader_libuv_ctx_v0* r = (obi_reader_libuv_ctx_v0*)ctx;
     if (!r || !r->loop || r->fd < 0 || !out_n || (!dst && dst_cap > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (dst_cap > (size_t)UINT_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -312,6 +296,9 @@ static const obi_reader_api_v0 OBI_OS_FS_LIBUV_READER_API_V0 = {
 static obi_status _writer_write(void* ctx, const void* src, size_t src_size, size_t* out_n) {
     obi_writer_libuv_ctx_v0* w = (obi_writer_libuv_ctx_v0*)ctx;
     if (!w || !w->loop || w->fd < 0 || !out_n || (!src && src_size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (src_size > (size_t)UINT_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -475,6 +462,12 @@ static obi_status _fs_open_reader(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && _has_malformed_view(params->options_json)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     uv_fs_t req;
     memset(&req, 0, sizeof(req));
@@ -535,6 +528,13 @@ static obi_status _fs_open_writer(void* ctx,
                                      OBI_FS_OPEN_WRITE_TRUNCATE |
                                      OBI_FS_OPEN_WRITE_APPEND |
                                      OBI_FS_OPEN_WRITE_EXCLUSIVE)) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && (params->flags & OBI_FS_OPEN_WRITE_APPEND) != 0u &&
+        (params->flags & OBI_FS_OPEN_WRITE_TRUNCATE) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && _has_malformed_view(params->options_json)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -691,6 +691,12 @@ static obi_status _fs_open_dir_iter(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && _has_malformed_view(params->options_json)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_fs_dir_iter_libuv_ctx_v0* it = (obi_fs_dir_iter_libuv_ctx_v0*)calloc(1u, sizeof(*it));
     if (!it) {
@@ -706,6 +712,7 @@ static obi_status _fs_open_dir_iter(void* ctx,
 
     int rc = uv_fs_scandir(it->loop, &it->req, path, 0, NULL);
     if (rc < 0) {
+        _fs_req_cleanup(&it->req);
         _dir_iter_destroy(it);
         return _status_from_uv(rc);
     }
@@ -878,6 +885,8 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
     memset(ctx->loop, 0, sizeof(*ctx->loop));
 
     if (uv_loop_init(ctx->loop) != 0) {
+        free(ctx->loop);
+        ctx->loop = NULL;
         _destroy(ctx);
         return OBI_STATUS_ERROR;
     }

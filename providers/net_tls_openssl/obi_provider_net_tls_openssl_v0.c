@@ -300,6 +300,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_UNSUPPORTED;
     }
 
+    /* OpenSSL global init is process-wide and idempotent; no paired shutdown is required here. */
     if (OPENSSL_init_ssl(0u, NULL) != 1) {
         return OBI_STATUS_UNAVAILABLE;
     }

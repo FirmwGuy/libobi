@@ -16,36 +16,18 @@
 #  define OBI_EXPORT __attribute__((visibility("default")))
 #endif
 
+/* Some libc headers hide these under feature-test macros; declare explicitly for C11 builds. */
+extern double j0(double x);
+extern double j1(double x);
+extern double y0(double x);
+extern double y1(double x);
+
 typedef struct obi_math_science_native_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
 } obi_math_science_native_ctx_v0;
 
 static int _f64_is_finite(double v) {
     return (v == v) && (v <= DBL_MAX) && (v >= -DBL_MAX);
-}
-
-static double _bessel_j0_series(double x) {
-    double x2 = x * x;
-    double term = 1.0;
-    double sum = 1.0;
-    for (int k = 1; k <= 10; k++) {
-        double denom = 4.0 * (double)k * (double)k;
-        term *= -(x2 / denom);
-        sum += term;
-    }
-    return sum;
-}
-
-static double _bessel_j1_series(double x) {
-    double x2 = x * x;
-    double term = x * 0.5;
-    double sum = term;
-    for (int k = 1; k <= 10; k++) {
-        double denom = 4.0 * (double)k * (double)(k + 1);
-        term *= -(x2 / denom);
-        sum += term;
-    }
-    return sum;
 }
 
 static obi_status _sci_erf(void* ctx, double x, double* out_y) {
@@ -105,7 +87,11 @@ static obi_status _sci_bessel_j0(void* ctx, double x, double* out_y) {
     if (!out_y) {
         return OBI_STATUS_BAD_ARG;
     }
-    *out_y = _bessel_j0_series(x);
+    double y = j0(x);
+    if (!_f64_is_finite(y)) {
+        return OBI_STATUS_ERROR;
+    }
+    *out_y = y;
     return OBI_STATUS_OK;
 }
 
@@ -114,7 +100,11 @@ static obi_status _sci_bessel_j1(void* ctx, double x, double* out_y) {
     if (!out_y) {
         return OBI_STATUS_BAD_ARG;
     }
-    *out_y = _bessel_j1_series(x);
+    double y = j1(x);
+    if (!_f64_is_finite(y)) {
+        return OBI_STATUS_ERROR;
+    }
+    *out_y = y;
     return OBI_STATUS_OK;
 }
 
@@ -123,7 +113,11 @@ static obi_status _sci_bessel_y0(void* ctx, double x, double* out_y) {
     if (!out_y || x <= 0.0) {
         return OBI_STATUS_BAD_ARG;
     }
-    *out_y = -log(1.0 + x) * _bessel_j0_series(x);
+    double y = y0(x);
+    if (!_f64_is_finite(y)) {
+        return OBI_STATUS_ERROR;
+    }
+    *out_y = y;
     return OBI_STATUS_OK;
 }
 
@@ -132,7 +126,11 @@ static obi_status _sci_bessel_y1(void* ctx, double x, double* out_y) {
     if (!out_y || x <= 0.0) {
         return OBI_STATUS_BAD_ARG;
     }
-    *out_y = -log(1.0 + x) * _bessel_j1_series(x);
+    double y = y1(x);
+    if (!_f64_is_finite(y)) {
+        return OBI_STATUS_ERROR;
+    }
+    *out_y = y;
     return OBI_STATUS_OK;
 }
 

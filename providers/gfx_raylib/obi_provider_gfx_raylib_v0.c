@@ -6,6 +6,7 @@
 #include <obi/profiles/obi_gfx_render2d_v0.h>
 #include <obi/profiles/obi_gfx_window_input_v0.h>
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,6 +49,28 @@ typedef struct obi_gfx_raylib_ctx_v0 {
     uint8_t scissor_enabled;
     obi_rectf_v0 scissor_rect;
 } obi_gfx_raylib_ctx_v0;
+
+static int _rgba8_row_bytes(uint32_t width, uint32_t* out_row_bytes) {
+    if (!out_row_bytes || width == 0u || width > (UINT32_MAX / 4u)) {
+        return 0;
+    }
+
+    *out_row_bytes = width * 4u;
+    return 1;
+}
+
+static int _rgba8_total_bytes(uint32_t width, uint32_t height, size_t* out_total_bytes) {
+    uint32_t row_bytes = 0u;
+    if (!out_total_bytes || height == 0u || !_rgba8_row_bytes(width, &row_bytes)) {
+        return 0;
+    }
+    if ((size_t)height > (SIZE_MAX / (size_t)row_bytes)) {
+        return 0;
+    }
+
+    *out_total_bytes = (size_t)height * (size_t)row_bytes;
+    return 1;
+}
 
 static obi_status _windows_grow(obi_gfx_raylib_ctx_v0* p) {
     size_t new_cap = (p->window_cap == 0u) ? 8u : (p->window_cap * 2u);
@@ -141,6 +164,18 @@ static obi_status _create_window(void* ctx,
                                  obi_window_id_v0* out_window) {
     obi_gfx_raylib_ctx_v0* p = (obi_gfx_raylib_ctx_v0*)ctx;
     if (!p || !params || !out_window) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    {
+        const uint32_t known_flags = OBI_WINDOW_CREATE_RESIZABLE |
+                                     OBI_WINDOW_CREATE_HIDDEN |
+                                     OBI_WINDOW_CREATE_HIGH_DPI |
+                                     OBI_WINDOW_CREATE_BORDERLESS;
+        if ((params->flags & ~known_flags) != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
+    if (params->width > (uint32_t)INT_MAX || params->height > (uint32_t)INT_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -282,6 +317,22 @@ static obi_status _texture_create_rgba8(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
 
+    uint32_t row_bytes = 0u;
+    size_t total_bytes = 0u;
+    if (!_rgba8_row_bytes(width, &row_bytes) ||
+        !_rgba8_total_bytes(width, height, &total_bytes)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (pixels) {
+        uint32_t src_stride = (stride_bytes == 0u) ? row_bytes : stride_bytes;
+        if (src_stride < row_bytes) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if ((size_t)height > (SIZE_MAX / (size_t)src_stride)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
+
     if (p->texture_count == p->texture_cap) {
         obi_status st = _textures_grow(p);
         if (st != OBI_STATUS_OK) {
@@ -289,24 +340,20 @@ static obi_status _texture_create_rgba8(void* ctx,
         }
     }
 
-    size_t size = (size_t)width * (size_t)height * 4u;
-    uint8_t* rgba = (uint8_t*)malloc(size);
+    uint8_t* rgba = (uint8_t*)malloc(total_bytes);
     if (!rgba) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
     if (!pixels) {
-        memset(rgba, 0, size);
+        memset(rgba, 0, total_bytes);
     } else {
-        uint32_t src_stride = stride_bytes;
-        if (src_stride == 0u) {
-            src_stride = width * 4u;
-        }
+        uint32_t src_stride = (stride_bytes == 0u) ? row_bytes : stride_bytes;
 
         for (uint32_t y = 0u; y < height; y++) {
             const uint8_t* src = (const uint8_t*)pixels + ((size_t)y * src_stride);
-            uint8_t* dst = rgba + ((size_t)y * (size_t)width * 4u);
-            memcpy(dst, src, (size_t)width * 4u);
+            uint8_t* dst = rgba + ((size_t)y * (size_t)row_bytes);
+            memcpy(dst, src, (size_t)row_bytes);
         }
     }
 
@@ -349,15 +396,23 @@ static obi_status _texture_update_rgba8(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
 
-    uint32_t src_stride = stride_bytes;
-    if (src_stride == 0u) {
-        src_stride = w * 4u;
+    uint32_t src_row_bytes = 0u;
+    uint32_t dst_row_bytes = 0u;
+    if (!_rgba8_row_bytes(w, &src_row_bytes) || !_rgba8_row_bytes(t->width, &dst_row_bytes)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    uint32_t src_stride = (stride_bytes == 0u) ? src_row_bytes : stride_bytes;
+    if (src_stride < src_row_bytes) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((size_t)h > (SIZE_MAX / (size_t)src_stride)) {
+        return OBI_STATUS_BAD_ARG;
     }
 
     for (uint32_t row = 0u; row < h; row++) {
         const uint8_t* src = (const uint8_t*)pixels + ((size_t)row * src_stride);
-        uint8_t* dst = t->rgba + (((size_t)(y + row) * (size_t)t->width + x) * 4u);
-        memcpy(dst, src, (size_t)w * 4u);
+        uint8_t* dst = t->rgba + ((size_t)(y + row) * (size_t)dst_row_bytes) + ((size_t)x * 4u);
+        memcpy(dst, src, (size_t)src_row_bytes);
     }
 
     return OBI_STATUS_OK;
@@ -511,11 +566,11 @@ static obi_status _get_profile(void* ctx,
 
 static const char* _describe_json(void* ctx) {
     (void)ctx;
-    return "{\"provider_id\":\"obi.provider:gfx.raylib\",\"provider_version\":\"0.1.0\","
+    return "{\"provider_id\":\"obi.provider:gfx.raylib\",\"provider_version\":\"0.3.0\","
            "\"profiles\":[\"obi.profile:gfx.render2d-0\",\"obi.profile:gfx.window_input-0\"],"
            "\"license\":{\"spdx_expression\":\"MPL-2.0\",\"class\":\"weak_copyleft\"},"
            "\"behavior\":{\"diagnostics\":\"host\",\"writes_stdout\":false,\"writes_stderr\":false,\"may_exit_process\":false},"
-           "\"deps\":[]}";
+           "\"deps\":[{\"name\":\"raylib\",\"version\":\"dynamic-or-vendored\",\"spdx_expression\":\"Zlib\",\"class\":\"permissive\"}]}";
 }
 
 static obi_status _describe_legal_metadata(void* ctx,

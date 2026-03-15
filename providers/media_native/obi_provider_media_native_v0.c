@@ -41,7 +41,7 @@
 #  include <speex/speex_resampler.h>
 #endif
 
-#if defined(OBI_MEDIA_BACKEND_FFMPEG_DEMUXMUX) || defined(OBI_MEDIA_BACKEND_FFMPEG_SCALE)
+#if defined(OBI_MEDIA_BACKEND_FFMPEG_DEMUXMUX)
 #  include <libavcodec/avcodec.h>
 #  include <libavformat/avformat.h>
 #endif
@@ -76,6 +76,10 @@
 
 #ifndef OBI_MEDIA_PROVIDER_DEPS_JSON
 #  define OBI_MEDIA_PROVIDER_DEPS_JSON "[]"
+#endif
+
+#ifndef OBI_MEDIA_NATIVE_EMIT_FACTORY
+#  define OBI_MEDIA_NATIVE_EMIT_FACTORY 1
 #endif
 
 #if defined(_WIN32)
@@ -148,6 +152,7 @@ static int _gst_plugin_available(const char* plugin_name) {
     if (!plugin_name || plugin_name[0] == '\0') {
         return 0;
     }
+    /* GStreamer init is process-global; guard repeated initialization and do not deinit here. */
     if (!gst_is_initialized()) {
         gst_init(NULL, NULL);
     }
@@ -191,7 +196,7 @@ static void _media_backend_probe(void) {
     (void)speex_resampler_strerror(RESAMPLER_ERR_SUCCESS);
 #endif
 
-#if defined(OBI_MEDIA_BACKEND_FFMPEG_DEMUXMUX) || defined(OBI_MEDIA_BACKEND_FFMPEG_SCALE)
+#if defined(OBI_MEDIA_BACKEND_FFMPEG_DEMUXMUX)
     (void)avformat_version();
     (void)avcodec_version();
 #endif
@@ -324,6 +329,58 @@ static uint32_t _pixel_bpp(obi_pixel_format_v0 fmt) {
         default:
             return 0u;
     }
+}
+
+static int _mul_size_overflow(size_t a, size_t b, size_t* out) {
+    if (!out) {
+        return 1;
+    }
+    if (a != 0u && b > (SIZE_MAX / a)) {
+        return 1;
+    }
+    *out = a * b;
+    return 0;
+}
+
+static int _packed_plane_bounds_valid(uint32_t width, uint32_t height, uint32_t stride_bytes, uint32_t bpp) {
+    size_t min_stride = 0u;
+    if (bpp == 0u || _mul_size_overflow((size_t)width, (size_t)bpp, &min_stride)) {
+        return 0;
+    }
+    if ((size_t)stride_bytes < min_stride) {
+        return 0;
+    }
+    if (width == 0u || height == 0u) {
+        return 1;
+    }
+
+    size_t row_off = 0u;
+    size_t col_off = 0u;
+    if (_mul_size_overflow((size_t)(height - 1u), (size_t)stride_bytes, &row_off) ||
+        _mul_size_overflow((size_t)(width - 1u), (size_t)bpp, &col_off)) {
+        return 0;
+    }
+    if (row_off > SIZE_MAX - col_off) {
+        return 0;
+    }
+    if ((row_off + col_off) > SIZE_MAX - (size_t)bpp) {
+        return 0;
+    }
+    return 1;
+}
+
+static int _utf8_view_malformed(obi_utf8_view_v0 view) {
+    return (view.size > 0u && !view.data);
+}
+
+static int _bytes_view_malformed(obi_bytes_view_v0 view) {
+    return (view.size > 0u && !view.data);
+}
+
+static int _valid_video_scale_filter(obi_video_scale_filter_v0 filter) {
+    return (filter == OBI_VIDEO_SCALE_FILTER_NEAREST ||
+            filter == OBI_VIDEO_SCALE_FILTER_BILINEAR ||
+            filter == OBI_VIDEO_SCALE_FILTER_BICUBIC);
 }
 
 static void _load_rgba_pixel(obi_pixel_format_v0 fmt, const uint8_t* src, uint8_t rgba[4]) {
@@ -486,6 +543,9 @@ static obi_status _audio_open_stream(const obi_audio_stream_params_v0* params,
     if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (params->sample_rate_hz == 0u || params->channels == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
@@ -552,6 +612,9 @@ static obi_status _audio_mix_interleaved(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (fmt->struct_size != 0u && fmt->struct_size < sizeof(*fmt)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (fmt->flags != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
     if (fmt->channels == 0u || out_frame_cap == 0u) {
@@ -746,8 +809,19 @@ static obi_status _create_resampler(void* ctx,
     if (!out_resampler) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u && !params->options_json.data) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u) {
+            return OBI_STATUS_UNSUPPORTED;
+        }
     }
 
     if (in_fmt.sample_rate_hz == 0u || out_fmt.sample_rate_hz == 0u ||
@@ -935,8 +1009,19 @@ static obi_status _demux_open_reader(void* ctx,
     if (!out_demuxer || !reader.api || !reader.api->read) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (_utf8_view_malformed(params->options_json)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u) {
+            return OBI_STATUS_UNSUPPORTED;
+        }
     }
 
     uint8_t* data = NULL;
@@ -959,8 +1044,19 @@ static obi_status _demux_open_bytes(void* ctx,
     if (!out_demuxer || (!bytes.data && bytes.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (_utf8_view_malformed(params->options_json)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u) {
+            return OBI_STATUS_UNSUPPORTED;
+        }
     }
 
     return _demux_open_common((const uint8_t*)bytes.data, bytes.size, out_demuxer);
@@ -994,6 +1090,20 @@ static obi_status _mux_add_stream(void* ctx,
     if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->codec_id[0] == '\0') {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->kind != OBI_MUX_STREAM_AUDIO &&
+        params->kind != OBI_MUX_STREAM_VIDEO &&
+        params->kind != OBI_MUX_STREAM_OTHER) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (_bytes_view_malformed(params->extradata)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     *out_stream_index = m->stream_count++;
     return OBI_STATUS_OK;
@@ -1002,6 +1112,9 @@ static obi_status _mux_add_stream(void* ctx,
 static obi_status _mux_write_packet(void* ctx, const obi_mux_packet_v0* pkt) {
     obi_mux_native_ctx_v0* m = (obi_mux_native_ctx_v0*)ctx;
     if (!m || !pkt || (!pkt->data && pkt->size > 0u) || !m->writer.api || !m->writer.api->write) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((pkt->flags & ~OBI_MUX_PACKET_FLAG_KEYFRAME) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
     if (m->finished) {
@@ -1067,8 +1180,16 @@ static obi_status _mux_open_writer(void* ctx,
     if (!writer.api || !writer.api->write || !out_muxer) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (_utf8_view_malformed(params->options_json)) {
+            return OBI_STATUS_BAD_ARG;
+        }
     }
 
     obi_mux_native_ctx_v0* m = (obi_mux_native_ctx_v0*)calloc(1u, sizeof(*m));
@@ -1128,6 +1249,9 @@ static obi_status _av_decoder_send_packet(void* ctx, const obi_av_packet_v0* pkt
         return OBI_STATUS_OK;
     }
     if (!pkt->data && pkt->size > 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((pkt->flags & ~OBI_AV_PACKET_FLAG_KEYFRAME) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -1264,11 +1388,22 @@ static obi_status _decoder_create(void* ctx,
                                   const obi_av_codec_params_v0* params,
                                   obi_av_decoder_v0* out_decoder) {
     (void)ctx;
-    if (!codec_id || !out_decoder) {
+    if (!codec_id || codec_id[0] == '\0' || !out_decoder) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+    if (kind != OBI_AV_STREAM_AUDIO && kind != OBI_AV_STREAM_VIDEO) {
         return OBI_STATUS_BAD_ARG;
+    }
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (_bytes_view_malformed(params->extradata)) {
+            return OBI_STATUS_BAD_ARG;
+        }
     }
 
     obi_av_decoder_native_ctx_v0* d =
@@ -1325,6 +1460,9 @@ static obi_status _encoder_queue_packet(obi_av_encoder_native_ctx_v0* e,
     }
 
     size_t tag_len = strlen(tag);
+    if (size > SIZE_MAX - tag_len) {
+        return OBI_STATUS_BAD_ARG;
+    }
     size_t out_size = tag_len + size;
     uint8_t* out = (uint8_t*)malloc(out_size);
     if (!out) {
@@ -1469,11 +1607,25 @@ static obi_status _encoder_create(void* ctx,
                                   const obi_av_encode_params_v0* params,
                                   obi_av_encoder_v0* out_encoder) {
     (void)ctx;
-    if (!codec_id || !out_encoder) {
+    if (!codec_id || codec_id[0] == '\0' || !out_encoder) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+    if (kind != OBI_AV_STREAM_AUDIO && kind != OBI_AV_STREAM_VIDEO) {
         return OBI_STATUS_BAD_ARG;
+    }
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (_utf8_view_malformed(params->options_json)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u) {
+            return OBI_STATUS_UNSUPPORTED;
+        }
     }
 
     obi_av_encoder_native_ctx_v0* e =
@@ -1541,6 +1693,10 @@ static obi_status _video_scaler_convert(void* ctx,
         src->planes[0].stride_bytes == 0u || dst->planes[0].stride_bytes == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_packed_plane_bounds_valid(src->fmt.width, src->fmt.height, src->planes[0].stride_bytes, in_bpp) ||
+        !_packed_plane_bounds_valid(dst->fmt.width, dst->fmt.height, dst->planes[0].stride_bytes, out_bpp)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     const uint8_t* src_base = (const uint8_t*)src->planes[0].data;
     uint8_t* dst_base = (uint8_t*)dst->planes[0].data;
@@ -1602,8 +1758,22 @@ static obi_status _create_video_scaler(void* ctx,
     if (!out_scaler) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (_utf8_view_malformed(params->options_json)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u) {
+            return OBI_STATUS_UNSUPPORTED;
+        }
+        if (!_valid_video_scale_filter(params->filter)) {
+            return OBI_STATUS_BAD_ARG;
+        }
     }
 
     if (in_fmt.width == 0u || in_fmt.height == 0u || out_fmt.width == 0u || out_fmt.height == 0u) {
@@ -1902,7 +2072,7 @@ static obi_status _describe_legal_metadata(void* ctx,
         { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "opus" },
         { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "backend", .value_utf8 = "gstreamer" },
     };
-    static const char* decode_opus_deps[] = { "gstreamer-core" };
+    static const char* decode_opus_deps[] = { "gstreamer-core", "gstreamer-plugins-base" };
 
     static const obi_legal_selector_term_v0 decode_h264_selectors[] = {
         { .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0), .key_utf8 = "codec", .value_utf8 = "h264" },
@@ -1917,6 +2087,19 @@ static obi_status _describe_legal_metadata(void* ctx,
             .dependency_id = "gstreamer-core",
             .name = "GStreamer core",
             .version = "dynamic",
+            .legal = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "LGPL-2.1-or-later",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_dependency_v0),
+            .relation = OBI_LEGAL_DEP_OPTIONAL_RUNTIME,
+            .dependency_id = "gstreamer-plugins-base",
+            .name = "GStreamer base plugin family",
+            .version = "runtime-optional",
             .legal = {
                 .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
                 .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
@@ -2164,6 +2347,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
     return OBI_STATUS_OK;
 }
 
+#if OBI_MEDIA_NATIVE_EMIT_FACTORY
 OBI_EXPORT const obi_provider_factory_desc_v0 obi_provider_factory_v0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
@@ -2173,3 +2357,4 @@ OBI_EXPORT const obi_provider_factory_desc_v0 obi_provider_factory_v0 = {
     .provider_version = OBI_MEDIA_PROVIDER_VERSION,
     .create = _create,
 };
+#endif

@@ -396,6 +396,25 @@ static int _serde_format_supported(const char* format_hint) {
     return _str_ieq(format_hint, "json");
 }
 
+static obi_status _serde_open_params_validate(const obi_serde_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
 static obi_status _serde_parse_json_bytes(const uint8_t* bytes,
                                           size_t size,
                                           obi_serde_parser_v0* out_parser) {
@@ -557,8 +576,9 @@ static obi_status _serde_events_open_reader(void* ctx,
     if (!out_parser || !reader.api || !reader.api->read) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status params_st = _serde_open_params_validate(params);
+    if (params_st != OBI_STATUS_OK) {
+        return params_st;
     }
     if (params && !_serde_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;
@@ -589,8 +609,9 @@ static obi_status _serde_events_open_bytes(void* ctx,
     if (!out_parser || (!bytes.data && bytes.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status params_st = _serde_open_params_validate(params);
+    if (params_st != OBI_STATUS_OK) {
+        return params_st;
     }
     if (params && !_serde_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;

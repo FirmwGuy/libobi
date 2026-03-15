@@ -7,6 +7,7 @@
 
 #include <uriparser/Uri.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,35 @@ typedef struct obi_uri_query_items_hold_v0 {
     obi_uri_query_item_v0* items;
     UriQueryListA* query_list;
 } obi_uri_query_items_hold_v0;
+
+enum {
+    OBI_URI_QUERY_KNOWN_FLAGS =
+        OBI_URI_QUERY_ALLOW_LEADING_QMARK | OBI_URI_QUERY_PLUS_AS_SPACE,
+    OBI_URI_PERCENT_KNOWN_FLAGS = OBI_URI_PERCENT_SPACE_AS_PLUS,
+};
+
+static int _uri_component_valid(obi_uri_component_kind_v0 component) {
+    switch (component) {
+        case OBI_URI_COMPONENT_USERINFO:
+        case OBI_URI_COMPONENT_PATH_SEGMENT:
+        case OBI_URI_COMPONENT_QUERY_KEY:
+        case OBI_URI_COMPONENT_QUERY_VALUE:
+        case OBI_URI_COMPONENT_FRAGMENT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int _utf8_view_input_valid(obi_utf8_view_v0 v) {
+    if (!v.data && v.size > 0u) {
+        return 0;
+    }
+    if (v.size > (size_t)INT_MAX) {
+        return 0;
+    }
+    return 1;
+}
 
 static int _utf8_valid(const uint8_t* s, size_t n) {
     if (!s && n > 0u) {
@@ -106,7 +136,10 @@ static int _utf8_valid(const uint8_t* s, size_t n) {
 }
 
 static char* _dup_utf8_view(obi_utf8_view_v0 v) {
-    if (!v.data && v.size > 0u) {
+    if (!_utf8_view_input_valid(v)) {
+        return NULL;
+    }
+    if (v.size == SIZE_MAX) {
         return NULL;
     }
 
@@ -249,7 +282,7 @@ static obi_status _uri_to_string_owned(const UriUriA* uri,
 
 static obi_status _uri_parse_utf8(void* ctx, obi_utf8_view_v0 uri, obi_uri_info_v0* out_info) {
     (void)ctx;
-    if (!out_info || (!uri.data && uri.size > 0u)) {
+    if (!out_info || !_utf8_view_input_valid(uri)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_utf8_valid((const uint8_t*)uri.data, uri.size)) {
@@ -319,8 +352,7 @@ static obi_status _uri_normalize_utf8(void* ctx,
                                       uint32_t flags,
                                       obi_uri_text_v0* out_text) {
     (void)ctx;
-    (void)flags;
-    if (!out_text || (!uri.data && uri.size > 0u)) {
+    if (!out_text || flags != 0u || !_utf8_view_input_valid(uri)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_utf8_valid((const uint8_t*)uri.data, uri.size)) {
@@ -356,9 +388,6 @@ static obi_status _uri_normalize_utf8(void* ctx,
     }
 
     st = _uri_make_text(norm, norm_size, out_text);
-    if (st != OBI_STATUS_OK) {
-        free(norm);
-    }
 
 cleanup:
     uriFreeUriMembersA(&parsed);
@@ -372,9 +401,8 @@ static obi_status _uri_resolve_utf8(void* ctx,
                                     uint32_t flags,
                                     obi_uri_text_v0* out_text) {
     (void)ctx;
-    (void)flags;
-    if (!out_text || (!base_uri.data && base_uri.size > 0u) ||
-        (!ref_uri.data && ref_uri.size > 0u)) {
+    if (!out_text || flags != 0u || !_utf8_view_input_valid(base_uri) ||
+        !_utf8_view_input_valid(ref_uri)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_utf8_valid((const uint8_t*)base_uri.data, base_uri.size) ||
@@ -426,9 +454,6 @@ static obi_status _uri_resolve_utf8(void* ctx,
     }
 
     st = _uri_make_text(out, out_size, out_text);
-    if (st != OBI_STATUS_OK) {
-        free(out);
-    }
 
 cleanup:
     uriFreeUriMembersA(&resolved);
@@ -444,15 +469,18 @@ static obi_status _uri_query_items_utf8(void* ctx,
                                         uint32_t flags,
                                         obi_uri_query_items_v0* out_items) {
     (void)ctx;
-    if (!out_items || (!query.data && query.size > 0u)) {
+    if (!out_items || !_utf8_view_input_valid(query)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((flags & ~OBI_URI_QUERY_KNOWN_FLAGS) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_utf8_valid((const uint8_t*)query.data, query.size)) {
         return OBI_STATUS_BAD_ARG;
     }
 
-    const char* first = query.data;
-    const char* after_last = query.data + query.size;
+    const char* first = query.data ? query.data : "";
+    const char* after_last = first + query.size;
     if (query.size > 0u && query.data[0] == '?') {
         if ((flags & OBI_URI_QUERY_ALLOW_LEADING_QMARK) == 0u) {
             return OBI_STATUS_BAD_ARG;
@@ -528,7 +556,9 @@ static obi_status _uri_percent_encode_utf8(void* ctx,
                                            uint32_t flags,
                                            obi_uri_text_v0* out_text) {
     (void)ctx;
-    if (!out_text || (!text.data && text.size > 0u)) {
+    if (!out_text || !_uri_component_valid(component) ||
+        (flags & ~OBI_URI_PERCENT_KNOWN_FLAGS) != 0u ||
+        !_utf8_view_input_valid(text)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_utf8_valid((const uint8_t*)text.data, text.size)) {
@@ -565,7 +595,9 @@ static obi_status _uri_percent_decode_utf8(void* ctx,
                                            uint32_t flags,
                                            obi_uri_text_v0* out_text) {
     (void)ctx;
-    if (!out_text || (!text.data && text.size > 0u)) {
+    if (!out_text || !_uri_component_valid(component) ||
+        (flags & ~OBI_URI_PERCENT_KNOWN_FLAGS) != 0u ||
+        !_utf8_view_input_valid(text)) {
         return OBI_STATUS_BAD_ARG;
     }
 

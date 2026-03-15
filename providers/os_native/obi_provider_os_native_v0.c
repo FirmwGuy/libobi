@@ -16,10 +16,8 @@
 #include <obi/profiles/obi_ipc_bus_v0.h>
 #include <obi/profiles/obi_os_process_v0.h>
 
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +27,12 @@
 #  define OBI_EXPORT __declspec(dllexport)
 #else
 #  define OBI_EXPORT __attribute__((visibility("default")))
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#  define OBI_OS_NATIVE_MAYBE_UNUSED __attribute__((unused))
+#else
+#  define OBI_OS_NATIVE_MAYBE_UNUSED
 #endif
 
 #if !defined(_WIN32)
@@ -151,6 +155,10 @@ static uint32_t _os_native_legal_patent_from_class(const char* klass) {
 }
 
 static char* _dup_range(const char* s, size_t n) {
+    if ((!s && n > 0u) || n == SIZE_MAX) {
+        return NULL;
+    }
+
     char* out = (char*)malloc(n + 1u);
     if (!out) {
         return NULL;
@@ -238,6 +246,8 @@ static obi_fs_entry_kind_v0 _entry_kind_from_mode(mode_t mode) {
 
 typedef struct obi_env_iter_native_ctx_v0 {
     size_t index;
+    char* name_buf;
+    char* value_buf;
 } obi_env_iter_native_ctx_v0;
 
 static obi_status _env_getenv_utf8(void* ctx,
@@ -444,6 +454,17 @@ static obi_status _env_iter_next(void* ctx,
 #else
     obi_env_iter_native_ctx_v0* it = (obi_env_iter_native_ctx_v0*)ctx;
 
+    free(it->name_buf);
+    free(it->value_buf);
+    it->name_buf = NULL;
+    it->value_buf = NULL;
+
+    *out_has_item = false;
+    out_name->data = NULL;
+    out_name->size = 0u;
+    out_value->data = NULL;
+    out_value->size = 0u;
+
     while (environ && environ[it->index]) {
         const char* entry = environ[it->index++];
         if (!entry) {
@@ -454,25 +475,37 @@ static obi_status _env_iter_next(void* ctx,
             continue;
         }
 
-        out_name->data = entry;
-        out_name->size = (size_t)(eq - entry);
-        out_value->data = eq + 1;
-        out_value->size = strlen(eq + 1);
+        const size_t name_len = (size_t)(eq - entry);
+        char* name_copy = _dup_range(entry, name_len);
+        char* value_copy = _dup_str(eq + 1);
+        if (!name_copy || !value_copy) {
+            free(name_copy);
+            free(value_copy);
+            return OBI_STATUS_OUT_OF_MEMORY;
+        }
+
+        it->name_buf = name_copy;
+        it->value_buf = value_copy;
+        out_name->data = it->name_buf;
+        out_name->size = name_len;
+        out_value->data = it->value_buf;
+        out_value->size = strlen(it->value_buf);
         *out_has_item = true;
         return OBI_STATUS_OK;
     }
-
-    out_name->data = NULL;
-    out_name->size = 0u;
-    out_value->data = NULL;
-    out_value->size = 0u;
-    *out_has_item = false;
     return OBI_STATUS_OK;
 #endif
 }
 
 static void _env_iter_destroy(void* ctx) {
-    free(ctx);
+    obi_env_iter_native_ctx_v0* it = (obi_env_iter_native_ctx_v0*)ctx;
+    if (!it) {
+        return;
+    }
+
+    free(it->name_buf);
+    free(it->value_buf);
+    free(it);
 }
 
 static const obi_env_iter_api_v0 OBI_OS_NATIVE_ENV_ITER_API_V0 = {
@@ -505,7 +538,7 @@ static obi_status _env_iter_open(void* ctx, obi_env_iter_v0* out_iter) {
 #endif
 }
 
-static const obi_os_env_api_v0 OBI_OS_NATIVE_ENV_API_V0 = {
+static const obi_os_env_api_v0 OBI_OS_NATIVE_MAYBE_UNUSED OBI_OS_NATIVE_ENV_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_os_env_api_v0),
@@ -727,34 +760,31 @@ static obi_status _fs_open_writer(void* ctx,
     (void)flags;
     return OBI_STATUS_UNSUPPORTED;
 #else
-    FILE* fp = NULL;
-
+    int oflags = O_WRONLY;
+    if ((flags & OBI_FS_OPEN_WRITE_CREATE) != 0u) {
+        oflags |= O_CREAT;
+    }
+    if ((flags & OBI_FS_OPEN_WRITE_TRUNCATE) != 0u) {
+        oflags |= O_TRUNC;
+    }
+    if ((flags & OBI_FS_OPEN_WRITE_APPEND) != 0u) {
+        oflags |= O_APPEND;
+    }
     if ((flags & OBI_FS_OPEN_WRITE_EXCLUSIVE) != 0u) {
-        int oflags = O_WRONLY | O_CREAT | O_EXCL;
-        if ((flags & OBI_FS_OPEN_WRITE_APPEND) != 0u) {
-            oflags |= O_APPEND;
-        }
-        if ((flags & OBI_FS_OPEN_WRITE_TRUNCATE) != 0u) {
-            oflags |= O_TRUNC;
-        }
+        oflags |= O_EXCL;
+    }
 
-        int fd = open(path, oflags, 0666);
-        if (fd < 0) {
-            return _status_from_errno(errno);
-        }
+    int fd = open(path, oflags, 0666);
+    if (fd < 0) {
+        return _status_from_errno(errno);
+    }
 
-        fp = fdopen(fd, ((flags & OBI_FS_OPEN_WRITE_APPEND) != 0u) ? "ab" : "wb");
-        if (!fp) {
-            int saved = errno;
-            close(fd);
-            return _status_from_errno(saved);
-        }
-    } else {
-        const char* mode = ((flags & OBI_FS_OPEN_WRITE_APPEND) != 0u) ? "ab" : "wb";
-        fp = fopen(path, mode);
-        if (!fp) {
-            return _status_from_errno(errno);
-        }
+    const char* mode = ((flags & OBI_FS_OPEN_WRITE_APPEND) != 0u) ? "ab" : "wb";
+    FILE* fp = fdopen(fd, mode);
+    if (!fp) {
+        int saved = errno;
+        close(fd);
+        return _status_from_errno(saved);
     }
 
     obi_fs_writer_native_ctx_v0* w = (obi_fs_writer_native_ctx_v0*)calloc(1u, sizeof(*w));
@@ -812,13 +842,18 @@ static obi_status _mkdir_recursive_native(const char* path) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    size_t len = strlen(tmp);
-    while (len > 1u && tmp[len - 1u] == '/') {
-        tmp[len - 1u] = '\0';
-        len--;
+    char* end = tmp + strlen(tmp);
+    if (end == tmp) {
+        free(tmp);
+        return OBI_STATUS_BAD_ARG;
+    }
+    while (end > (tmp + 1) && end[-1] == '/') {
+        end[-1] = '\0';
+        end--;
     }
 
-    for (char* p = tmp + 1; *p; p++) {
+    size_t start = (tmp[0] == '/') ? 1u : 0u;
+    for (char* p = tmp + start; *p; p++) {
         if (*p != '/') {
             continue;
         }
@@ -1062,7 +1097,7 @@ static obi_status _fs_open_dir_iter(void* ctx,
 #endif
 }
 
-static const obi_os_fs_api_v0 OBI_OS_NATIVE_FS_API_V0 = {
+static const obi_os_fs_api_v0 OBI_OS_NATIVE_MAYBE_UNUSED OBI_OS_NATIVE_FS_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_os_fs_api_v0),
@@ -1303,6 +1338,15 @@ static obi_status _os_process_spawn(void* ctx,
     if (!params->program.data || params->program.size == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params->argc > 0u && !params->argv) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!params->working_dir.data && params->working_dir.size > 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->env_overrides_count > 0u && !params->env_overrides) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
 #if defined(_WIN32)
     (void)out_stdin;
@@ -1329,7 +1373,14 @@ static obi_status _os_process_spawn(void* ctx,
     size_t argv_fill = 0u;
     if (params->argc > 0u) {
         for (size_t i = 0; i < params->argc; i++) {
-            char* arg = _dup_utf8_view(params->argv[i]);
+            const obi_utf8_view_v0 arg_view = params->argv[i];
+            if (!arg_view.data && arg_view.size > 0u) {
+                _free_argv(argv, argv_fill);
+                free(program);
+                return OBI_STATUS_BAD_ARG;
+            }
+
+            char* arg = _dup_utf8_view(arg_view);
             if (!arg) {
                 _free_argv(argv, argv_fill);
                 free(program);
@@ -1371,7 +1422,17 @@ static obi_status _os_process_spawn(void* ctx,
         }
 
         for (size_t i = 0; i < env_count; i++) {
-            env_keys[i] = _dup_utf8_view(params->env_overrides[i].key);
+            const obi_process_env_kv_v0* kv = &params->env_overrides[i];
+            if ((!kv->key.data && kv->key.size > 0u) ||
+                (!kv->value.data && kv->value.size > 0u)) {
+                _free_env_pairs(env_keys, env_values, env_count);
+                free(working_dir);
+                _free_argv(argv, argv_fill);
+                free(program);
+                return OBI_STATUS_BAD_ARG;
+            }
+
+            env_keys[i] = _dup_utf8_view(kv->key);
             if (!env_keys[i] || env_keys[i][0] == '\0') {
                 _free_env_pairs(env_keys, env_values, env_count);
                 free(working_dir);
@@ -1379,8 +1440,8 @@ static obi_status _os_process_spawn(void* ctx,
                 free(program);
                 return OBI_STATUS_BAD_ARG;
             }
-            if (params->env_overrides[i].value.data || params->env_overrides[i].value.size > 0u) {
-                env_values[i] = _dup_utf8_view(params->env_overrides[i].value);
+            if (kv->value.data || kv->value.size > 0u) {
+                env_values[i] = _dup_utf8_view(kv->value);
                 if (!env_values[i]) {
                     _free_env_pairs(env_keys, env_values, env_count);
                     free(working_dir);
@@ -1392,9 +1453,20 @@ static obi_status _os_process_spawn(void* ctx,
         }
     }
 
+    obi_process_native_ctx_v0* proc =
+        (obi_process_native_ctx_v0*)calloc(1u, sizeof(*proc));
+    if (!proc) {
+        _free_env_pairs(env_keys, env_values, env_count);
+        free(working_dir);
+        _free_argv(argv, argv_fill);
+        free(program);
+        return OBI_STATUS_OUT_OF_MEMORY;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         int saved = errno;
+        free(proc);
         _free_env_pairs(env_keys, env_values, env_count);
         free(working_dir);
         _free_argv(argv, argv_fill);
@@ -1426,11 +1498,6 @@ static obi_status _os_process_spawn(void* ctx,
     _free_argv(argv, argv_fill);
     free(program);
 
-    obi_process_native_ctx_v0* proc =
-        (obi_process_native_ctx_v0*)calloc(1u, sizeof(*proc));
-    if (!proc) {
-        return OBI_STATUS_OUT_OF_MEMORY;
-    }
     proc->pid = pid;
     proc->exited = false;
     proc->exit_code = 0;
@@ -1455,7 +1522,7 @@ static obi_status _os_process_spawn(void* ctx,
 #endif
 }
 
-static const obi_os_process_api_v0 OBI_OS_NATIVE_PROCESS_ROOT_API_V0 = {
+static const obi_os_process_api_v0 OBI_OS_NATIVE_MAYBE_UNUSED OBI_OS_NATIVE_PROCESS_ROOT_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_os_process_api_v0),
@@ -1537,14 +1604,17 @@ static obi_status _os_dylib_open(void* ctx,
     if ((flags & ~(OBI_DYLIB_OPEN_NOW | OBI_DYLIB_OPEN_GLOBAL)) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
 #if defined(_WIN32)
     (void)path;
     (void)flags;
     return OBI_STATUS_UNSUPPORTED;
 #else
-    if (!path && ((flags & OBI_DYLIB_OPEN_NOW) == 0u)) {
-        /* OPEN_SELF is supported; default mode can still be lazy. */
+    if (path && path[0] == '\0') {
+        return OBI_STATUS_BAD_ARG;
     }
 
     int dl_flags = ((flags & OBI_DYLIB_OPEN_NOW) != 0u) ? RTLD_NOW : RTLD_LAZY;
@@ -1568,7 +1638,7 @@ static obi_status _os_dylib_open(void* ctx,
 #endif
 }
 
-static const obi_os_dylib_api_v0 OBI_OS_NATIVE_DYLIB_ROOT_API_V0 = {
+static const obi_os_dylib_api_v0 OBI_OS_NATIVE_MAYBE_UNUSED OBI_OS_NATIVE_DYLIB_ROOT_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_os_dylib_api_v0),
@@ -1778,8 +1848,9 @@ static obi_status _fs_watch_poll_events(void* ctx,
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
+    size_t event_capacity = w->item_count;
     batch_ctx->events =
-        (obi_fs_watch_event_v0*)calloc(change_count, sizeof(*batch_ctx->events));
+        (obi_fs_watch_event_v0*)calloc(event_capacity, sizeof(*batch_ctx->events));
     if (!batch_ctx->events) {
         free(batch_ctx);
         return OBI_STATUS_OUT_OF_MEMORY;
@@ -1813,6 +1884,11 @@ static obi_status _fs_watch_poll_events(void* ctx,
 
         if (!changed) {
             continue;
+        }
+
+        if (out_count >= event_capacity) {
+            _fs_watch_batch_release(batch_ctx, out_batch);
+            return OBI_STATUS_ERROR;
         }
 
         obi_fs_watch_event_v0* ev = &batch_ctx->events[out_count++];
@@ -1889,7 +1965,7 @@ static obi_status _os_fs_watch_open_watcher(void* ctx,
 #endif
 }
 
-static const obi_os_fs_watch_api_v0 OBI_OS_NATIVE_FS_WATCH_API_V0 = {
+static const obi_os_fs_watch_api_v0 OBI_OS_NATIVE_MAYBE_UNUSED OBI_OS_NATIVE_FS_WATCH_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_os_fs_watch_api_v0),
@@ -2441,7 +2517,7 @@ static obi_status _ipc_bus_connect(void* ctx,
     return OBI_STATUS_OK;
 }
 
-static const obi_ipc_bus_api_v0 OBI_OS_NATIVE_IPC_BUS_API_V0 = {
+static const obi_ipc_bus_api_v0 OBI_OS_NATIVE_MAYBE_UNUSED OBI_OS_NATIVE_IPC_BUS_API_V0 = {
     .abi_major = OBI_CORE_ABI_MAJOR,
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_ipc_bus_api_v0),

@@ -89,6 +89,38 @@ static int _format_supported(const char* format_hint) {
     return _str_ieq(format_hint, "pdf");
 }
 
+static obi_status _validate_paged_open_params(const obi_paged_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_paged_render_params(const obi_paged_render_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static void _paged_image_release(void* release_ctx, obi_paged_page_image_v0* image) {
     obi_paged_image_hold_v0* hold = (obi_paged_image_hold_v0*)release_ctx;
     if (image) {
@@ -249,8 +281,9 @@ static obi_status _paged_doc_render_page(void* ctx,
     if (!d || !d->document || !out_image) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_paged_render_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     PopplerPage* page = poppler_document_get_page(d->document, (int)page_index);
@@ -454,8 +487,9 @@ static obi_status _paged_open_from_bytes(obi_bytes_view_v0 bytes,
     if (!out_doc || (!bytes.data && bytes.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_paged_open_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
     if (bytes.size == 0u) {
         return OBI_STATUS_BAD_ARG;

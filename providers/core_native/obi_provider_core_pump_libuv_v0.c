@@ -16,9 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
-#  include <pthread.h>
-#endif
 #include <uv.h>
 
 #if defined(_WIN32)
@@ -30,7 +27,17 @@
 typedef struct obi_core_pump_libuv_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
     uv_loop_t* loop;
+    int loop_initialized;
+    uv_thread_t owner_thread;
 } obi_core_pump_libuv_ctx_v0;
+
+static int _on_owner_thread(const obi_core_pump_libuv_ctx_v0* p) {
+    if (!p) {
+        return 0;
+    }
+    uv_thread_t self = uv_thread_self();
+    return uv_thread_equal(&self, &p->owner_thread);
+}
 
 static void _loop_close_walk_cb(uv_handle_t* handle, void* arg) {
     (void)arg;
@@ -54,6 +61,9 @@ static void _destroy_loop(uv_loop_t* loop) {
 static obi_status _pump_step(void* ctx, uint64_t timeout_ns) {
     obi_core_pump_libuv_ctx_v0* p = (obi_core_pump_libuv_ctx_v0*)ctx;
     if (!p || !p->loop) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_on_owner_thread(p)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -82,6 +92,9 @@ static obi_status _pump_step(void* ctx, uint64_t timeout_ns) {
 static obi_status _pump_get_wait_hint(void* ctx, obi_pump_wait_hint_v0* out_hint) {
     obi_core_pump_libuv_ctx_v0* p = (obi_core_pump_libuv_ctx_v0*)ctx;
     if (!p || !p->loop || !out_hint) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_on_owner_thread(p)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -198,8 +211,15 @@ static void _destroy(void* ctx) {
         return;
     }
 
-    _destroy_loop(p->loop);
-    p->loop = NULL;
+    if (p->loop) {
+        if (p->loop_initialized) {
+            _destroy_loop(p->loop);
+        } else {
+            free(p->loop);
+        }
+        p->loop = NULL;
+        p->loop_initialized = 0;
+    }
 
     if (p->host && p->host->free) {
         p->host->free(p->host->ctx, p);
@@ -242,6 +262,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
 
     memset(ctx, 0, sizeof(*ctx));
     ctx->host = host;
+    ctx->owner_thread = uv_thread_self();
 
     ctx->loop = (uv_loop_t*)malloc(sizeof(*ctx->loop));
     if (!ctx->loop) {
@@ -254,6 +275,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         _destroy(ctx);
         return OBI_STATUS_ERROR;
     }
+    ctx->loop_initialized = 1;
 
     out_provider->api = &OBI_CORE_PUMP_LIBUV_PROVIDER_API_V0;
     out_provider->ctx = ctx;

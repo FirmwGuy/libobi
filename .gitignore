@@ -10,3 +10,4 @@
 *.dSYM/
 .DS_Store
 /TT
+tags

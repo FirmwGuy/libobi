@@ -54,6 +54,13 @@ static void _file_type_release(void* release_ctx, obi_file_type_info_v0* info) {
     free(hold);
 }
 
+static obi_status _validate_params(const obi_file_type_params_v0* params) {
+    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static obi_status _fill_info_from_probe(const void* bytes, size_t size, obi_file_type_info_v0* out_info) {
     if (!out_info || (!bytes && size > 0u)) {
         return OBI_STATUS_BAD_ARG;
@@ -110,7 +117,10 @@ static obi_status _detect_from_bytes(void* ctx,
                                      const obi_file_type_params_v0* params,
                                      obi_file_type_info_v0* out_info) {
     (void)ctx;
-    (void)params;
+    obi_status st = _validate_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
     return _fill_info_from_probe(bytes.data, bytes.size, out_info);
 }
 
@@ -121,6 +131,10 @@ static obi_status _detect_from_reader(void* ctx,
     (void)ctx;
     if (!reader.api || !reader.api->read || !out_info) {
         return OBI_STATUS_BAD_ARG;
+    }
+    obi_status st = _validate_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     size_t cap = 4096u;
@@ -156,10 +170,14 @@ static obi_status _detect_from_reader(void* ctx,
     }
 
     if (can_seek) {
-        (void)reader.api->seek(reader.ctx, (int64_t)pos0, SEEK_SET, NULL);
+        st = reader.api->seek(reader.ctx, (int64_t)pos0, SEEK_SET, NULL);
+        if (st != OBI_STATUS_OK) {
+            free(buf);
+            return st;
+        }
     }
 
-    obi_status st = _fill_info_from_probe(buf, total, out_info);
+    st = _fill_info_from_probe(buf, total, out_info);
     free(buf);
     return st;
 }

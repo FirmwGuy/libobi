@@ -59,19 +59,47 @@ static obi_gpio_line_slot_native_v0* _line_get(obi_hw_gpio_native_ctx_v0* p, obi
     return NULL;
 }
 
+static int _line_open_params_valid(const obi_gpio_line_open_params_v0* params) {
+    if (!params) {
+        return 0;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return 0;
+    }
+    if (params->direction != OBI_GPIO_DIR_INPUT && params->direction != OBI_GPIO_DIR_OUTPUT) {
+        return 0;
+    }
+    if ((params->flags & ~(OBI_GPIO_LINE_ACTIVE_LOW | OBI_GPIO_LINE_OPEN_DRAIN | OBI_GPIO_LINE_OPEN_SOURCE)) != 0u) {
+        return 0;
+    }
+    if ((params->flags & OBI_GPIO_LINE_OPEN_DRAIN) != 0u && (params->flags & OBI_GPIO_LINE_OPEN_SOURCE) != 0u) {
+        return 0;
+    }
+    if ((params->edge_flags & ~(OBI_GPIO_EDGE_FLAG_RISING | OBI_GPIO_EDGE_FLAG_FALLING)) != 0u) {
+        return 0;
+    }
+    if (params->direction == OBI_GPIO_DIR_OUTPUT && params->edge_flags != 0u) {
+        return 0;
+    }
+    if (params->bias != OBI_GPIO_BIAS_DEFAULT &&
+        params->bias != OBI_GPIO_BIAS_DISABLE &&
+        params->bias != OBI_GPIO_BIAS_PULL_UP &&
+        params->bias != OBI_GPIO_BIAS_PULL_DOWN) {
+        return 0;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return 0;
+    }
+    return 1;
+}
+
 static obi_status _line_open(void* ctx,
                              const char* chip_path,
                              uint32_t line_offset,
                              const obi_gpio_line_open_params_v0* params,
                              obi_gpio_line_id_v0* out_line) {
     obi_hw_gpio_native_ctx_v0* p = (obi_hw_gpio_native_ctx_v0*)ctx;
-    if (!p || !chip_path || chip_path[0] == '\0' || !params || !out_line) {
-        return OBI_STATUS_BAD_ARG;
-    }
-    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
-    }
-    if (params->direction != OBI_GPIO_DIR_INPUT && params->direction != OBI_GPIO_DIR_OUTPUT) {
+    if (!p || !chip_path || chip_path[0] == '\0' || !out_line || !_line_open_params_valid(params)) {
         return OBI_STATUS_BAD_ARG;
     }
 

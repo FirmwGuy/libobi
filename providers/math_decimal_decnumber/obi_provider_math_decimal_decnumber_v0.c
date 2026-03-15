@@ -25,6 +25,14 @@
 #define OBI_MATH_DECIMAL_DECNUMBER_MAX_CTXS 32u
 #define OBI_MATH_DECIMAL_DECNUMBER_MAX_SLOTS 128u
 #define OBI_MATH_DECNUMBER_STR_MAX (DECNUMDIGITS + 64)
+#define OBI_DECIMAL_SIGNAL_MASK_V0 (OBI_DECIMAL_SIG_INEXACT | \
+                                    OBI_DECIMAL_SIG_ROUNDED | \
+                                    OBI_DECIMAL_SIG_UNDERFLOW | \
+                                    OBI_DECIMAL_SIG_OVERFLOW | \
+                                    OBI_DECIMAL_SIG_SUBNORMAL | \
+                                    OBI_DECIMAL_SIG_DIV_BY_ZERO | \
+                                    OBI_DECIMAL_SIG_INVALID_OP | \
+                                    OBI_DECIMAL_SIG_CLAMPED)
 
 typedef struct obi_decimal_decnumber_ctx_slot_v0 {
     int used;
@@ -68,6 +76,16 @@ static enum rounding _dec_round_from_obi(obi_decimal_round_v0 rnd) {
         default:
             return DEC_ROUND_HALF_EVEN;
     }
+}
+
+static int _valid_decimal_round(obi_decimal_round_v0 rnd) {
+    return (rnd == OBI_DECIMAL_RND_HALF_EVEN ||
+            rnd == OBI_DECIMAL_RND_HALF_UP ||
+            rnd == OBI_DECIMAL_RND_HALF_DOWN ||
+            rnd == OBI_DECIMAL_RND_DOWN ||
+            rnd == OBI_DECIMAL_RND_UP ||
+            rnd == OBI_DECIMAL_RND_FLOOR ||
+            rnd == OBI_DECIMAL_RND_CEILING);
 }
 
 static uint32_t _dec_status_to_signals(uint32_t st) {
@@ -150,6 +168,15 @@ static obi_status _ctx_create(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && !_valid_decimal_round(params->round)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && (params->traps & ~OBI_DECIMAL_SIGNAL_MASK_V0) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
 

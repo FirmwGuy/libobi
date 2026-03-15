@@ -106,6 +106,11 @@ if blis_dep.found()
     ['obi_provider_math_blas_blis_v0.c'],
     include_directories: inc,
     dependencies: deps + [blis_dep],
+    c_args: [
+      # Vendored BLIS headers expose static helpers that can trip -Wunused-function
+      # under stricter toolchains.
+      '-Wno-unused-function',
+    ],
     install: true,
     install_dir: provider_install_dir,
   )

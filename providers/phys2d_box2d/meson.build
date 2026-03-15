@@ -20,6 +20,10 @@ elif has_vendor_libraries_root
       join_paths(vendor_libraries_rel_root, 'box2d', 'src'),
     )
     box2d_vendor_deps = []
+    box2d_vendor_c_args = [
+      # Vendored Box2D uses macro patterns that trigger -Wextra on newer GCC.
+      '-Wno-unused-value',
+    ]
     box2d_vendor_libm = cc.find_library('m', required: false)
     if box2d_vendor_libm.found()
       box2d_vendor_deps += [box2d_vendor_libm]
@@ -69,6 +73,7 @@ elif has_vendor_libraries_root
         box2d_vendor_sources,
         include_directories: box2d_vendor_inc,
         dependencies: box2d_vendor_deps,
+        c_args: box2d_vendor_c_args,
         override_options: ['c_std=gnu17'],
         install: false,
       )
@@ -79,6 +84,7 @@ elif has_vendor_libraries_root
         box2d_vendor_sources,
         include_directories: box2d_vendor_inc,
         dependencies: box2d_vendor_deps,
+        c_args: box2d_vendor_c_args,
         override_options: ['c_std=gnu17'],
         install: true,
         install_dir: provider_install_dir,

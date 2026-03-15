@@ -136,9 +136,9 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 Everything else currently implemented under `*.inhouse` / `*.bootstrap` (plus explicitly marked bootstrap native fallbacks) is treated as bootstrap coverage only.
 `obi.provider:time.inhouse` remains available as an optional disabled-by-default portability module, but it is no longer listed in the active matrix rows now that both roadmap time backends (`time.glib`, `time.icu`) are implemented.
 
-## Audit: Current Bootstrap Providers
+## Current Bootstrap Providers
 
-| Provider ID | Lane | Disposition | Audit note |
+| Provider ID | Lane | Disposition | Rationale |
 |---|---|---|---|
 | `obi.provider:crypto.inhouse` | `bootstrap` | `temporary_in_house` | Narrow portability fallback retained only for `crypto.random-0` on targets missing one or both roadmap crypto libraries. |
 | `obi.provider:data.inhouse` | `bootstrap` | `temporary_in_house` | Legacy in-house data fallback kept out of final matrix coverage after archive/compression/serde/uri third-party backends landed. |
@@ -178,7 +178,7 @@ Dual-runtime coexistence now includes non-SDL3 gfx providers
 Sokol providers use shared process-local setup/shutdown refcounting to avoid
 runtime collision during interleaved two-runtime execution.
 
-Build policy note kept from the provider audit: backend resolution should prefer
+Build policy: backend resolution should prefer
 system shared libraries first, then vendored shared fallbacks. Static vendored
 fallback is opt-in only; the current explicit gate is `-Dphys2d_allow_static_fallback=true`
 for `obi.provider:phys2d.box2d` and `obi.provider:phys2d.chipmunk`.

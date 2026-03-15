@@ -1,4 +1,7 @@
-curl_dep = dependency('libcurl', required: get_option('provider_net_http_curl'))
+curl_dep = dependency('libcurl', required: false)
+if not curl_dep.found()
+  curl_dep = cc.find_library('curl', required: get_option('provider_net_http_curl'))
+endif
 
 if curl_dep.found()
   net_http_curl_provider_id = 'obi.provider:net.http.curl'

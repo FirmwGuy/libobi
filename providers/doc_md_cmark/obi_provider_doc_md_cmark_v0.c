@@ -63,6 +63,38 @@ static void _set_error(obi_md_event_parser_cmark_ctx_v0* p, const char* msg) {
     p->last_error = _dup_n(msg, strlen(msg));
 }
 
+static obi_status _validate_md_parse_params(const obi_md_parse_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_md_events_parse_params(const obi_md_events_parse_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 
 static obi_status _writer_write_all(obi_writer_v0 writer, const void* src, size_t size) {
     if (!writer.api || !writer.api->write || (!src && size > 0u)) {
@@ -209,11 +241,9 @@ static obi_status _md_parse_to_json_writer(void* ctx,
     if ((!markdown.data && markdown.size > 0u) || !out_json.api || !out_json.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
-    }
-    if (params && params->options_json.size > 0u && !params->options_json.data) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_md_parse_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     cmark_node* root = cmark_parse_document(markdown.data ? markdown.data : "",
@@ -241,7 +271,7 @@ static obi_status _md_parse_to_json_writer(void* ctx,
         return OBI_STATUS_ERROR;
     }
 
-    obi_status st = _writer_write_all(out_json, buf, (size_t)n);
+    st = _writer_write_all(out_json, buf, (size_t)n);
     if (st != OBI_STATUS_OK) {
         return st;
     }
@@ -261,11 +291,9 @@ static obi_status _md_render_to_html_writer(void* ctx,
     if ((!markdown.data && markdown.size > 0u) || !out_html.api || !out_html.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
-    }
-    if (params && params->options_json.size > 0u && !params->options_json.data) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_md_parse_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     char* html = cmark_markdown_to_html(markdown.data ? markdown.data : "",
@@ -276,7 +304,7 @@ static obi_status _md_render_to_html_writer(void* ctx,
     }
 
     size_t html_n = strlen(html);
-    obi_status st = _writer_write_all(out_html, html, html_n);
+    st = _writer_write_all(out_html, html, html_n);
     free(html);
     if (st != OBI_STATUS_OK) {
         return st;
@@ -362,11 +390,9 @@ static obi_status _md_events_parse_utf8(void* ctx,
     if ((!markdown.data && markdown.size > 0u) || !out_parser) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
-    }
-    if (params && params->options_json.size > 0u && !params->options_json.data) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_md_events_parse_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     cmark_node* root = cmark_parse_document(markdown.data ? markdown.data : "",
@@ -383,7 +409,7 @@ static obi_status _md_events_parse_utf8(void* ctx,
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    obi_status st = _walk_events(p, root);
+    st = _walk_events(p, root);
     cmark_node_free(root);
     if (st != OBI_STATUS_OK) {
         _set_error(p, "failed to build markdown event stream from cmark AST");

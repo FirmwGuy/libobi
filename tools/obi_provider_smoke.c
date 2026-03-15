@@ -80,9 +80,11 @@
 #if !defined(_WIN32)
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
+#  include <pthread.h>
 #  include <sys/socket.h>
 
 extern int setenv(const char* name, const char* value, int replace);
+extern int unsetenv(const char* name);
 #endif
 
 #ifndef PATH_MAX
@@ -90,7 +92,9 @@ extern int setenv(const char* name, const char* value, int replace);
 #endif
 
 static int _bytes_all_zero(const uint8_t* bytes, size_t size);
+static int _provider_index_by_id(obi_rt_v0* rt, const char* provider_id, size_t* out_index);
 static int _provider_loaded(obi_rt_v0* rt, const char* provider_id);
+static int _provider_has_profile(obi_rt_v0* rt, const char* provider_id, const char* profile_id);
 static int _profile_provider_load_priority(const char* target_profile,
                                            const char* target_provider_id,
                                            const char* provider_path);
@@ -139,6 +143,71 @@ static void _set_env_if_unset(const char* name, const char* value) {
 #endif
 }
 
+typedef struct obi_env_saved_value_v0 {
+    const char* name;
+    char* value;
+    int had_value;
+} obi_env_saved_value_v0;
+
+static int _set_env_value(const char* name, const char* value) {
+    if (!name || name[0] == '\0') {
+        return -1;
+    }
+
+#if defined(_WIN32)
+    return _putenv_s(name, value ? value : "");
+#else
+    if (value) {
+        return setenv(name, value, 1);
+    }
+    return unsetenv(name);
+#endif
+}
+
+static int _capture_env_value(const char* name, obi_env_saved_value_v0* out_saved) {
+    if (!name || !out_saved) {
+        return 0;
+    }
+
+    memset(out_saved, 0, sizeof(*out_saved));
+    out_saved->name = name;
+
+    const char* current = getenv(name);
+    if (!current) {
+        out_saved->had_value = 0;
+        return 1;
+    }
+
+    size_t len = strlen(current);
+    char* copy = (char*)malloc(len + 1u);
+    if (!copy) {
+        return 0;
+    }
+
+    memcpy(copy, current, len + 1u);
+    out_saved->value = copy;
+    out_saved->had_value = 1;
+    return 1;
+}
+
+static int _restore_env_value(obi_env_saved_value_v0* saved) {
+    if (!saved || !saved->name) {
+        return 0;
+    }
+
+    int rc = 0;
+    if (saved->had_value) {
+        rc = _set_env_value(saved->name, saved->value ? saved->value : "");
+    } else {
+        rc = _set_env_value(saved->name, NULL);
+    }
+
+    free(saved->value);
+    saved->value = NULL;
+    saved->had_value = 0;
+    return rc == 0;
+}
+
 static void _configure_mix_headless_hints(void) {
     _set_env_if_unset("SDL_VIDEODRIVER", "dummy");
     _set_env_if_unset("SDL_AUDIODRIVER", "dummy");
@@ -146,6 +215,18 @@ static void _configure_mix_headless_hints(void) {
 #if !defined(_WIN32)
     _set_env_if_unset("LIBGL_ALWAYS_SOFTWARE", "1");
 #endif
+}
+
+static int _profile_is_data_gio_helper_backed(const char* profile_id) {
+    if (!profile_id) {
+        return 0;
+    }
+
+    return strcmp(profile_id, OBI_PROFILE_DATA_COMPRESSION_V0) == 0 ||
+           strcmp(profile_id, OBI_PROFILE_DATA_ARCHIVE_V0) == 0 ||
+           strcmp(profile_id, OBI_PROFILE_DATA_SERDE_EMIT_V0) == 0 ||
+           strcmp(profile_id, OBI_PROFILE_DATA_SERDE_EVENTS_V0) == 0 ||
+           strcmp(profile_id, OBI_PROFILE_DATA_URI_V0) == 0;
 }
 
 typedef struct obi_ipc_bus_smoke_names_v0 {
@@ -229,15 +310,7 @@ static int _profile_provider_load_priority(const char* target_profile,
         return 1;
     }
 
-    if (strcmp(target_profile, OBI_PROFILE_DATA_FILE_TYPE_V0) == 0) {
-        return is_data_gio_path ? 0 : 2;
-    }
-
-    if (strcmp(target_profile, OBI_PROFILE_DATA_COMPRESSION_V0) == 0 ||
-        strcmp(target_profile, OBI_PROFILE_DATA_ARCHIVE_V0) == 0 ||
-        strcmp(target_profile, OBI_PROFILE_DATA_SERDE_EMIT_V0) == 0 ||
-        strcmp(target_profile, OBI_PROFILE_DATA_SERDE_EVENTS_V0) == 0 ||
-        strcmp(target_profile, OBI_PROFILE_DATA_URI_V0) == 0) {
+    if (_profile_is_data_gio_helper_backed(target_profile)) {
         return is_data_glib_path ? 0 : 2;
     }
 
@@ -451,6 +524,27 @@ static size_t _profile_struct_size(const char* profile_id) {
     return 0u;
 }
 
+static int _require_profile_struct_size(const char* mode_label,
+                                        const char* profile_id,
+                                        size_t* out_size) {
+    const char* label = mode_label ? mode_label : "smoke";
+    if (!profile_id || profile_id[0] == '\0') {
+        fprintf(stderr, "%s: empty profile id\n", label);
+        return 0;
+    }
+
+    size_t size = _profile_struct_size(profile_id);
+    if (size == 0u) {
+        fprintf(stderr, "unknown profile for smoke size map: %s (mode=%s)\n", profile_id, label);
+        return 0;
+    }
+
+    if (out_size) {
+        *out_size = size;
+    }
+    return 1;
+}
+
 static int _read_file_bytes(const char* path, uint8_t** out_data, size_t* out_size) {
     if (!path || !out_data || !out_size) {
         return 0;
@@ -573,6 +667,40 @@ static const obi_reader_api_v0 MEM_READER_API_V0 = {
     .destroy = _mem_reader_destroy,
 };
 
+typedef struct mem_reader_rewind_fail_ctx_v0 {
+    mem_reader_ctx_v0 base;
+} mem_reader_rewind_fail_ctx_v0;
+
+static obi_status _mem_reader_rewind_fail_read(void* ctx, void* dst, size_t dst_cap, size_t* out_n) {
+    mem_reader_rewind_fail_ctx_v0* r = (mem_reader_rewind_fail_ctx_v0*)ctx;
+    if (!r) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return _mem_reader_read(&r->base, dst, dst_cap, out_n);
+}
+
+static obi_status _mem_reader_rewind_fail_seek(void* ctx, int64_t offset, int whence, uint64_t* out_pos) {
+    mem_reader_rewind_fail_ctx_v0* r = (mem_reader_rewind_fail_ctx_v0*)ctx;
+    if (!r) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (whence == SEEK_SET) {
+        return OBI_STATUS_IO_ERROR;
+    }
+    return _mem_reader_seek(&r->base, offset, whence, out_pos);
+}
+
+static const obi_reader_api_v0 MEM_READER_REWIND_FAIL_API_V0 = {
+    .abi_major = OBI_CORE_ABI_MAJOR,
+    .abi_minor = OBI_CORE_ABI_MINOR,
+    .struct_size = (uint32_t)sizeof(obi_reader_api_v0),
+    .reserved = 0u,
+    .caps = 0u,
+    .read = _mem_reader_rewind_fail_read,
+    .seek = _mem_reader_rewind_fail_seek,
+    .destroy = _mem_reader_destroy,
+};
+
 static obi_status _mem_writer_write(void* ctx, const void* src, size_t src_size, size_t* out_n) {
     mem_writer_ctx_v0* w = (mem_writer_ctx_v0*)ctx;
     if (!w || (!src && src_size > 0u) || !out_n) {
@@ -615,6 +743,29 @@ static obi_status _mem_writer_flush(void* ctx) {
 
 static void _mem_writer_destroy(void* ctx) {
     (void)ctx;
+}
+
+static int _buffer_contains_cstr(const uint8_t* data, size_t size, const char* needle) {
+    if (!data || !needle) {
+        return 0;
+    }
+
+    size_t needle_len = strlen(needle);
+    if (needle_len == 0u) {
+        return 1;
+    }
+    if (needle_len > size) {
+        return 0;
+    }
+
+    const size_t max_off = size - needle_len;
+    for (size_t off = 0u; off <= max_off; ++off) {
+        if (memcmp(data + off, needle, needle_len) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 static const obi_writer_api_v0 MEM_WRITER_API_V0 = {
@@ -1630,6 +1781,52 @@ static int _exercise_data_file_type_profile(obi_rt_v0* rt, const char* provider_
         info.release(info.release_ctx, &info);
     }
 
+    if (strcmp(provider_id, "obi.provider:data.gio") == 0 ||
+        strcmp(provider_id, "obi.provider:data.magic") == 0) {
+        obi_file_type_params_v0 bad_params;
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+
+        memset(&info, 0, sizeof(info));
+        st = ft.api->detect_from_bytes(ft.ctx,
+                                       (obi_bytes_view_v0){ sample, strlen(sample) },
+                                       &bad_params,
+                                       &info);
+        if (info.release) {
+            info.release(info.release_ctx, &info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.file_type exercise: provider=%s malformed params in detect_from_bytes did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (strcmp(provider_id, "obi.provider:data.magic") == 0) {
+        obi_file_type_params_v0 bad_flag_params;
+        memset(&bad_flag_params, 0, sizeof(bad_flag_params));
+        bad_flag_params.struct_size = (uint32_t)sizeof(bad_flag_params);
+        bad_flag_params.flags = 1u;
+
+        memset(&info, 0, sizeof(info));
+        st = ft.api->detect_from_bytes(ft.ctx,
+                                       (obi_bytes_view_v0){ sample, strlen(sample) },
+                                       &bad_flag_params,
+                                       &info);
+        if (info.release) {
+            info.release(info.release_ctx, &info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.file_type exercise: provider=%s unknown flags in detect_from_bytes did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     if ((ft.api->caps & OBI_FILE_TYPE_CAP_FROM_READER) && ft.api->detect_from_reader) {
         mem_reader_ctx_v0 rctx;
         memset(&rctx, 0, sizeof(rctx));
@@ -1649,6 +1846,48 @@ static int _exercise_data_file_type_profile(obi_rt_v0* rt, const char* provider_
         }
         if (info.release) {
             info.release(info.release_ctx, &info);
+        }
+
+        if (strcmp(provider_id, "obi.provider:data.gio") == 0) {
+            obi_file_type_params_v0 bad_params;
+            memset(&bad_params, 0, sizeof(bad_params));
+            bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+
+            memset(&info, 0, sizeof(info));
+            st = ft.api->detect_from_reader(ft.ctx, reader, &bad_params, &info);
+            if (info.release) {
+                info.release(info.release_ctx, &info);
+            }
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "data.file_type exercise: provider=%s malformed params in detect_from_reader did not return BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            mem_reader_rewind_fail_ctx_v0 rewind_fail_ctx;
+            memset(&rewind_fail_ctx, 0, sizeof(rewind_fail_ctx));
+            rewind_fail_ctx.base.data = (const uint8_t*)sample;
+            rewind_fail_ctx.base.size = strlen(sample);
+
+            obi_reader_v0 rewind_fail_reader;
+            memset(&rewind_fail_reader, 0, sizeof(rewind_fail_reader));
+            rewind_fail_reader.api = &MEM_READER_REWIND_FAIL_API_V0;
+            rewind_fail_reader.ctx = &rewind_fail_ctx;
+
+            memset(&info, 0, sizeof(info));
+            st = ft.api->detect_from_reader(ft.ctx, rewind_fail_reader, NULL, &info);
+            if (info.release) {
+                info.release(info.release_ctx, &info);
+            }
+            if (st != OBI_STATUS_IO_ERROR) {
+                fprintf(stderr,
+                        "data.file_type exercise: provider=%s rewind failure did not propagate (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
         }
     }
 
@@ -1708,6 +1947,101 @@ static int _exercise_data_compression_profile(obi_rt_v0* rt, const char* provide
         codec_id = "deflate";
     }
 
+    if (strcmp(provider_id, "obi.provider:data.compression.zlib") == 0 ||
+        strcmp(provider_id, "obi.provider:data.compression.libdeflate") == 0) {
+        mem_writer_ctx_v0 bad_writer_ctx;
+        memset(&bad_writer_ctx, 0, sizeof(bad_writer_ctx));
+        obi_writer_v0 bad_writer;
+        memset(&bad_writer, 0, sizeof(bad_writer));
+        bad_writer.api = &MEM_WRITER_API_V0;
+        bad_writer.ctx = &bad_writer_ctx;
+
+        obi_compression_params_v0 bad_params = params;
+        bad_params.flags = 1u;
+        src_reader_ctx.off = 0u;
+        st = comp.api->compress(comp.ctx, codec_id, &bad_params, src_reader, bad_writer, NULL, NULL);
+        free(bad_writer_ctx.data);
+        bad_writer_ctx.data = NULL;
+        bad_writer_ctx.size = 0u;
+        bad_writer_ctx.cap = 0u;
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.compression exercise: provider=%s unknown params flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.dictionary.data = NULL;
+        bad_params.dictionary.size = 1u;
+        src_reader_ctx.off = 0u;
+        st = comp.api->compress(comp.ctx, codec_id, &bad_params, src_reader, bad_writer, NULL, NULL);
+        free(bad_writer_ctx.data);
+        bad_writer_ctx.data = NULL;
+        bad_writer_ctx.size = 0u;
+        bad_writer_ctx.cap = 0u;
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.compression exercise: provider=%s malformed dictionary view should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 1u;
+        src_reader_ctx.off = 0u;
+        st = comp.api->compress(comp.ctx, codec_id, &bad_params, src_reader, bad_writer, NULL, NULL);
+        free(bad_writer_ctx.data);
+        bad_writer_ctx.data = NULL;
+        bad_writer_ctx.size = 0u;
+        bad_writer_ctx.cap = 0u;
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.compression exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.dictionary.data = sample;
+        bad_params.dictionary.size = 3u;
+        src_reader_ctx.off = 0u;
+        st = comp.api->compress(comp.ctx, codec_id, &bad_params, src_reader, bad_writer, NULL, NULL);
+        free(bad_writer_ctx.data);
+        bad_writer_ctx.data = NULL;
+        bad_writer_ctx.size = 0u;
+        bad_writer_ctx.cap = 0u;
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "data.compression exercise: provider=%s dictionary params should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        src_reader_ctx.off = 0u;
+        st = comp.api->compress(comp.ctx, codec_id, &bad_params, src_reader, bad_writer, NULL, NULL);
+        free(bad_writer_ctx.data);
+        bad_writer_ctx.data = NULL;
+        bad_writer_ctx.size = 0u;
+        bad_writer_ctx.cap = 0u;
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "data.compression exercise: provider=%s options_json params should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    src_reader_ctx.off = 0u;
     st = comp.api->compress(comp.ctx,
                             codec_id,
                             &params,
@@ -1811,6 +2145,61 @@ static int _exercise_data_archive_profile(obi_rt_v0* rt, const char* provider_id
         open_params.format_hint = "zip";
     }
 
+    if (strcmp(provider_id, "obi.provider:data.archive.libarchive") == 0 ||
+        strcmp(provider_id, "obi.provider:data.archive.libzip") == 0) {
+        obi_archive_writer_v0 bad_writer;
+        memset(&bad_writer, 0, sizeof(bad_writer));
+
+        obi_archive_open_params_v0 bad_open_params = open_params;
+        bad_open_params.flags = 1u;
+        st = archive.api->open_writer(archive.ctx, archive_bytes_writer, &bad_open_params, &bad_writer);
+        if (st == OBI_STATUS_OK && bad_writer.api && bad_writer.api->destroy) {
+            bad_writer.api->destroy(bad_writer.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(archive_bytes_ctx.data);
+            fprintf(stderr,
+                    "data.archive exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_open_params = open_params;
+        bad_open_params.options_json.data = NULL;
+        bad_open_params.options_json.size = 1u;
+        memset(&bad_writer, 0, sizeof(bad_writer));
+        st = archive.api->open_writer(archive.ctx, archive_bytes_writer, &bad_open_params, &bad_writer);
+        if (st == OBI_STATUS_OK && bad_writer.api && bad_writer.api->destroy) {
+            bad_writer.api->destroy(bad_writer.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(archive_bytes_ctx.data);
+            fprintf(stderr,
+                    "data.archive exercise: provider=%s malformed open options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_open_params = open_params;
+        bad_open_params.options_json.data = "{}";
+        bad_open_params.options_json.size = 2u;
+        memset(&bad_writer, 0, sizeof(bad_writer));
+        st = archive.api->open_writer(archive.ctx, archive_bytes_writer, &bad_open_params, &bad_writer);
+        if (st == OBI_STATUS_OK && bad_writer.api && bad_writer.api->destroy) {
+            bad_writer.api->destroy(bad_writer.ctx);
+        }
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            free(archive_bytes_ctx.data);
+            fprintf(stderr,
+                    "data.archive exercise: provider=%s open options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_archive_writer_v0 writer;
     memset(&writer, 0, sizeof(writer));
     st = archive.api->open_writer(archive.ctx, archive_bytes_writer, &open_params, &writer);
@@ -1829,6 +2218,45 @@ static int _exercise_data_archive_profile(obi_rt_v0* rt, const char* provider_id
     dir_entry.kind = OBI_ARCHIVE_ENTRY_DIR;
     dir_entry.path = "dir";
     dir_entry.posix_mode = 0755u;
+
+    if (strcmp(provider_id, "obi.provider:data.archive.libarchive") == 0 ||
+        strcmp(provider_id, "obi.provider:data.archive.libzip") == 0) {
+        obi_archive_entry_create_v0 bad_entry = dir_entry;
+        obi_writer_v0 bad_entry_writer;
+        memset(&bad_entry_writer, 0, sizeof(bad_entry_writer));
+
+        bad_entry.struct_size = (uint32_t)(sizeof(bad_entry) - 1u);
+        st = writer.api->begin_entry(writer.ctx, &bad_entry, &bad_entry_writer);
+        if (st == OBI_STATUS_OK && bad_entry_writer.api && bad_entry_writer.api->destroy) {
+            bad_entry_writer.api->destroy(bad_entry_writer.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            writer.api->destroy(writer.ctx);
+            free(archive_bytes_ctx.data);
+            fprintf(stderr,
+                    "data.archive exercise: provider=%s begin_entry short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_entry = dir_entry;
+        bad_entry.flags = 1u;
+        memset(&bad_entry_writer, 0, sizeof(bad_entry_writer));
+        st = writer.api->begin_entry(writer.ctx, &bad_entry, &bad_entry_writer);
+        if (st == OBI_STATUS_OK && bad_entry_writer.api && bad_entry_writer.api->destroy) {
+            bad_entry_writer.api->destroy(bad_entry_writer.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            writer.api->destroy(writer.ctx);
+            free(archive_bytes_ctx.data);
+            fprintf(stderr,
+                    "data.archive exercise: provider=%s begin_entry unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     obi_writer_v0 entry_writer;
     memset(&entry_writer, 0, sizeof(entry_writer));
@@ -2090,6 +2518,107 @@ static int _exercise_data_serde_events_profile(obi_rt_v0* rt, const char* provid
     params.struct_size = (uint32_t)sizeof(params);
     params.format_hint = "json";
 
+    if (strcmp(provider_id, "obi.provider:data.serde.yyjson") == 0 ||
+        strcmp(provider_id, "obi.provider:data.serde.jansson") == 0 ||
+        strcmp(provider_id, "obi.provider:data.serde.jsmn") == 0) {
+        obi_serde_open_params_v0 bad_params = params;
+        obi_serde_parser_v0 bad_parser;
+        memset(&bad_parser, 0, sizeof(bad_parser));
+
+        bad_params.flags = 1u;
+        if ((serde.api->caps & OBI_SERDE_CAP_OPEN_BYTES) != 0u && serde.api->open_bytes) {
+            st = serde.api->open_bytes(serde.ctx,
+                                       (obi_bytes_view_v0){ json, strlen(json) },
+                                       &bad_params,
+                                       &bad_parser);
+        } else {
+            mem_reader_ctx_v0 reader_ctx;
+            memset(&reader_ctx, 0, sizeof(reader_ctx));
+            reader_ctx.data = (const uint8_t*)json;
+            reader_ctx.size = strlen(json);
+
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &reader_ctx;
+            st = serde.api->open_reader(serde.ctx, reader, &bad_params, &bad_parser);
+        }
+        if (st == OBI_STATUS_OK && bad_parser.api && bad_parser.api->destroy) {
+            bad_parser.api->destroy(bad_parser.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.serde_events exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 1u;
+        memset(&bad_parser, 0, sizeof(bad_parser));
+        if ((serde.api->caps & OBI_SERDE_CAP_OPEN_BYTES) != 0u && serde.api->open_bytes) {
+            st = serde.api->open_bytes(serde.ctx,
+                                       (obi_bytes_view_v0){ json, strlen(json) },
+                                       &bad_params,
+                                       &bad_parser);
+        } else {
+            mem_reader_ctx_v0 reader_ctx;
+            memset(&reader_ctx, 0, sizeof(reader_ctx));
+            reader_ctx.data = (const uint8_t*)json;
+            reader_ctx.size = strlen(json);
+
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &reader_ctx;
+            st = serde.api->open_reader(serde.ctx, reader, &bad_params, &bad_parser);
+        }
+        if (st == OBI_STATUS_OK && bad_parser.api && bad_parser.api->destroy) {
+            bad_parser.api->destroy(bad_parser.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.serde_events exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        memset(&bad_parser, 0, sizeof(bad_parser));
+        if ((serde.api->caps & OBI_SERDE_CAP_OPEN_BYTES) != 0u && serde.api->open_bytes) {
+            st = serde.api->open_bytes(serde.ctx,
+                                       (obi_bytes_view_v0){ json, strlen(json) },
+                                       &bad_params,
+                                       &bad_parser);
+        } else {
+            mem_reader_ctx_v0 reader_ctx;
+            memset(&reader_ctx, 0, sizeof(reader_ctx));
+            reader_ctx.data = (const uint8_t*)json;
+            reader_ctx.size = strlen(json);
+
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &reader_ctx;
+            st = serde.api->open_reader(serde.ctx, reader, &bad_params, &bad_parser);
+        }
+        if (st == OBI_STATUS_OK && bad_parser.api && bad_parser.api->destroy) {
+            bad_parser.api->destroy(bad_parser.ctx);
+        }
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "data.serde_events exercise: provider=%s open options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_serde_parser_v0 parser;
     memset(&parser, 0, sizeof(parser));
     if ((serde.api->caps & OBI_SERDE_CAP_OPEN_BYTES) != 0u && serde.api->open_bytes) {
@@ -2151,6 +2680,61 @@ static int _exercise_data_serde_emit_profile(obi_rt_v0* rt, const char* provider
     memset(&params, 0, sizeof(params));
     params.struct_size = (uint32_t)sizeof(params);
     params.format_hint = "json";
+
+    if (strcmp(provider_id, "obi.provider:data.serde.yyjson") == 0 ||
+        strcmp(provider_id, "obi.provider:data.serde.jansson") == 0) {
+        obi_serde_emit_open_params_v0 bad_params = params;
+        obi_serde_emitter_v0 bad_emitter;
+        memset(&bad_emitter, 0, sizeof(bad_emitter));
+
+        bad_params.flags = 1u;
+        st = emit.api->open_writer(emit.ctx, out_json_writer, &bad_params, &bad_emitter);
+        if (st == OBI_STATUS_OK && bad_emitter.api && bad_emitter.api->destroy) {
+            bad_emitter.api->destroy(bad_emitter.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(out_json_ctx.data);
+            fprintf(stderr,
+                    "data.serde_emit exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 1u;
+        memset(&bad_emitter, 0, sizeof(bad_emitter));
+        st = emit.api->open_writer(emit.ctx, out_json_writer, &bad_params, &bad_emitter);
+        if (st == OBI_STATUS_OK && bad_emitter.api && bad_emitter.api->destroy) {
+            bad_emitter.api->destroy(bad_emitter.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(out_json_ctx.data);
+            fprintf(stderr,
+                    "data.serde_emit exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        memset(&bad_emitter, 0, sizeof(bad_emitter));
+        st = emit.api->open_writer(emit.ctx, out_json_writer, &bad_params, &bad_emitter);
+        if (st == OBI_STATUS_OK && bad_emitter.api && bad_emitter.api->destroy) {
+            bad_emitter.api->destroy(bad_emitter.ctx);
+        }
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            free(out_json_ctx.data);
+            fprintf(stderr,
+                    "data.serde_emit exercise: provider=%s open options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     obi_serde_emitter_v0 emitter;
     memset(&emitter, 0, sizeof(emitter));
@@ -2277,6 +2861,10 @@ static int _exercise_data_uri_profile(obi_rt_v0* rt, const char* provider_id, in
         return 0;
     }
 
+    const int is_data_inhouse_provider = (strcmp(provider_id, "obi.provider:data.inhouse") == 0);
+    const int is_data_uri_glib_provider = (strcmp(provider_id, "obi.provider:data.uri.glib") == 0);
+    const int is_data_uri_uriparser_provider = (strcmp(provider_id, "obi.provider:data.uri.uriparser") == 0);
+
     const char* sample_uri = "https://User@example.com:443/a/b?x=1&flag#frag";
     obi_uri_info_v0 info;
     memset(&info, 0, sizeof(info));
@@ -2383,6 +2971,255 @@ static int _exercise_data_uri_profile(obi_rt_v0* rt, const char* provider_id, in
         }
     }
 
+    if (is_data_inhouse_provider) {
+        obi_uri_info_v0 oversized_info;
+        memset(&oversized_info, 0, sizeof(oversized_info));
+        st = uri.api->parse_utf8(uri.ctx,
+                                 (obi_utf8_view_v0){ sample_uri, SIZE_MAX },
+                                 &oversized_info);
+        if (oversized_info.release) {
+            oversized_info.release(oversized_info.release_ctx, &oversized_info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s parse_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_text_v0 oversized_encoded;
+        memset(&oversized_encoded, 0, sizeof(oversized_encoded));
+        st = uri.api->percent_encode_utf8(uri.ctx,
+                                          OBI_URI_COMPONENT_QUERY_VALUE,
+                                          (obi_utf8_view_v0){ "x", SIZE_MAX },
+                                          0u,
+                                          &oversized_encoded);
+        if (oversized_encoded.release) {
+            oversized_encoded.release(oversized_encoded.release_ctx, &oversized_encoded);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s percent_encode_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (is_data_uri_glib_provider) {
+        obi_uri_query_items_v0 bad_query_items;
+        memset(&bad_query_items, 0, sizeof(bad_query_items));
+        st = uri.api->query_items_utf8(uri.ctx,
+                                       (obi_utf8_view_v0){ "?x=1", 4u },
+                                       0u,
+                                       &bad_query_items);
+        if (bad_query_items.release) {
+            bad_query_items.release(bad_query_items.release_ctx, &bad_query_items);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s query_items_utf8 leading '?' without flag should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_info_v0 oversized_info;
+        memset(&oversized_info, 0, sizeof(oversized_info));
+        st = uri.api->parse_utf8(uri.ctx,
+                                 (obi_utf8_view_v0){ sample_uri, SIZE_MAX },
+                                 &oversized_info);
+        if (oversized_info.release) {
+            oversized_info.release(oversized_info.release_ctx, &oversized_info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s parse_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_query_items_v0 oversized_query_items;
+        memset(&oversized_query_items, 0, sizeof(oversized_query_items));
+        st = uri.api->query_items_utf8(uri.ctx,
+                                       (obi_utf8_view_v0){ "x=1", SIZE_MAX },
+                                       0u,
+                                       &oversized_query_items);
+        if (oversized_query_items.release) {
+            oversized_query_items.release(oversized_query_items.release_ctx, &oversized_query_items);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s query_items_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_text_v0 oversized_encoded;
+        memset(&oversized_encoded, 0, sizeof(oversized_encoded));
+        st = uri.api->percent_encode_utf8(uri.ctx,
+                                          OBI_URI_COMPONENT_QUERY_VALUE,
+                                          (obi_utf8_view_v0){ "x", SIZE_MAX },
+                                          0u,
+                                          &oversized_encoded);
+        if (oversized_encoded.release) {
+            oversized_encoded.release(oversized_encoded.release_ctx, &oversized_encoded);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s percent_encode_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_text_v0 oversized_decoded;
+        memset(&oversized_decoded, 0, sizeof(oversized_decoded));
+        st = uri.api->percent_decode_utf8(uri.ctx,
+                                          OBI_URI_COMPONENT_QUERY_VALUE,
+                                          (obi_utf8_view_v0){ "x", SIZE_MAX },
+                                          0u,
+                                          &oversized_decoded);
+        if (oversized_decoded.release) {
+            oversized_decoded.release(oversized_decoded.release_ctx, &oversized_decoded);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s percent_decode_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (is_data_uri_uriparser_provider) {
+        obi_uri_info_v0 oversized_info;
+        memset(&oversized_info, 0, sizeof(oversized_info));
+        st = uri.api->parse_utf8(uri.ctx,
+                                 (obi_utf8_view_v0){ sample_uri, SIZE_MAX },
+                                 &oversized_info);
+        if (oversized_info.release) {
+            oversized_info.release(oversized_info.release_ctx, &oversized_info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s parse_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_query_items_v0 unknown_query_flags_items;
+        memset(&unknown_query_flags_items, 0, sizeof(unknown_query_flags_items));
+        st = uri.api->query_items_utf8(uri.ctx,
+                                       (obi_utf8_view_v0){ "x=1", 3u },
+                                       4u,
+                                       &unknown_query_flags_items);
+        if (unknown_query_flags_items.release) {
+            unknown_query_flags_items.release(unknown_query_flags_items.release_ctx, &unknown_query_flags_items);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s query_items_utf8 unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_text_v0 bad_norm;
+        memset(&bad_norm, 0, sizeof(bad_norm));
+        st = uri.api->normalize_utf8(uri.ctx,
+                                     (obi_utf8_view_v0){ sample_uri, strlen(sample_uri) },
+                                     1u,
+                                     &bad_norm);
+        if (bad_norm.release) {
+            bad_norm.release(bad_norm.release_ctx, &bad_norm);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s normalize_utf8 unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        if ((uri.api->caps & OBI_URI_CAP_RESOLVE) != 0u && uri.api->resolve_utf8) {
+            obi_uri_text_v0 bad_resolve;
+            memset(&bad_resolve, 0, sizeof(bad_resolve));
+            st = uri.api->resolve_utf8(uri.ctx,
+                                       (obi_utf8_view_v0){ "https://example.com/base", 24u },
+                                       (obi_utf8_view_v0){ "child", 5u },
+                                       1u,
+                                       &bad_resolve);
+            if (bad_resolve.release) {
+                bad_resolve.release(bad_resolve.release_ctx, &bad_resolve);
+            }
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "data.uri exercise: provider=%s resolve_utf8 unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+
+        obi_uri_text_v0 bad_encoded;
+        memset(&bad_encoded, 0, sizeof(bad_encoded));
+        st = uri.api->percent_encode_utf8(uri.ctx,
+                                          (obi_uri_component_kind_v0)99,
+                                          (obi_utf8_view_v0){ "x", 1u },
+                                          0u,
+                                          &bad_encoded);
+        if (bad_encoded.release) {
+            bad_encoded.release(bad_encoded.release_ctx, &bad_encoded);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s percent_encode_utf8 invalid component should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_encoded, 0, sizeof(bad_encoded));
+        st = uri.api->percent_encode_utf8(uri.ctx,
+                                          OBI_URI_COMPONENT_QUERY_VALUE,
+                                          (obi_utf8_view_v0){ "x", 1u },
+                                          2u,
+                                          &bad_encoded);
+        if (bad_encoded.release) {
+            bad_encoded.release(bad_encoded.release_ctx, &bad_encoded);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s percent_encode_utf8 unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_uri_text_v0 bad_decoded;
+        memset(&bad_decoded, 0, sizeof(bad_decoded));
+        st = uri.api->percent_decode_utf8(uri.ctx,
+                                          OBI_URI_COMPONENT_QUERY_VALUE,
+                                          (obi_utf8_view_v0){ "x", 1u },
+                                          2u,
+                                          &bad_decoded);
+        if (bad_decoded.release) {
+            bad_decoded.release(bad_decoded.release_ctx, &bad_decoded);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "data.uri exercise: provider=%s percent_decode_utf8 unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     return 1;
 }
 
@@ -2433,6 +3270,44 @@ static int _exercise_doc_inspect_profile(obi_rt_v0* rt, const char* provider_id,
         info.release(info.release_ctx, &info);
     }
 
+    if (strcmp(provider_id, "obi.provider:doc.inspect.magic") == 0) {
+        obi_doc_inspect_params_v0 bad_params = params;
+        bad_params.flags = 1u;
+        memset(&info, 0, sizeof(info));
+        st = inspect.api->inspect_from_bytes(inspect.ctx,
+                                             (obi_bytes_view_v0){ bytes, sizeof(bytes) - 1u },
+                                             &bad_params,
+                                             &info);
+        if (info.release) {
+            info.release(info.release_ctx, &info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "doc.inspect exercise: provider=%s unknown params flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (strcmp(provider_id, "obi.provider:doc.inspect.gio") == 0) {
+        memset(&info, 0, sizeof(info));
+        st = inspect.api->inspect_from_bytes(inspect.ctx,
+                                             (obi_bytes_view_v0){ bytes, SIZE_MAX },
+                                             &params,
+                                             &info);
+        if (info.release) {
+            info.release(info.release_ctx, &info);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "doc.inspect exercise: provider=%s oversized inspect_from_bytes view should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     if ((inspect.api->caps & OBI_DOC_INSPECT_CAP_FROM_READER) != 0u && inspect.api->inspect_from_reader) {
         mem_reader_ctx_v0 reader_ctx;
         memset(&reader_ctx, 0, sizeof(reader_ctx));
@@ -2455,6 +3330,31 @@ static int _exercise_doc_inspect_profile(obi_rt_v0* rt, const char* provider_id,
         }
         if (info.release) {
             info.release(info.release_ctx, &info);
+        }
+
+        if (strcmp(provider_id, "obi.provider:doc.inspect.gio") == 0) {
+            mem_reader_rewind_fail_ctx_v0 rewind_fail_ctx;
+            memset(&rewind_fail_ctx, 0, sizeof(rewind_fail_ctx));
+            rewind_fail_ctx.base.data = bytes;
+            rewind_fail_ctx.base.size = sizeof(bytes) - 1u;
+
+            obi_reader_v0 rewind_fail_reader;
+            memset(&rewind_fail_reader, 0, sizeof(rewind_fail_reader));
+            rewind_fail_reader.api = &MEM_READER_REWIND_FAIL_API_V0;
+            rewind_fail_reader.ctx = &rewind_fail_ctx;
+
+            memset(&info, 0, sizeof(info));
+            st = inspect.api->inspect_from_reader(inspect.ctx, rewind_fail_reader, &params, &info);
+            if (info.release) {
+                info.release(info.release_ctx, &info);
+            }
+            if (st != OBI_STATUS_IO_ERROR) {
+                fprintf(stderr,
+                        "doc.inspect exercise: provider=%s rewind failure did not propagate (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
         }
     }
 
@@ -2519,6 +3419,56 @@ static int _exercise_doc_text_decode_profile(obi_rt_v0* rt, const char* provider
         info.release(info.release_ctx, &info);
     }
     free(out_ctx.data);
+
+    if (strcmp(provider_id, "obi.provider:doc.textdecode.iconv") == 0) {
+        obi_doc_text_decode_params_v0 bad_params = params;
+        bad_params.flags = (1u << 31);
+        memset(&out_ctx, 0, sizeof(out_ctx));
+        out_writer.ctx = &out_ctx;
+        memset(&info, 0, sizeof(info));
+        st = dec.api->decode_bytes_to_utf8_writer(dec.ctx,
+                                                   (obi_bytes_view_v0){ sample, strlen(sample) },
+                                                   &bad_params,
+                                                   out_writer,
+                                                   &info,
+                                                   NULL,
+                                                   NULL);
+        if (info.release) {
+            info.release(info.release_ctx, &info);
+        }
+        free(out_ctx.data);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "doc.text_decode exercise: provider=%s unknown params flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.flags = OBI_TEXT_DECODE_FLAG_STRICT | OBI_TEXT_DECODE_FLAG_REPLACE_INVALID;
+        memset(&out_ctx, 0, sizeof(out_ctx));
+        out_writer.ctx = &out_ctx;
+        memset(&info, 0, sizeof(info));
+        st = dec.api->decode_bytes_to_utf8_writer(dec.ctx,
+                                                   (obi_bytes_view_v0){ sample, strlen(sample) },
+                                                   &bad_params,
+                                                   out_writer,
+                                                   &info,
+                                                   NULL,
+                                                   NULL);
+        if (info.release) {
+            info.release(info.release_ctx, &info);
+        }
+        free(out_ctx.data);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "doc.text_decode exercise: provider=%s conflicting strict+replace flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     if ((dec.api->caps & OBI_TEXT_DECODE_CAP_FROM_READER) != 0u && dec.api->decode_reader_to_utf8_writer) {
         mem_reader_ctx_v0 reader_ctx;
@@ -2595,13 +3545,52 @@ static int _exercise_doc_markdown_commonmark_profile(obi_rt_v0* rt, const char* 
     json_writer.ctx = &json_ctx;
 
     uint64_t written = 0u;
+    obi_md_parse_params_v0 bad_params = params;
+    bad_params.flags = 1u;
+    st = md.api->parse_to_json_writer(md.ctx,
+                                      (obi_utf8_view_v0){ markdown, strlen(markdown) },
+                                      &bad_params,
+                                      json_writer,
+                                      NULL);
+    free(json_ctx.data);
+    json_ctx.data = NULL;
+    json_ctx.size = 0u;
+    json_ctx.cap = 0u;
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.markdown_commonmark exercise: provider=%s unknown parse flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    bad_params = params;
+    bad_params.options_json.data = NULL;
+    bad_params.options_json.size = 1u;
+    st = md.api->parse_to_json_writer(md.ctx,
+                                      (obi_utf8_view_v0){ markdown, strlen(markdown) },
+                                      &bad_params,
+                                      json_writer,
+                                      NULL);
+    free(json_ctx.data);
+    json_ctx.data = NULL;
+    json_ctx.size = 0u;
+    json_ctx.cap = 0u;
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.markdown_commonmark exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
     st = md.api->parse_to_json_writer(md.ctx,
                                       (obi_utf8_view_v0){ markdown, strlen(markdown) },
                                       &params,
                                       json_writer,
                                       &written);
     if (st != OBI_STATUS_OK || json_ctx.size == 0u || written != json_ctx.size ||
-        strstr((const char*)json_ctx.data, "\"kind\"") == NULL) {
+        !_buffer_contains_cstr(json_ctx.data, json_ctx.size, "\"kind\"")) {
         free(json_ctx.data);
         fprintf(stderr, "doc.markdown_commonmark exercise: provider=%s parse_to_json_writer failed (status=%d)\n",
                 provider_id, (int)st);
@@ -2623,9 +3612,9 @@ static int _exercise_doc_markdown_commonmark_profile(obi_rt_v0* rt, const char* 
                                            &params,
                                            html_writer,
                                            &written);
-        const char* html = (const char*)html_ctx.data;
         const int looks_like_commonmark_html =
-            (html && (strstr(html, "<p>") != NULL || strstr(html, "<h1") != NULL));
+            _buffer_contains_cstr(html_ctx.data, html_ctx.size, "<p>") ||
+            _buffer_contains_cstr(html_ctx.data, html_ctx.size, "<h1");
         if (st != OBI_STATUS_OK || html_ctx.size == 0u || written != html_ctx.size ||
             !looks_like_commonmark_html) {
             free(html_ctx.data);
@@ -2664,6 +3653,38 @@ static int _exercise_doc_markdown_events_profile(obi_rt_v0* rt, const char* prov
     obi_md_events_parse_params_v0 params;
     memset(&params, 0, sizeof(params));
     params.struct_size = (uint32_t)sizeof(params);
+
+    obi_md_event_parser_v0 bad_parser;
+    memset(&bad_parser, 0, sizeof(bad_parser));
+    obi_md_events_parse_params_v0 bad_params = params;
+    bad_params.flags = 1u;
+    st = md.api->parse_utf8(md.ctx, (obi_utf8_view_v0){ markdown, strlen(markdown) }, &bad_params, &bad_parser);
+    if (st == OBI_STATUS_OK && bad_parser.api && bad_parser.api->destroy) {
+        bad_parser.api->destroy(bad_parser.ctx);
+    }
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.markdown_events exercise: provider=%s unknown parse flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&bad_parser, 0, sizeof(bad_parser));
+    bad_params = params;
+    bad_params.options_json.data = NULL;
+    bad_params.options_json.size = 1u;
+    st = md.api->parse_utf8(md.ctx, (obi_utf8_view_v0){ markdown, strlen(markdown) }, &bad_params, &bad_parser);
+    if (st == OBI_STATUS_OK && bad_parser.api && bad_parser.api->destroy) {
+        bad_parser.api->destroy(bad_parser.ctx);
+    }
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.markdown_events exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
 
     obi_md_event_parser_v0 parser;
     memset(&parser, 0, sizeof(parser));
@@ -2716,6 +3737,32 @@ static int _exercise_doc_markdown_events_profile(obi_rt_v0* rt, const char* prov
     return 1;
 }
 
+static obi_status _open_markup_parser_for_smoke(const obi_doc_markup_events_v0* markup,
+                                                const char* sample,
+                                                const obi_markup_open_params_v0* params,
+                                                obi_markup_parser_v0* out_parser) {
+    if (!markup || !markup->api || !out_parser || !sample) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((markup->api->caps & OBI_MARKUP_CAP_OPEN_BYTES) != 0u && markup->api->open_bytes) {
+        return markup->api->open_bytes(markup->ctx,
+                                       (obi_bytes_view_v0){ sample, strlen(sample) },
+                                       params,
+                                       out_parser);
+    }
+
+    mem_reader_ctx_v0 reader_ctx;
+    memset(&reader_ctx, 0, sizeof(reader_ctx));
+    reader_ctx.data = (const uint8_t*)sample;
+    reader_ctx.size = strlen(sample);
+
+    obi_reader_v0 reader;
+    memset(&reader, 0, sizeof(reader));
+    reader.api = &MEM_READER_API_V0;
+    reader.ctx = &reader_ctx;
+    return markup->api->open_reader(markup->ctx, reader, params, out_parser);
+}
+
 static int _exercise_doc_markup_events_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_doc_markup_events_v0 markup;
     memset(&markup, 0, sizeof(markup));
@@ -2745,23 +3792,55 @@ static int _exercise_doc_markup_events_profile(obi_rt_v0* rt, const char* provid
 
     obi_markup_parser_v0 parser;
     memset(&parser, 0, sizeof(parser));
-    if ((markup.api->caps & OBI_MARKUP_CAP_OPEN_BYTES) != 0u && markup.api->open_bytes) {
-        st = markup.api->open_bytes(markup.ctx,
-                                    (obi_bytes_view_v0){ sample, strlen(sample) },
-                                    &params,
-                                    &parser);
-    } else {
-        mem_reader_ctx_v0 reader_ctx;
-        memset(&reader_ctx, 0, sizeof(reader_ctx));
-        reader_ctx.data = (const uint8_t*)sample;
-        reader_ctx.size = strlen(sample);
 
-        obi_reader_v0 reader;
-        memset(&reader, 0, sizeof(reader));
-        reader.api = &MEM_READER_API_V0;
-        reader.ctx = &reader_ctx;
-        st = markup.api->open_reader(markup.ctx, reader, &params, &parser);
+    obi_markup_open_params_v0 bad_params = params;
+    bad_params.flags = 1u;
+    st = _open_markup_parser_for_smoke(&markup, sample, &bad_params, &parser);
+    if (st == OBI_STATUS_OK && parser.api && parser.api->destroy) {
+        parser.api->destroy(parser.ctx);
     }
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.markup_events exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&parser, 0, sizeof(parser));
+    bad_params = params;
+    bad_params.options_json.data = NULL;
+    bad_params.options_json.size = 1u;
+    st = _open_markup_parser_for_smoke(&markup, sample, &bad_params, &parser);
+    if (st == OBI_STATUS_OK && parser.api && parser.api->destroy) {
+        parser.api->destroy(parser.ctx);
+    }
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.markup_events exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&parser, 0, sizeof(parser));
+    bad_params = params;
+    bad_params.options_json.data = "{}";
+    bad_params.options_json.size = 2u;
+    st = _open_markup_parser_for_smoke(&markup, sample, &bad_params, &parser);
+    if (st == OBI_STATUS_OK && parser.api && parser.api->destroy) {
+        parser.api->destroy(parser.ctx);
+    }
+    if (st != OBI_STATUS_UNSUPPORTED) {
+        fprintf(stderr,
+                "doc.markup_events exercise: provider=%s options_json should be UNSUPPORTED (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&parser, 0, sizeof(parser));
+    st = _open_markup_parser_for_smoke(&markup, sample, &params, &parser);
     if (st != OBI_STATUS_OK || !parser.api || !parser.api->next_event || !parser.api->destroy) {
         fprintf(stderr, "doc.markup_events exercise: provider=%s open failed (status=%d)\n", provider_id, (int)st);
         return 0;
@@ -2807,6 +3886,33 @@ static int _exercise_doc_markup_events_profile(obi_rt_v0* rt, const char* provid
     }
 
     return 1;
+}
+
+static obi_status _open_paged_doc_for_smoke(const obi_doc_paged_document_v0* paged,
+                                            const uint8_t* sample,
+                                            size_t sample_size,
+                                            const obi_paged_open_params_v0* params,
+                                            obi_paged_document_v0* out_doc) {
+    if (!paged || !paged->api || !sample || sample_size == 0u || !out_doc) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((paged->api->caps & OBI_PAGED_CAP_OPEN_BYTES) != 0u && paged->api->open_bytes) {
+        return paged->api->open_bytes(paged->ctx,
+                                      (obi_bytes_view_v0){ sample, sample_size },
+                                      params,
+                                      out_doc);
+    }
+
+    mem_reader_ctx_v0 reader_ctx;
+    memset(&reader_ctx, 0, sizeof(reader_ctx));
+    reader_ctx.data = sample;
+    reader_ctx.size = sample_size;
+
+    obi_reader_v0 reader;
+    memset(&reader, 0, sizeof(reader));
+    reader.api = &MEM_READER_API_V0;
+    reader.ctx = &reader_ctx;
+    return paged->api->open_reader(paged->ctx, reader, params, out_doc);
 }
 
 static int _exercise_doc_paged_document_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
@@ -2874,23 +3980,55 @@ static int _exercise_doc_paged_document_profile(obi_rt_v0* rt, const char* provi
 
     obi_paged_document_v0 doc;
     memset(&doc, 0, sizeof(doc));
-    if ((paged.api->caps & OBI_PAGED_CAP_OPEN_BYTES) != 0u && paged.api->open_bytes) {
-        st = paged.api->open_bytes(paged.ctx,
-                                   (obi_bytes_view_v0){ sample, sizeof(sample) - 1u },
-                                   &params,
-                                   &doc);
-    } else {
-        mem_reader_ctx_v0 reader_ctx;
-        memset(&reader_ctx, 0, sizeof(reader_ctx));
-        reader_ctx.data = sample;
-        reader_ctx.size = sizeof(sample) - 1u;
 
-        obi_reader_v0 reader;
-        memset(&reader, 0, sizeof(reader));
-        reader.api = &MEM_READER_API_V0;
-        reader.ctx = &reader_ctx;
-        st = paged.api->open_reader(paged.ctx, reader, &params, &doc);
+    obi_paged_open_params_v0 bad_open_params = params;
+    bad_open_params.flags = 1u;
+    st = _open_paged_doc_for_smoke(&paged, sample, sizeof(sample) - 1u, &bad_open_params, &doc);
+    if (st == OBI_STATUS_OK && doc.api && doc.api->destroy) {
+        doc.api->destroy(doc.ctx);
     }
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.paged_document exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&doc, 0, sizeof(doc));
+    bad_open_params = params;
+    bad_open_params.options_json.data = NULL;
+    bad_open_params.options_json.size = 1u;
+    st = _open_paged_doc_for_smoke(&paged, sample, sizeof(sample) - 1u, &bad_open_params, &doc);
+    if (st == OBI_STATUS_OK && doc.api && doc.api->destroy) {
+        doc.api->destroy(doc.ctx);
+    }
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "doc.paged_document exercise: provider=%s malformed open options_json should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&doc, 0, sizeof(doc));
+    bad_open_params = params;
+    bad_open_params.options_json.data = "{}";
+    bad_open_params.options_json.size = 2u;
+    st = _open_paged_doc_for_smoke(&paged, sample, sizeof(sample) - 1u, &bad_open_params, &doc);
+    if (st == OBI_STATUS_OK && doc.api && doc.api->destroy) {
+        doc.api->destroy(doc.ctx);
+    }
+    if (st != OBI_STATUS_UNSUPPORTED) {
+        fprintf(stderr,
+                "doc.paged_document exercise: provider=%s open options_json should be UNSUPPORTED (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&doc, 0, sizeof(doc));
+    st = _open_paged_doc_for_smoke(&paged, sample, sizeof(sample) - 1u, &params, &doc);
     if (st != OBI_STATUS_OK || !doc.api || !doc.api->page_count || !doc.api->page_size_pt ||
         !doc.api->render_page || !doc.api->destroy) {
         fprintf(stderr, "doc.paged_document exercise: provider=%s open failed (status=%d)\n", provider_id, (int)st);
@@ -2923,6 +4061,22 @@ static int _exercise_doc_paged_document_profile(obi_rt_v0* rt, const char* provi
     rp.background = (obi_color_rgba8_v0){ 255u, 255u, 255u, 255u };
 
     obi_paged_page_image_v0 image;
+    memset(&image, 0, sizeof(image));
+    obi_paged_render_params_v0 bad_rp = rp;
+    bad_rp.flags = 1u;
+    st = doc.api->render_page(doc.ctx, 0u, &bad_rp, &image);
+    if (image.release) {
+        image.release(image.release_ctx, &image);
+    }
+    if (st != OBI_STATUS_BAD_ARG) {
+        doc.api->destroy(doc.ctx);
+        fprintf(stderr,
+                "doc.paged_document exercise: provider=%s render_page unknown flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
     memset(&image, 0, sizeof(image));
     st = doc.api->render_page(doc.ctx, 0u, &rp, &image);
     if (st != OBI_STATUS_OK || image.width == 0u || image.height == 0u ||
@@ -2999,6 +4153,50 @@ static int _exercise_gfx_window_input_profile(obi_rt_v0* rt, const char* provide
                 (int)st,
                 obi_rt_last_error_utf8(rt));
         return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:gfx.sdl3") == 0 ||
+        strcmp(provider_id, "obi.provider:gfx.raylib") == 0) {
+        obi_window_create_params_v0 bad_cp;
+        obi_window_id_v0 bad_window = 0u;
+        memset(&bad_cp, 0, sizeof(bad_cp));
+        bad_cp.title = "obi_smoke_bad_window_create_flags";
+        bad_cp.width = 1u;
+        bad_cp.height = 1u;
+        bad_cp.flags = (1u << 31);
+        st = win.api->create_window(win.ctx, &bad_cp, &bad_window);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.window_input exercise: provider=%s create_window invalid flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_cp.flags = 0u;
+        bad_cp.width = (uint32_t)INT_MAX + 1u;
+        bad_cp.height = 1u;
+        st = win.api->create_window(win.ctx, &bad_cp, &bad_window);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.window_input exercise: provider=%s create_window oversized width should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        if (win.api->clipboard_set_utf8) {
+            static const char k_clipboard_overflow_probe = 'x';
+            st = win.api->clipboard_set_utf8(win.ctx,
+                                             (obi_utf8_view_v0){ &k_clipboard_overflow_probe, SIZE_MAX });
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.window_input exercise: provider=%s clipboard_set_utf8 SIZE_MAX should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
     }
 
     obi_window_create_params_v0 cp;
@@ -3181,6 +4379,41 @@ static int _exercise_gfx_render2d_profile(obi_rt_v0* rt, const char* provider_id
 
     if (r2d.api->texture_create_rgba8 && r2d.api->texture_update_rgba8 &&
         r2d.api->texture_destroy && r2d.api->draw_texture_quad) {
+        if (strcmp(provider_id, "obi.provider:gfx.sdl3") == 0 ||
+            strcmp(provider_id, "obi.provider:gfx.raylib") == 0) {
+            static const uint8_t k_bad_tex_px[4u] = { 1u, 2u, 3u, 4u };
+            obi_gfx_texture_id_v0 bad_tex = 0u;
+            st = r2d.api->texture_create_rgba8(r2d.ctx,
+                                               (uint32_t)INT_MAX + 1u,
+                                               1u,
+                                               k_bad_tex_px,
+                                               4u,
+                                               &bad_tex);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "gfx.render2d exercise: provider=%s texture_create oversized width should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                goto cleanup;
+            }
+
+            st = r2d.api->texture_create_rgba8(r2d.ctx,
+                                               1u,
+                                               1u,
+                                               k_bad_tex_px,
+                                               3u,
+                                               &bad_tex);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "gfx.render2d exercise: provider=%s texture_create undersized stride should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                goto cleanup;
+            }
+        }
+
         uint8_t tex_pixels[2u * 2u * 4u] = {
             255u, 0u, 0u, 255u,  0u, 255u, 0u, 255u,
             0u, 0u, 255u, 255u,  255u, 255u, 255u, 255u,
@@ -3189,6 +4422,20 @@ static int _exercise_gfx_render2d_profile(obi_rt_v0* rt, const char* provider_id
         st = r2d.api->texture_create_rgba8(r2d.ctx, 2u, 2u, tex_pixels, 2u * 4u, &tex);
         if (st == OBI_STATUS_OK && tex != 0u) {
             const uint8_t patch_px[4u] = { 10u, 20u, 30u, 255u };
+            if (strcmp(provider_id, "obi.provider:gfx.sdl3") == 0 ||
+                strcmp(provider_id, "obi.provider:gfx.raylib") == 0) {
+                st = r2d.api->texture_update_rgba8(r2d.ctx, tex, 0u, 0u, 1u, 1u, patch_px, 3u);
+                if (st != OBI_STATUS_BAD_ARG) {
+                    r2d.api->texture_destroy(r2d.ctx, tex);
+                    ok = 0;
+                    fprintf(stderr,
+                            "gfx.render2d exercise: provider=%s texture_update undersized stride should be BAD_ARG (status=%d)\n",
+                            provider_id,
+                            (int)st);
+                    goto cleanup;
+                }
+            }
+
             st = r2d.api->texture_update_rgba8(r2d.ctx, tex, 1u, 1u, 1u, 1u, patch_px, 4u);
             if (st == OBI_STATUS_OK) {
                 st = r2d.api->draw_texture_quad(r2d.ctx,
@@ -3261,6 +4508,223 @@ static int _exercise_gfx_gpu_device_profile(obi_rt_v0* rt, const char* provider_
                 (int)st,
                 obi_rt_last_error_utf8(rt));
         return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:gfx.sdl3") == 0) {
+        obi_gpu_frame_params_v0 bad_frame_params;
+        memset(&bad_frame_params, 0, sizeof(bad_frame_params));
+        bad_frame_params.struct_size = 1u;
+        st = gpu.api->begin_frame(gpu.ctx, 1u, &bad_frame_params);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.gpu_device exercise: provider=%s begin_frame short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_gpu_buffer_desc_v0 bad_buf_desc;
+        obi_gpu_buffer_id_v0 bad_buf = 0u;
+        memset(&bad_buf_desc, 0, sizeof(bad_buf_desc));
+        bad_buf_desc.struct_size = (uint32_t)sizeof(bad_buf_desc);
+        bad_buf_desc.size_bytes = 16u;
+        bad_buf_desc.type = 0xFFu;
+        bad_buf_desc.usage = OBI_GPU_USAGE_IMMUTABLE;
+        st = gpu.api->buffer_create(gpu.ctx, &bad_buf_desc, &bad_buf);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.gpu_device exercise: provider=%s buffer_create invalid type should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_buf_desc.type = OBI_GPU_BUFFER_VERTEX;
+        bad_buf_desc.usage = 0xFFu;
+        st = gpu.api->buffer_create(gpu.ctx, &bad_buf_desc, &bad_buf);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.gpu_device exercise: provider=%s buffer_create invalid usage should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_buf_desc.usage = OBI_GPU_USAGE_IMMUTABLE;
+        bad_buf_desc.flags = 1u;
+        st = gpu.api->buffer_create(gpu.ctx, &bad_buf_desc, &bad_buf);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.gpu_device exercise: provider=%s buffer_create unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_buf_desc.flags = 0u;
+        bad_buf_desc.initial_data = NULL;
+        bad_buf_desc.initial_data_size = 4u;
+        st = gpu.api->buffer_create(gpu.ctx, &bad_buf_desc, &bad_buf);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.gpu_device exercise: provider=%s buffer_create NULL initial_data with size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        if (gpu.api->sampler_create) {
+            obi_gpu_sampler_id_v0 bad_sampler = 0u;
+            st = gpu.api->sampler_create(gpu.ctx, NULL, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create NULL desc should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            obi_gpu_sampler_desc_v0 bad_sampler_desc;
+            memset(&bad_sampler_desc, 0, sizeof(bad_sampler_desc));
+            bad_sampler_desc.struct_size = 1u;
+            st = gpu.api->sampler_create(gpu.ctx, &bad_sampler_desc, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create short struct_size should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            bad_sampler_desc.struct_size = (uint32_t)sizeof(bad_sampler_desc);
+            bad_sampler_desc.flags = 1u;
+            st = gpu.api->sampler_create(gpu.ctx, &bad_sampler_desc, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            bad_sampler_desc.flags = 0u;
+            bad_sampler_desc.options_json.data = NULL;
+            bad_sampler_desc.options_json.size = 1u;
+            st = gpu.api->sampler_create(gpu.ctx, &bad_sampler_desc, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create malformed options_json should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+    }
+    if (strcmp(provider_id, "obi.provider:gfx.gpu.sokol") == 0) {
+        obi_gpu_buffer_desc_v0 bad_buf_desc;
+        obi_gpu_buffer_id_v0 bad_buf = 0u;
+        memset(&bad_buf_desc, 0, sizeof(bad_buf_desc));
+        bad_buf_desc.struct_size = (uint32_t)sizeof(bad_buf_desc);
+        bad_buf_desc.size_bytes = 16u;
+        bad_buf_desc.type = OBI_GPU_BUFFER_VERTEX;
+        bad_buf_desc.usage = OBI_GPU_USAGE_IMMUTABLE;
+        bad_buf_desc.initial_data = NULL;
+        bad_buf_desc.initial_data_size = 4u;
+        st = gpu.api->buffer_create(gpu.ctx, &bad_buf_desc, &bad_buf);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.gpu_device exercise: provider=%s buffer_create NULL initial_data with size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        if (gpu.api->image_create) {
+            static const uint8_t k_bad_pixels[4] = { 255u, 0u, 0u, 255u };
+            obi_gpu_image_desc_v0 bad_img_desc;
+            obi_gpu_image_id_v0 bad_img = 0u;
+
+            memset(&bad_img_desc, 0, sizeof(bad_img_desc));
+            bad_img_desc.struct_size = (uint32_t)sizeof(bad_img_desc);
+            bad_img_desc.width = 1u;
+            bad_img_desc.height = 1u;
+            bad_img_desc.format = OBI_GPU_IMAGE_RGBA8;
+            bad_img_desc.initial_pixels = k_bad_pixels;
+            bad_img_desc.initial_stride_bytes = 3u;
+            st = gpu.api->image_create(gpu.ctx, &bad_img_desc, &bad_img);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s image_create undersized stride should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            memset(&bad_img_desc, 0, sizeof(bad_img_desc));
+            bad_img_desc.struct_size = (uint32_t)sizeof(bad_img_desc);
+            bad_img_desc.width = 1u;
+            bad_img_desc.height = 1u;
+            bad_img_desc.format = OBI_GPU_IMAGE_RGBA8;
+            bad_img_desc.initial_pixels = NULL;
+            bad_img_desc.initial_stride_bytes = 4u;
+            st = gpu.api->image_create(gpu.ctx, &bad_img_desc, &bad_img);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s image_create stride without pixels should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            memset(&bad_img_desc, 0, sizeof(bad_img_desc));
+            bad_img_desc.struct_size = (uint32_t)sizeof(bad_img_desc);
+            bad_img_desc.width = (uint32_t)INT_MAX + 1u;
+            bad_img_desc.height = 1u;
+            bad_img_desc.format = OBI_GPU_IMAGE_RGBA8;
+            st = gpu.api->image_create(gpu.ctx, &bad_img_desc, &bad_img);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s image_create oversized width should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+
+        if (gpu.api->sampler_create) {
+            obi_gpu_sampler_id_v0 bad_sampler = 0u;
+            st = gpu.api->sampler_create(gpu.ctx, NULL, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create NULL desc should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            obi_gpu_sampler_desc_v0 bad_sampler_desc;
+            memset(&bad_sampler_desc, 0, sizeof(bad_sampler_desc));
+            bad_sampler_desc.struct_size = 1u;
+            st = gpu.api->sampler_create(gpu.ctx, &bad_sampler_desc, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create short struct_size should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            bad_sampler_desc.struct_size = (uint32_t)sizeof(bad_sampler_desc);
+            bad_sampler_desc.flags = 1u;
+            st = gpu.api->sampler_create(gpu.ctx, &bad_sampler_desc, &bad_sampler);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.gpu_device exercise: provider=%s sampler_create unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
     }
 
     int ok = 1;
@@ -3587,6 +5051,41 @@ static int _exercise_gfx_render3d_profile(obi_rt_v0* rt, const char* provider_id
     };
     const uint32_t indices[3] = { 0u, 1u, 2u };
 
+    if (strcmp(provider_id, "obi.provider:gfx.render3d.raylib") == 0 ||
+        strcmp(provider_id, "obi.provider:gfx.render3d.sokol") == 0) {
+        obi_gfx3d_mesh_desc_v0 bad_mesh_desc;
+        obi_gfx3d_mesh_id_v0 bad_mesh = 0u;
+        memset(&bad_mesh_desc, 0, sizeof(bad_mesh_desc));
+        bad_mesh_desc.struct_size = (uint32_t)sizeof(bad_mesh_desc);
+        bad_mesh_desc.positions = positions;
+        bad_mesh_desc.vertex_count = 3u;
+        bad_mesh_desc.index_count = 1u; /* indices=NULL + count>0 must be rejected */
+        st = r3d.api->mesh_create(r3d.ctx, &bad_mesh_desc, &bad_mesh);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "gfx.render3d exercise: provider=%s mesh_create missing indices should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        if (strcmp(provider_id, "obi.provider:gfx.render3d.sokol") == 0) {
+            memset(&bad_mesh_desc, 0, sizeof(bad_mesh_desc));
+            bad_mesh_desc.struct_size = (uint32_t)sizeof(bad_mesh_desc);
+            bad_mesh_desc.flags = 1u;
+            bad_mesh_desc.positions = positions;
+            bad_mesh_desc.vertex_count = 3u;
+            st = r3d.api->mesh_create(r3d.ctx, &bad_mesh_desc, &bad_mesh);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.render3d exercise: provider=%s mesh_create unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+    }
+
     obi_gfx3d_mesh_desc_v0 mesh_desc;
     memset(&mesh_desc, 0, sizeof(mesh_desc));
     mesh_desc.struct_size = (uint32_t)sizeof(mesh_desc);
@@ -3609,6 +5108,43 @@ static int _exercise_gfx_render3d_profile(obi_rt_v0* rt, const char* provider_id
             0u, 0u, 255u, 255u,
             255u, 255u, 255u, 255u,
         };
+        if (strcmp(provider_id, "obi.provider:gfx.render3d.raylib") == 0 ||
+            strcmp(provider_id, "obi.provider:gfx.render3d.sokol") == 0) {
+            obi_gfx3d_texture_desc_v0 bad_tex_desc;
+            obi_gfx3d_texture_id_v0 bad_tex = 0u;
+            memset(&bad_tex_desc, 0, sizeof(bad_tex_desc));
+            bad_tex_desc.struct_size = (uint32_t)sizeof(bad_tex_desc);
+            bad_tex_desc.width = 1u;
+            bad_tex_desc.height = 1u;
+            bad_tex_desc.pixels = pixels;
+            bad_tex_desc.stride_bytes = 3u;
+            st = r3d.api->texture_create_rgba8(r3d.ctx, &bad_tex_desc, &bad_tex);
+            if (st != OBI_STATUS_BAD_ARG) {
+                fprintf(stderr,
+                        "gfx.render3d exercise: provider=%s texture_create undersized stride should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                ok = 0;
+                goto cleanup_render3d;
+            }
+
+            if (strcmp(provider_id, "obi.provider:gfx.render3d.sokol") == 0) {
+                memset(&bad_tex_desc, 0, sizeof(bad_tex_desc));
+                bad_tex_desc.struct_size = (uint32_t)sizeof(bad_tex_desc);
+                bad_tex_desc.width = (uint32_t)INT_MAX + 1u;
+                bad_tex_desc.height = 1u;
+                st = r3d.api->texture_create_rgba8(r3d.ctx, &bad_tex_desc, &bad_tex);
+                if (st != OBI_STATUS_BAD_ARG) {
+                    fprintf(stderr,
+                            "gfx.render3d exercise: provider=%s texture_create oversized width should be BAD_ARG (status=%d)\n",
+                            provider_id,
+                            (int)st);
+                    ok = 0;
+                    goto cleanup_render3d;
+                }
+            }
+        }
+
         obi_gfx3d_texture_desc_v0 tex_desc;
         memset(&tex_desc, 0, sizeof(tex_desc));
         tex_desc.struct_size = (uint32_t)sizeof(tex_desc);
@@ -3777,6 +5313,41 @@ static int _exercise_media_image_profile(obi_rt_v0* rt, const char* provider_id,
     writer.api = &MEM_WRITER_API_V0;
     writer.ctx = &wctx;
 
+    obi_image_encode_params_v0 bad_encode_params = encode_params;
+    bad_encode_params.struct_size = (uint32_t)(sizeof(bad_encode_params) - 1u);
+    uint64_t bad_bytes_written = 0u;
+    st = image.api->encode_to_writer(image.ctx,
+                                     "png",
+                                     &bad_encode_params,
+                                     &in_pixels,
+                                     writer,
+                                     &bad_bytes_written);
+    if (st != OBI_STATUS_BAD_ARG) {
+        free(wctx.data);
+        fprintf(stderr,
+                "media.image_codec exercise: provider=%s encode short struct_size should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    bad_encode_params = encode_params;
+    bad_encode_params.flags = 1u;
+    st = image.api->encode_to_writer(image.ctx,
+                                     "png",
+                                     &bad_encode_params,
+                                     &in_pixels,
+                                     writer,
+                                     &bad_bytes_written);
+    if (st != OBI_STATUS_BAD_ARG) {
+        free(wctx.data);
+        fprintf(stderr,
+                "media.image_codec exercise: provider=%s encode unknown flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
     uint64_t bytes_written = 0u;
     st = image.api->encode_to_writer(image.ctx,
                                      "png",
@@ -3790,7 +5361,39 @@ static int _exercise_media_image_profile(obi_rt_v0* rt, const char* provider_id,
         return 0;
     }
 
+    obi_image_decode_params_v0 bad_decode_params = decode_params;
+    bad_decode_params.struct_size = (uint32_t)(sizeof(bad_decode_params) - 1u);
     obi_image_v0 decoded;
+    memset(&decoded, 0, sizeof(decoded));
+    st = image.api->decode_from_bytes(image.ctx,
+                                      (obi_bytes_view_v0){ wctx.data, wctx.size },
+                                      &bad_decode_params,
+                                      &decoded);
+    if (st != OBI_STATUS_BAD_ARG) {
+        free(wctx.data);
+        fprintf(stderr,
+                "media.image_codec exercise: provider=%s decode short struct_size should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    bad_decode_params = decode_params;
+    bad_decode_params.flags = 1u;
+    memset(&decoded, 0, sizeof(decoded));
+    st = image.api->decode_from_bytes(image.ctx,
+                                      (obi_bytes_view_v0){ wctx.data, wctx.size },
+                                      &bad_decode_params,
+                                      &decoded);
+    if (st != OBI_STATUS_BAD_ARG) {
+        free(wctx.data);
+        fprintf(stderr,
+                "media.image_codec exercise: provider=%s decode unknown flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
     memset(&decoded, 0, sizeof(decoded));
     st = image.api->decode_from_bytes(image.ctx,
                                       (obi_bytes_view_v0){ wctx.data, wctx.size },
@@ -3863,6 +5466,30 @@ static int _exercise_media_audio_device_profile(obi_rt_v0* rt, const char* provi
     params.channels = 2u;
     params.format = OBI_AUDIO_SAMPLE_S16;
     params.buffer_frames = 128u;
+
+    obi_audio_stream_v0 bad_stream;
+    memset(&bad_stream, 0, sizeof(bad_stream));
+    obi_audio_stream_params_v0 bad_params = params;
+    bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+    st = audio.api->open_output(audio.ctx, &bad_params, &bad_stream);
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "media.audio_device exercise: provider=%s open_output short struct_size should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    bad_params = params;
+    bad_params.flags = 1u;
+    st = audio.api->open_output(audio.ctx, &bad_params, &bad_stream);
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "media.audio_device exercise: provider=%s open_output unknown flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
 
     obi_audio_stream_v0 stream;
     memset(&stream, 0, sizeof(stream));
@@ -3979,6 +5606,40 @@ static int _exercise_media_audio_mix_profile(obi_rt_v0* rt, const char* provider
     int16_t out[4u * 2u];
     memset(out, 0, sizeof(out));
     size_t out_written = 0u;
+    obi_audio_mix_format_v0 bad_fmt = fmt;
+    bad_fmt.struct_size = (uint32_t)(sizeof(bad_fmt) - 1u);
+    st = mix.api->mix_interleaved(mix.ctx,
+                                  &bad_fmt,
+                                  inputs,
+                                  2u,
+                                  out,
+                                  4u,
+                                  &out_written);
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "media.audio_mix exercise: provider=%s short struct_size should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    bad_fmt = fmt;
+    bad_fmt.flags = 1u;
+    st = mix.api->mix_interleaved(mix.ctx,
+                                  &bad_fmt,
+                                  inputs,
+                                  2u,
+                                  out,
+                                  4u,
+                                  &out_written);
+    if (st != OBI_STATUS_BAD_ARG) {
+        fprintf(stderr,
+                "media.audio_mix exercise: provider=%s unknown flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
     st = mix.api->mix_interleaved(mix.ctx,
                                   &fmt,
                                   inputs,
@@ -4026,6 +5687,75 @@ static int _exercise_media_audio_resample_profile(obi_rt_v0* rt, const char* pro
     out_fmt.sample_rate_hz = 24000u;
     out_fmt.channels = 1u;
     out_fmt.format = OBI_AUDIO_SAMPLE_S16;
+
+    obi_audio_resample_params_v0 bad_params;
+    memset(&bad_params, 0, sizeof(bad_params));
+    bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+    obi_audio_resampler_v0 bad_r;
+    memset(&bad_r, 0, sizeof(bad_r));
+    st = rs.api->create_resampler(rs.ctx, in_fmt, out_fmt, &bad_params, &bad_r);
+    if (st != OBI_STATUS_BAD_ARG) {
+        if (st == OBI_STATUS_OK && bad_r.api && bad_r.api->destroy) {
+            bad_r.api->destroy(bad_r.ctx);
+        }
+        fprintf(stderr,
+                "media.audio_resample exercise: provider=%s short struct_size should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&bad_params, 0, sizeof(bad_params));
+    bad_params.struct_size = (uint32_t)sizeof(bad_params);
+    bad_params.flags = 1u;
+    memset(&bad_r, 0, sizeof(bad_r));
+    st = rs.api->create_resampler(rs.ctx, in_fmt, out_fmt, &bad_params, &bad_r);
+    if (st != OBI_STATUS_BAD_ARG) {
+        if (st == OBI_STATUS_OK && bad_r.api && bad_r.api->destroy) {
+            bad_r.api->destroy(bad_r.ctx);
+        }
+        fprintf(stderr,
+                "media.audio_resample exercise: provider=%s unknown flags should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    memset(&bad_params, 0, sizeof(bad_params));
+    bad_params.struct_size = (uint32_t)sizeof(bad_params);
+    bad_params.options_json.data = NULL;
+    bad_params.options_json.size = 1u;
+    memset(&bad_r, 0, sizeof(bad_r));
+    st = rs.api->create_resampler(rs.ctx, in_fmt, out_fmt, &bad_params, &bad_r);
+    if (st != OBI_STATUS_BAD_ARG) {
+        if (st == OBI_STATUS_OK && bad_r.api && bad_r.api->destroy) {
+            bad_r.api->destroy(bad_r.ctx);
+        }
+        fprintf(stderr,
+                "media.audio_resample exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    if ((rs.api->caps & OBI_AUDIO_RESAMPLE_CAP_OPTIONS_JSON) == 0u) {
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        memset(&bad_r, 0, sizeof(bad_r));
+        st = rs.api->create_resampler(rs.ctx, in_fmt, out_fmt, &bad_params, &bad_r);
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            if (st == OBI_STATUS_OK && bad_r.api && bad_r.api->destroy) {
+                bad_r.api->destroy(bad_r.ctx);
+            }
+            fprintf(stderr,
+                    "media.audio_resample exercise: provider=%s options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     obi_audio_resampler_v0 r;
     memset(&r, 0, sizeof(r));
@@ -4111,6 +5841,134 @@ static int _exercise_media_demux_profile(obi_rt_v0* rt, const char* provider_id,
 
     obi_demuxer_v0 d;
     memset(&d, 0, sizeof(d));
+
+    /* Strict parameter-contract probes for media.ffmpeg/media.gstreamer wrappers. */
+    {
+        obi_demux_open_params_v0 bad_params = params;
+        obi_demuxer_v0 bad_d;
+        memset(&bad_d, 0, sizeof(bad_d));
+
+        bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+        if ((demux.api->caps & OBI_DEMUX_CAP_OPEN_BYTES) != 0u && demux.api->open_bytes) {
+            st = demux.api->open_bytes(demux.ctx,
+                                       (obi_bytes_view_v0){ sample, sizeof(sample) - 1u },
+                                       &bad_params,
+                                       &bad_d);
+        } else {
+            mem_reader_ctx_v0 rctx;
+            memset(&rctx, 0, sizeof(rctx));
+            rctx.data = sample;
+            rctx.size = sizeof(sample) - 1u;
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &rctx;
+            st = demux.api->open_reader(demux.ctx, reader, &bad_params, &bad_d);
+        }
+        if (bad_d.api && bad_d.api->destroy) {
+            bad_d.api->destroy(bad_d.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.demux exercise: provider=%s open short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.flags = 1u;
+        memset(&bad_d, 0, sizeof(bad_d));
+        if ((demux.api->caps & OBI_DEMUX_CAP_OPEN_BYTES) != 0u && demux.api->open_bytes) {
+            st = demux.api->open_bytes(demux.ctx,
+                                       (obi_bytes_view_v0){ sample, sizeof(sample) - 1u },
+                                       &bad_params,
+                                       &bad_d);
+        } else {
+            mem_reader_ctx_v0 rctx;
+            memset(&rctx, 0, sizeof(rctx));
+            rctx.data = sample;
+            rctx.size = sizeof(sample) - 1u;
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &rctx;
+            st = demux.api->open_reader(demux.ctx, reader, &bad_params, &bad_d);
+        }
+        if (bad_d.api && bad_d.api->destroy) {
+            bad_d.api->destroy(bad_d.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.demux exercise: provider=%s open unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 2u;
+        memset(&bad_d, 0, sizeof(bad_d));
+        if ((demux.api->caps & OBI_DEMUX_CAP_OPEN_BYTES) != 0u && demux.api->open_bytes) {
+            st = demux.api->open_bytes(demux.ctx,
+                                       (obi_bytes_view_v0){ sample, sizeof(sample) - 1u },
+                                       &bad_params,
+                                       &bad_d);
+        } else {
+            mem_reader_ctx_v0 rctx;
+            memset(&rctx, 0, sizeof(rctx));
+            rctx.data = sample;
+            rctx.size = sizeof(sample) - 1u;
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &rctx;
+            st = demux.api->open_reader(demux.ctx, reader, &bad_params, &bad_d);
+        }
+        if (bad_d.api && bad_d.api->destroy) {
+            bad_d.api->destroy(bad_d.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.demux exercise: provider=%s open malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        memset(&bad_d, 0, sizeof(bad_d));
+        if ((demux.api->caps & OBI_DEMUX_CAP_OPEN_BYTES) != 0u && demux.api->open_bytes) {
+            st = demux.api->open_bytes(demux.ctx,
+                                       (obi_bytes_view_v0){ sample, sizeof(sample) - 1u },
+                                       &bad_params,
+                                       &bad_d);
+        } else {
+            mem_reader_ctx_v0 rctx;
+            memset(&rctx, 0, sizeof(rctx));
+            rctx.data = sample;
+            rctx.size = sizeof(sample) - 1u;
+            obi_reader_v0 reader;
+            memset(&reader, 0, sizeof(reader));
+            reader.api = &MEM_READER_API_V0;
+            reader.ctx = &rctx;
+            st = demux.api->open_reader(demux.ctx, reader, &bad_params, &bad_d);
+        }
+        if (bad_d.api && bad_d.api->destroy) {
+            bad_d.api->destroy(bad_d.ctx);
+        }
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "media.demux exercise: provider=%s open options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     if ((demux.api->caps & OBI_DEMUX_CAP_OPEN_BYTES) != 0u && demux.api->open_bytes) {
         st = demux.api->open_bytes(demux.ctx,
                                    (obi_bytes_view_v0){ sample, sizeof(sample) - 1u },
@@ -4231,6 +6089,59 @@ static int _exercise_media_mux_profile(obi_rt_v0* rt, const char* provider_id, i
     params.struct_size = (uint32_t)sizeof(params);
     params.format_hint = "synthetic";
 
+    {
+        obi_mux_open_params_v0 bad_params = params;
+        obi_muxer_v0 bad_mux;
+        memset(&bad_mux, 0, sizeof(bad_mux));
+
+        bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+        st = mux.api->open_writer(mux.ctx, writer, &bad_params, &bad_mux);
+        if (bad_mux.api && bad_mux.api->destroy) {
+            bad_mux.api->destroy(bad_mux.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s open_writer short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.flags = 1u;
+        memset(&bad_mux, 0, sizeof(bad_mux));
+        st = mux.api->open_writer(mux.ctx, writer, &bad_params, &bad_mux);
+        if (bad_mux.api && bad_mux.api->destroy) {
+            bad_mux.api->destroy(bad_mux.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s open_writer unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params = params;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 2u;
+        memset(&bad_mux, 0, sizeof(bad_mux));
+        st = mux.api->open_writer(mux.ctx, writer, &bad_params, &bad_mux);
+        if (bad_mux.api && bad_mux.api->destroy) {
+            bad_mux.api->destroy(bad_mux.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s open_writer malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_muxer_v0 m;
     memset(&m, 0, sizeof(m));
     st = mux.api->open_writer(mux.ctx, writer, &params, &m);
@@ -4249,6 +6160,51 @@ static int _exercise_media_mux_profile(obi_rt_v0* rt, const char* provider_id, i
     sp.u.audio.channels = 2u;
 
     uint32_t stream_index = 0u;
+
+    {
+        obi_mux_stream_params_v0 bad_sp = sp;
+        uint32_t bad_stream_index = 0u;
+
+        bad_sp.struct_size = (uint32_t)(sizeof(bad_sp) - 1u);
+        st = m.api->add_stream(m.ctx, &bad_sp, &bad_stream_index);
+        if (st != OBI_STATUS_BAD_ARG) {
+            m.api->destroy(m.ctx);
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s add_stream short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_sp = sp;
+        bad_sp.flags = 1u;
+        st = m.api->add_stream(m.ctx, &bad_sp, &bad_stream_index);
+        if (st != OBI_STATUS_BAD_ARG) {
+            m.api->destroy(m.ctx);
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s add_stream unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_sp = sp;
+        bad_sp.extradata.data = NULL;
+        bad_sp.extradata.size = 4u;
+        st = m.api->add_stream(m.ctx, &bad_sp, &bad_stream_index);
+        if (st != OBI_STATUS_BAD_ARG) {
+            m.api->destroy(m.ctx);
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s add_stream malformed extradata should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     st = m.api->add_stream(m.ctx, &sp, &stream_index);
     if (st != OBI_STATUS_OK) {
         m.api->destroy(m.ctx);
@@ -4267,6 +6223,21 @@ static int _exercise_media_mux_profile(obi_rt_v0* rt, const char* provider_id, i
     pkt.duration_ns = 20000000;
     pkt.data = packet_data;
     pkt.size = sizeof(packet_data) - 1u;
+
+    {
+        obi_mux_packet_v0 bad_pkt = pkt;
+        bad_pkt.flags = OBI_MUX_PACKET_FLAG_KEYFRAME | (1u << 31);
+        st = m.api->write_packet(m.ctx, &bad_pkt);
+        if (st != OBI_STATUS_BAD_ARG) {
+            m.api->destroy(m.ctx);
+            free(wctx.data);
+            fprintf(stderr,
+                    "media.mux exercise: provider=%s write_packet unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     st = m.api->write_packet(m.ctx, &pkt);
     if (st == OBI_STATUS_OK) {
@@ -4314,6 +6285,70 @@ static int _exercise_media_av_decode_profile(obi_rt_v0* rt, const char* provider
     pkt.dts_ns = 0;
     pkt.flags = OBI_AV_PACKET_FLAG_KEYFRAME;
 
+    {
+        obi_av_codec_params_v0 bad_params;
+        obi_av_decoder_v0 bad_dec;
+        memset(&bad_params, 0, sizeof(bad_params));
+        memset(&bad_dec, 0, sizeof(bad_dec));
+
+        bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+        st = avd.api->decoder_create(avd.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_dec);
+        if (bad_dec.api && bad_dec.api->destroy) {
+            bad_dec.api->destroy(bad_dec.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_decode exercise: provider=%s decoder_create short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.flags = 1u;
+        memset(&bad_dec, 0, sizeof(bad_dec));
+        st = avd.api->decoder_create(avd.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_dec);
+        if (bad_dec.api && bad_dec.api->destroy) {
+            bad_dec.api->destroy(bad_dec.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_decode exercise: provider=%s decoder_create unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.flags = 0u;
+        bad_params.extradata.data = NULL;
+        bad_params.extradata.size = 1u;
+        memset(&bad_dec, 0, sizeof(bad_dec));
+        st = avd.api->decoder_create(avd.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_dec);
+        if (bad_dec.api && bad_dec.api->destroy) {
+            bad_dec.api->destroy(bad_dec.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_decode exercise: provider=%s decoder_create malformed extradata should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_dec, 0, sizeof(bad_dec));
+        st = avd.api->decoder_create(avd.ctx, (obi_av_stream_kind_v0)99, "h264", NULL, &bad_dec);
+        if (bad_dec.api && bad_dec.api->destroy) {
+            bad_dec.api->destroy(bad_dec.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_decode exercise: provider=%s decoder_create invalid stream kind should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_av_decoder_v0 dec;
     memset(&dec, 0, sizeof(dec));
     st = avd.api->decoder_create(avd.ctx, OBI_AV_STREAM_VIDEO, "h264", NULL, &dec);
@@ -4327,6 +6362,20 @@ static int _exercise_media_av_decode_profile(obi_rt_v0* rt, const char* provider
         dec.api->destroy(dec.ctx);
         fprintf(stderr, "media.av_decode exercise: provider=%s send_packet failed (status=%d)\n", provider_id, (int)st);
         return 0;
+    }
+
+    {
+        obi_av_packet_v0 bad_pkt = pkt;
+        bad_pkt.flags = OBI_AV_PACKET_FLAG_KEYFRAME | (1u << 31);
+        st = dec.api->send_packet(dec.ctx, &bad_pkt);
+        if (st != OBI_STATUS_BAD_ARG) {
+            dec.api->destroy(dec.ctx);
+            fprintf(stderr,
+                    "media.av_decode exercise: provider=%s send_packet unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
     }
     obi_video_frame_v0 vf;
     bool has_vf = false;
@@ -4397,6 +6446,85 @@ static int _exercise_media_av_encode_profile(obi_rt_v0* rt, const char* provider
                 (int)st,
                 obi_rt_last_error_utf8(rt));
         return 0;
+    }
+
+    {
+        obi_av_encode_params_v0 bad_params;
+        obi_av_encoder_v0 bad_enc;
+        memset(&bad_params, 0, sizeof(bad_params));
+        memset(&bad_enc, 0, sizeof(bad_enc));
+
+        bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+        st = ave.api->encoder_create(ave.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_enc);
+        if (bad_enc.api && bad_enc.api->destroy) {
+            bad_enc.api->destroy(bad_enc.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_encode exercise: provider=%s encoder_create short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.flags = 1u;
+        memset(&bad_enc, 0, sizeof(bad_enc));
+        st = ave.api->encoder_create(ave.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_enc);
+        if (bad_enc.api && bad_enc.api->destroy) {
+            bad_enc.api->destroy(bad_enc.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_encode exercise: provider=%s encoder_create unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.flags = 0u;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 2u;
+        memset(&bad_enc, 0, sizeof(bad_enc));
+        st = ave.api->encoder_create(ave.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_enc);
+        if (bad_enc.api && bad_enc.api->destroy) {
+            bad_enc.api->destroy(bad_enc.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_encode exercise: provider=%s encoder_create malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        memset(&bad_enc, 0, sizeof(bad_enc));
+        st = ave.api->encoder_create(ave.ctx, OBI_AV_STREAM_VIDEO, "h264", &bad_params, &bad_enc);
+        if (bad_enc.api && bad_enc.api->destroy) {
+            bad_enc.api->destroy(bad_enc.ctx);
+        }
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "media.av_encode exercise: provider=%s encoder_create options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_enc, 0, sizeof(bad_enc));
+        st = ave.api->encoder_create(ave.ctx, (obi_av_stream_kind_v0)99, "h264", NULL, &bad_enc);
+        if (bad_enc.api && bad_enc.api->destroy) {
+            bad_enc.api->destroy(bad_enc.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.av_encode exercise: provider=%s encoder_create invalid stream kind should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
     }
 
     obi_av_encoder_v0 enc;
@@ -4550,6 +6678,89 @@ static int _exercise_media_video_scale_convert_profile(obi_rt_v0* rt, const char
     out_fmt.color_space = OBI_COLOR_SPACE_SRGB;
     out_fmt.alpha_mode = OBI_ALPHA_STRAIGHT;
 
+    {
+        obi_video_scale_convert_params_v0 bad_params;
+        obi_video_scaler_v0 bad_scaler;
+        memset(&bad_params, 0, sizeof(bad_params));
+        memset(&bad_scaler, 0, sizeof(bad_scaler));
+
+        bad_params.struct_size = (uint32_t)(sizeof(bad_params) - 1u);
+        st = sc.api->create_scaler(sc.ctx, in_fmt, out_fmt, &bad_params, &bad_scaler);
+        if (bad_scaler.api && bad_scaler.api->destroy) {
+            bad_scaler.api->destroy(bad_scaler.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s create_scaler short struct_size should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.flags = 1u;
+        memset(&bad_scaler, 0, sizeof(bad_scaler));
+        st = sc.api->create_scaler(sc.ctx, in_fmt, out_fmt, &bad_params, &bad_scaler);
+        if (bad_scaler.api && bad_scaler.api->destroy) {
+            bad_scaler.api->destroy(bad_scaler.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s create_scaler unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.flags = 0u;
+        bad_params.filter = OBI_VIDEO_SCALE_FILTER_NEAREST;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 2u;
+        memset(&bad_scaler, 0, sizeof(bad_scaler));
+        st = sc.api->create_scaler(sc.ctx, in_fmt, out_fmt, &bad_params, &bad_scaler);
+        if (bad_scaler.api && bad_scaler.api->destroy) {
+            bad_scaler.api->destroy(bad_scaler.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s create_scaler malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.options_json.data = "{}";
+        bad_params.options_json.size = 2u;
+        memset(&bad_scaler, 0, sizeof(bad_scaler));
+        st = sc.api->create_scaler(sc.ctx, in_fmt, out_fmt, &bad_params, &bad_scaler);
+        if (bad_scaler.api && bad_scaler.api->destroy) {
+            bad_scaler.api->destroy(bad_scaler.ctx);
+        }
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s create_scaler options_json should be UNSUPPORTED (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 0u;
+        bad_params.filter = (obi_video_scale_filter_v0)99;
+        memset(&bad_scaler, 0, sizeof(bad_scaler));
+        st = sc.api->create_scaler(sc.ctx, in_fmt, out_fmt, &bad_params, &bad_scaler);
+        if (bad_scaler.api && bad_scaler.api->destroy) {
+            bad_scaler.api->destroy(bad_scaler.ctx);
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s create_scaler invalid filter should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_video_scaler_v0 scaler;
     memset(&scaler, 0, sizeof(scaler));
     st = sc.api->create_scaler(sc.ctx, in_fmt, out_fmt, NULL, &scaler);
@@ -4578,6 +6789,32 @@ static int _exercise_media_video_scale_convert_profile(obi_rt_v0* rt, const char
     dst_buf.fmt = out_fmt;
     dst_buf.planes[0].data = dst_px;
     dst_buf.planes[0].stride_bytes = 1u * 4u;
+
+    {
+        obi_video_buffer_view_v0 bad_src = src_buf;
+        bad_src.planes[0].stride_bytes = 1u;
+        st = scaler.api->convert(scaler.ctx, &bad_src, &dst_buf);
+        if (st != OBI_STATUS_BAD_ARG) {
+            scaler.api->destroy(scaler.ctx);
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s convert short src stride should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_video_buffer_mut_v0 bad_dst = dst_buf;
+        bad_dst.planes[0].stride_bytes = 1u;
+        st = scaler.api->convert(scaler.ctx, &src_buf, &bad_dst);
+        if (st != OBI_STATUS_BAD_ARG) {
+            scaler.api->destroy(scaler.ctx);
+            fprintf(stderr,
+                    "media.video_scale_convert exercise: provider=%s convert short dst stride should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     st = scaler.api->convert(scaler.ctx, &src_buf, &dst_buf);
     scaler.api->destroy(scaler.ctx);
@@ -4610,6 +6847,47 @@ static int _exercise_core_cancel_profile(obi_rt_v0* rt, const char* provider_id,
         return 0;
     }
 
+    const int is_cancel_atomic_provider = (strcmp(provider_id, "obi.provider:core.cancel.atomic") == 0);
+    const int is_cancel_glib_provider = (strcmp(provider_id, "obi.provider:core.cancel.glib") == 0);
+
+    if (is_cancel_glib_provider) {
+        obi_cancel_source_v0 bad_source;
+        obi_cancel_source_params_v0 bad_params;
+
+        memset(&bad_source, 0, sizeof(bad_source));
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.flags = 1u;
+        st = cancel.api->create_source(cancel.ctx, &bad_params, &bad_source);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_source.api && bad_source.api->destroy) {
+                bad_source.api->destroy(bad_source.ctx);
+            }
+            fprintf(stderr,
+                    "core.cancel exercise: provider=%s create_source flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_source, 0, sizeof(bad_source));
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.options_json.size = 1u;
+        bad_params.options_json.data = NULL;
+        st = cancel.api->create_source(cancel.ctx, &bad_params, &bad_source);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_source.api && bad_source.api->destroy) {
+                bad_source.api->destroy(bad_source.ctx);
+            }
+            fprintf(stderr,
+                    "core.cancel exercise: provider=%s create_source malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_cancel_source_v0 source;
     memset(&source, 0, sizeof(source));
     obi_cancel_source_params_v0 params;
@@ -4638,6 +6916,7 @@ static int _exercise_core_cancel_profile(obi_rt_v0* rt, const char* provider_id,
     }
 
     const char* reason_text = "smoke.cancel";
+    const size_t reason_text_len = strlen(reason_text);
     st = source.api->cancel(source.ctx, (obi_utf8_view_v0){ reason_text, strlen(reason_text) });
     if (st != OBI_STATUS_OK || !token.api->is_cancelled(token.ctx)) {
         token.api->destroy(token.ctx);
@@ -4656,9 +6935,97 @@ static int _exercise_core_cancel_profile(obi_rt_v0* rt, const char* provider_id,
             fprintf(stderr, "core.cancel exercise: provider=%s reason_utf8 failed (status=%d)\n", provider_id, (int)st);
             return 0;
         }
-    }
 
-    if ((source.api->caps & OBI_CANCEL_PROFILE_CAP_RESET) != 0u && source.api->reset) {
+        if (reason.size != reason_text_len ||
+            (reason_text_len > 0u && memcmp(reason.data, reason_text, reason_text_len) != 0)) {
+            token.api->destroy(token.ctx);
+            source.api->destroy(source.ctx);
+            fprintf(stderr, "core.cancel exercise: provider=%s reason_utf8 mismatch after cancel\n", provider_id);
+            return 0;
+        }
+
+        const char* prior_reason_data = reason.data;
+        size_t prior_reason_size = reason.size;
+
+        if ((source.api->caps & OBI_CANCEL_PROFILE_CAP_RESET) != 0u && source.api->reset) {
+            st = source.api->reset(source.ctx);
+            if (st != OBI_STATUS_OK || token.api->is_cancelled(token.ctx)) {
+                token.api->destroy(token.ctx);
+                source.api->destroy(source.ctx);
+                fprintf(stderr, "core.cancel exercise: provider=%s reset failed (status=%d)\n", provider_id, (int)st);
+                return 0;
+            }
+
+            if (prior_reason_size > 0u &&
+                (!prior_reason_data || memcmp(prior_reason_data, reason_text, prior_reason_size) != 0)) {
+                token.api->destroy(token.ctx);
+                source.api->destroy(source.ctx);
+                fprintf(stderr,
+                        "core.cancel exercise: provider=%s reason_utf8 lifetime invalidated by reset\n",
+                        provider_id);
+                return 0;
+            }
+
+            memset(&reason, 0, sizeof(reason));
+            st = token.api->reason_utf8(token.ctx, &reason);
+            if (st != OBI_STATUS_OK || (!reason.data && reason.size > 0u)) {
+                token.api->destroy(token.ctx);
+                source.api->destroy(source.ctx);
+                fprintf(stderr,
+                        "core.cancel exercise: provider=%s reason_utf8 after reset failed (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+            if (reason.size != 0u || (reason.data && reason.data[0] != '\0')) {
+                token.api->destroy(token.ctx);
+                source.api->destroy(source.ctx);
+                fprintf(stderr,
+                        "core.cancel exercise: provider=%s reason_utf8 should clear after reset\n",
+                        provider_id);
+                return 0;
+            }
+
+            if (is_cancel_glib_provider) {
+                const char* churn_reason_text = "other.cancel";
+                const size_t churn_reason_len = strlen(churn_reason_text);
+                int i = 0;
+                for (i = 0; i < 8; ++i) {
+                    st = source.api->cancel(source.ctx, (obi_utf8_view_v0){ churn_reason_text, churn_reason_len });
+                    if (st != OBI_STATUS_OK || !token.api->is_cancelled(token.ctx)) {
+                        token.api->destroy(token.ctx);
+                        source.api->destroy(source.ctx);
+                        fprintf(stderr,
+                                "core.cancel exercise: provider=%s cancel during lifetime churn failed (status=%d)\n",
+                                provider_id,
+                                (int)st);
+                        return 0;
+                    }
+
+                    if (prior_reason_size > 0u &&
+                        (!prior_reason_data || memcmp(prior_reason_data, reason_text, prior_reason_size) != 0)) {
+                        token.api->destroy(token.ctx);
+                        source.api->destroy(source.ctx);
+                        fprintf(stderr,
+                                "core.cancel exercise: provider=%s reason_utf8 lifetime invalidated by cancel/reset churn\n",
+                                provider_id);
+                        return 0;
+                    }
+
+                    st = source.api->reset(source.ctx);
+                    if (st != OBI_STATUS_OK || token.api->is_cancelled(token.ctx)) {
+                        token.api->destroy(token.ctx);
+                        source.api->destroy(source.ctx);
+                        fprintf(stderr,
+                                "core.cancel exercise: provider=%s reset during lifetime churn failed (status=%d)\n",
+                                provider_id,
+                                (int)st);
+                        return 0;
+                    }
+                }
+            }
+        }
+    } else if ((source.api->caps & OBI_CANCEL_PROFILE_CAP_RESET) != 0u && source.api->reset) {
         st = source.api->reset(source.ctx);
         if (st != OBI_STATUS_OK || token.api->is_cancelled(token.ctx)) {
             token.api->destroy(token.ctx);
@@ -4668,10 +7035,47 @@ static int _exercise_core_cancel_profile(obi_rt_v0* rt, const char* provider_id,
         }
     }
 
+    if (is_cancel_atomic_provider || is_cancel_glib_provider) {
+        st = source.api->cancel(source.ctx, (obi_utf8_view_v0){ reason_text, SIZE_MAX });
+        if (st != OBI_STATUS_BAD_ARG) {
+            token.api->destroy(token.ctx);
+            source.api->destroy(source.ctx);
+            fprintf(stderr,
+                    "core.cancel exercise: provider=%s cancel SIZE_MAX should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     token.api->destroy(token.ctx);
     source.api->destroy(source.ctx);
     return 1;
 }
+
+#if !defined(_WIN32)
+typedef struct obi_core_pump_thread_probe_v0 {
+    const obi_pump_v0* pump;
+    int call_wait_hint;
+    obi_status step_status;
+    obi_status wait_hint_status;
+} obi_core_pump_thread_probe_v0;
+
+static void* _core_pump_cross_thread_probe_main(void* arg) {
+    obi_core_pump_thread_probe_v0* probe = (obi_core_pump_thread_probe_v0*)arg;
+    if (!probe || !probe->pump || !probe->pump->api || !probe->pump->api->step) {
+        return NULL;
+    }
+
+    probe->step_status = probe->pump->api->step(probe->pump->ctx, 0u);
+    if (probe->call_wait_hint && probe->pump->api->get_wait_hint) {
+        obi_pump_wait_hint_v0 hint;
+        memset(&hint, 0, sizeof(hint));
+        probe->wait_hint_status = probe->pump->api->get_wait_hint(probe->pump->ctx, &hint);
+    }
+    return NULL;
+}
+#endif
 
 static int _exercise_core_pump_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_pump_v0 pump;
@@ -4694,6 +7098,8 @@ static int _exercise_core_pump_profile(obi_rt_v0* rt, const char* provider_id, i
         return 0;
     }
 
+    const int is_core_pump_glib_provider = (strcmp(provider_id, "obi.provider:core.pump.glib") == 0);
+
     st = pump.api->step(pump.ctx, 0u);
     if (st != OBI_STATUS_OK) {
         fprintf(stderr, "core.pump exercise: provider=%s step(0) failed (status=%d)\n", provider_id, (int)st);
@@ -4715,8 +7121,62 @@ static int _exercise_core_pump_profile(obi_rt_v0* rt, const char* provider_id, i
         }
     }
 
+    if (is_core_pump_glib_provider) {
+#if !defined(_WIN32)
+        obi_core_pump_thread_probe_v0 probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.pump = &pump;
+        probe.call_wait_hint = (pump.api->get_wait_hint != NULL);
+        probe.step_status = OBI_STATUS_ERROR;
+        probe.wait_hint_status = OBI_STATUS_ERROR;
+
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, _core_pump_cross_thread_probe_main, &probe) != 0) {
+            fprintf(stderr, "core.pump exercise: provider=%s cross-thread probe setup failed\n", provider_id);
+            return 0;
+        }
+        if (pthread_join(tid, NULL) != 0) {
+            fprintf(stderr, "core.pump exercise: provider=%s cross-thread probe join failed\n", provider_id);
+            return 0;
+        }
+        if (probe.step_status != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "core.pump exercise: provider=%s cross-thread step should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)probe.step_status);
+            return 0;
+        }
+        if (probe.call_wait_hint && probe.wait_hint_status != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "core.pump exercise: provider=%s cross-thread get_wait_hint should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)probe.wait_hint_status);
+            return 0;
+        }
+#endif
+    }
+
     return 1;
 }
+
+#if !defined(_WIN32)
+typedef struct obi_core_waitset_thread_probe_v0 {
+    const obi_waitset_v0* waitset;
+    obi_status status;
+} obi_core_waitset_thread_probe_v0;
+
+static void* _core_waitset_cross_thread_probe_main(void* arg) {
+    obi_core_waitset_thread_probe_v0* probe = (obi_core_waitset_thread_probe_v0*)arg;
+    if (!probe || !probe->waitset || !probe->waitset->api || !probe->waitset->api->get_wait_handles) {
+        return NULL;
+    }
+
+    size_t need = 0u;
+    uint64_t timeout_ns = 0u;
+    probe->status = probe->waitset->api->get_wait_handles(probe->waitset->ctx, NULL, 0u, &need, &timeout_ns);
+    return NULL;
+}
+#endif
 
 static int _exercise_core_waitset_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_waitset_v0 waitset;
@@ -4739,8 +7199,33 @@ static int _exercise_core_waitset_profile(obi_rt_v0* rt, const char* provider_id
         return 0;
     }
 
+    const int is_core_waitset_glib_provider = (strcmp(provider_id, "obi.provider:core.waitset.glib") == 0);
     size_t need = 0u;
     uint64_t timeout_ns = 0u;
+
+    if (is_core_waitset_glib_provider) {
+        obi_wait_handle_v0 dummy;
+        memset(&dummy, 0, sizeof(dummy));
+
+        st = waitset.api->get_wait_handles(waitset.ctx, &dummy, 1u, NULL, &timeout_ns);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "core.waitset exercise: provider=%s get_wait_handles null out_handle_count should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        st = waitset.api->get_wait_handles(waitset.ctx, &dummy, 1u, &need, NULL);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "core.waitset exercise: provider=%s get_wait_handles null out_timeout should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     st = waitset.api->get_wait_handles(waitset.ctx, NULL, 0u, &need, &timeout_ns);
     if (st != OBI_STATUS_OK) {
         fprintf(stderr, "core.waitset exercise: provider=%s size query failed (status=%d)\n", provider_id, (int)st);
@@ -4753,6 +7238,19 @@ static int _exercise_core_waitset_profile(obi_rt_v0* rt, const char* provider_id
             return 0;
         }
 
+        if (is_core_waitset_glib_provider && need > 1u) {
+            size_t short_need = need;
+            st = waitset.api->get_wait_handles(waitset.ctx, handles, need - 1u, &short_need, &timeout_ns);
+            if (st != OBI_STATUS_BUFFER_TOO_SMALL) {
+                free(handles);
+                fprintf(stderr,
+                        "core.waitset exercise: provider=%s short-cap query should be BUFFER_TOO_SMALL (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+
         size_t got = need;
         st = waitset.api->get_wait_handles(waitset.ctx, handles, need, &got, &timeout_ns);
         free(handles);
@@ -4760,6 +7258,285 @@ static int _exercise_core_waitset_profile(obi_rt_v0* rt, const char* provider_id
             fprintf(stderr, "core.waitset exercise: provider=%s fill query failed (status=%d got=%zu need=%zu)\n",
                     provider_id, (int)st, got, need);
             return 0;
+        }
+    }
+
+    if (is_core_waitset_glib_provider) {
+#if !defined(_WIN32)
+        obi_core_waitset_thread_probe_v0 probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.waitset = &waitset;
+        probe.status = OBI_STATUS_ERROR;
+
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, _core_waitset_cross_thread_probe_main, &probe) != 0) {
+            fprintf(stderr, "core.waitset exercise: provider=%s cross-thread probe setup failed\n", provider_id);
+            return 0;
+        }
+        if (pthread_join(tid, NULL) != 0) {
+            fprintf(stderr, "core.waitset exercise: provider=%s cross-thread probe join failed\n", provider_id);
+            return 0;
+        }
+        if (probe.status != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "core.waitset exercise: provider=%s cross-thread get_wait_handles should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)probe.status);
+            return 0;
+        }
+#endif
+    }
+
+    return 1;
+}
+
+static int _exercise_time_iana_dst_roundtrip(const obi_time_datetime_v0* dt, const char* provider_id) {
+    if (!dt || !dt->api || !provider_id) {
+        return 0;
+    }
+
+    obi_time_zone_spec_v0 zone_iana;
+    memset(&zone_iana, 0, sizeof(zone_iana));
+    zone_iana.struct_size = (uint32_t)sizeof(zone_iana);
+    zone_iana.kind = OBI_TIME_ZONE_IANA_NAME;
+    zone_iana.iana_name = "America/Chicago";
+
+    obi_time_civil_v0 civil;
+    memset(&civil, 0, sizeof(civil));
+    civil.year = 2024;
+    civil.month = 11u;
+    civil.day = 3u;
+    civil.hour = 1u;
+    civil.minute = 30u;
+    civil.second = 15u;
+    civil.nanosecond = 123456789u;
+
+    int64_t early_ns = 0;
+    int32_t early_off = 0;
+    obi_status st = dt->api->civil_to_unix_ns(dt->ctx,
+                                              &civil,
+                                              &zone_iana,
+                                              OBI_TIME_CIVIL_TO_UNIX_PREFER_EARLIER,
+                                              &early_ns,
+                                              &early_off);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "time.datetime exercise: provider=%s dst civil_to_unix early failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    int64_t late_ns = 0;
+    int32_t late_off = 0;
+    st = dt->api->civil_to_unix_ns(dt->ctx,
+                                   &civil,
+                                   &zone_iana,
+                                   OBI_TIME_CIVIL_TO_UNIX_PREFER_LATER,
+                                   &late_ns,
+                                   &late_off);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "time.datetime exercise: provider=%s dst civil_to_unix later failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    if (late_ns <= early_ns || (late_ns - early_ns) != 3600000000000ll ||
+        early_off != -300 || late_off != -360) {
+        fprintf(stderr,
+                "time.datetime exercise: provider=%s dst ambiguity window mismatch (early_ns=%lld late_ns=%lld early_off=%d late_off=%d)\n",
+                provider_id,
+                (long long)early_ns,
+                (long long)late_ns,
+                (int)early_off,
+                (int)late_off);
+        return 0;
+    }
+
+    int64_t reject_ns = 0;
+    int32_t reject_off = 0;
+    st = dt->api->civil_to_unix_ns(dt->ctx,
+                                   &civil,
+                                   &zone_iana,
+                                   OBI_TIME_CIVIL_TO_UNIX_REQUIRE_VALID,
+                                   &reject_ns,
+                                   &reject_off);
+    if (st != OBI_STATUS_ERROR) {
+        fprintf(stderr,
+                "time.datetime exercise: provider=%s dst require-valid ambiguity was not rejected (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    const int64_t roundtrip_ns[2] = { early_ns, late_ns };
+    const int32_t roundtrip_off[2] = { early_off, late_off };
+    for (size_t i = 0u; i < 2u; i++) {
+        char ts[96];
+        size_t need = 0u;
+        st = dt->api->format_rfc3339(dt->ctx, roundtrip_ns[i], roundtrip_off[i], NULL, 0u, &need);
+        if (st != OBI_STATUS_BUFFER_TOO_SMALL || need == 0u || need > sizeof(ts)) {
+            fprintf(stderr,
+                    "time.datetime exercise: provider=%s dst format sizing failed case=%zu status=%d need=%zu\n",
+                    provider_id,
+                    i,
+                    (int)st,
+                    need);
+            return 0;
+        }
+
+        st = dt->api->format_rfc3339(dt->ctx, roundtrip_ns[i], roundtrip_off[i], ts, sizeof(ts), &need);
+        if (st != OBI_STATUS_OK || need == 0u || need > sizeof(ts)) {
+            fprintf(stderr,
+                    "time.datetime exercise: provider=%s dst format failed case=%zu status=%d need=%zu\n",
+                    provider_id,
+                    i,
+                    (int)st,
+                    need);
+            return 0;
+        }
+
+        int64_t parsed_ns = 0;
+        int32_t parsed_off = 0;
+        st = dt->api->parse_rfc3339(dt->ctx, ts, &parsed_ns, &parsed_off);
+        if (st != OBI_STATUS_OK || parsed_ns != roundtrip_ns[i] || parsed_off != roundtrip_off[i]) {
+            fprintf(stderr,
+                    "time.datetime exercise: provider=%s dst parse/format roundtrip mismatch case=%zu status=%d\n",
+                    provider_id,
+                    i,
+                    (int)st);
+            return 0;
+        }
+
+        obi_time_civil_v0 got_civil;
+        int32_t got_off = 0;
+        memset(&got_civil, 0, sizeof(got_civil));
+        st = dt->api->unix_ns_to_civil(dt->ctx, roundtrip_ns[i], &zone_iana, &got_civil, &got_off);
+        if (st != OBI_STATUS_OK ||
+            got_civil.year != civil.year || got_civil.month != civil.month || got_civil.day != civil.day ||
+            got_civil.hour != civil.hour || got_civil.minute != civil.minute || got_civil.second != civil.second ||
+            got_civil.nanosecond != civil.nanosecond || got_off != roundtrip_off[i]) {
+            fprintf(stderr,
+                    "time.datetime exercise: provider=%s dst unix_to_civil mismatch case=%zu status=%d off=%d\n",
+                    provider_id,
+                    i,
+                    (int)st,
+                    (int)got_off);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int _exercise_time_provider_legal_metadata(obi_rt_v0* rt, const char* provider_id) {
+    if (!rt || !provider_id) {
+        return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:time.inhouse") != 0 &&
+        strcmp(provider_id, "obi.provider:time.glib") != 0 &&
+        strcmp(provider_id, "obi.provider:time.icu") != 0) {
+        return 1;
+    }
+
+    size_t provider_index = 0u;
+    if (!_provider_index_by_id(rt, provider_id, &provider_index)) {
+        fprintf(stderr, "time.datetime exercise: provider=%s legal metadata index lookup failed\n", provider_id);
+        return 0;
+    }
+
+    const obi_provider_legal_metadata_v0* meta = NULL;
+    const obi_status st = obi_rt_provider_legal_metadata(rt, provider_index, &meta);
+    if (st != OBI_STATUS_OK || !meta || meta->struct_size < (uint32_t)sizeof(*meta)) {
+        fprintf(stderr, "time.datetime exercise: provider=%s legal metadata unavailable (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+
+    if (meta->flags != 0u || meta->route_count != 0u) {
+        fprintf(stderr,
+                "time.datetime exercise: provider=%s legal metadata route flags mismatch (flags=%llu routes=%zu)\n",
+                provider_id,
+                (unsigned long long)meta->flags,
+                meta->route_count);
+        return 0;
+    }
+
+    if (meta->module_license.struct_size < (uint32_t)sizeof(meta->module_license) ||
+        meta->effective_license.struct_size < (uint32_t)sizeof(meta->effective_license) ||
+        meta->module_license.copyleft_class != OBI_LEGAL_COPYLEFT_WEAK ||
+        meta->module_license.patent_posture != OBI_LEGAL_PATENT_POSTURE_ORDINARY ||
+        !meta->module_license.spdx_expression ||
+        strcmp(meta->module_license.spdx_expression, "MPL-2.0") != 0 ||
+        meta->effective_license.copyleft_class != OBI_LEGAL_COPYLEFT_WEAK ||
+        meta->effective_license.patent_posture != OBI_LEGAL_PATENT_POSTURE_ORDINARY) {
+        fprintf(stderr, "time.datetime exercise: provider=%s legal metadata module/effective baseline mismatch\n",
+                provider_id);
+        return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:time.inhouse") == 0) {
+        if (meta->dependency_count != 0u ||
+            !meta->effective_license.spdx_expression ||
+            strcmp(meta->effective_license.spdx_expression, "MPL-2.0") != 0 ||
+            !meta->effective_license.summary_utf8 ||
+            strcmp(meta->effective_license.summary_utf8,
+                   "Effective posture equals provider module posture") != 0) {
+            fprintf(stderr, "time.datetime exercise: provider=%s legal metadata mismatch for inhouse\n", provider_id);
+            return 0;
+        }
+    } else if (strcmp(provider_id, "obi.provider:time.glib") == 0) {
+        if (meta->dependency_count != 1u || !meta->dependencies ||
+            !meta->effective_license.spdx_expression ||
+            strcmp(meta->effective_license.spdx_expression, "MPL-2.0 AND LGPL-2.1-or-later") != 0 ||
+            !meta->effective_license.summary_utf8 ||
+            strcmp(meta->effective_license.summary_utf8,
+                   "Effective posture reflects module plus required GLib dependency") != 0) {
+            fprintf(stderr, "time.datetime exercise: provider=%s legal metadata mismatch for glib\n", provider_id);
+            return 0;
+        }
+
+        const obi_legal_dependency_v0* dep = &meta->dependencies[0];
+        if (dep->struct_size < (uint32_t)sizeof(*dep) ||
+            dep->relation != OBI_LEGAL_DEP_REQUIRED_RUNTIME ||
+            !dep->dependency_id || strcmp(dep->dependency_id, "glib-2.0") != 0 ||
+            !dep->name || strcmp(dep->name, "glib-2.0") != 0 ||
+            !dep->version || strcmp(dep->version, "dynamic") != 0 ||
+            dep->legal.copyleft_class != OBI_LEGAL_COPYLEFT_WEAK ||
+            dep->legal.patent_posture != OBI_LEGAL_PATENT_POSTURE_ORDINARY ||
+            !dep->legal.spdx_expression || strcmp(dep->legal.spdx_expression, "LGPL-2.1-or-later") != 0) {
+            fprintf(stderr, "time.datetime exercise: provider=%s glib dependency legal metadata mismatch\n", provider_id);
+            return 0;
+        }
+    } else if (strcmp(provider_id, "obi.provider:time.icu") == 0) {
+        if (meta->dependency_count != 2u || !meta->dependencies ||
+            !meta->effective_license.spdx_expression ||
+            strcmp(meta->effective_license.spdx_expression, "MPL-2.0 AND Unicode-3.0") != 0 ||
+            !meta->effective_license.summary_utf8 ||
+            strcmp(meta->effective_license.summary_utf8,
+                   "Effective posture reflects module plus required ICU dependencies") != 0) {
+            fprintf(stderr, "time.datetime exercise: provider=%s legal metadata mismatch for icu\n", provider_id);
+            return 0;
+        }
+
+        const char* expected_ids[2] = { "icu-i18n", "icu-uc" };
+        for (size_t i = 0u; i < 2u; i++) {
+            const obi_legal_dependency_v0* dep = &meta->dependencies[i];
+            if (dep->struct_size < (uint32_t)sizeof(*dep) ||
+                dep->relation != OBI_LEGAL_DEP_REQUIRED_RUNTIME ||
+                !dep->dependency_id || strcmp(dep->dependency_id, expected_ids[i]) != 0 ||
+                !dep->name || strcmp(dep->name, expected_ids[i]) != 0 ||
+                !dep->version || strcmp(dep->version, "dynamic") != 0 ||
+                dep->legal.copyleft_class != OBI_LEGAL_COPYLEFT_PERMISSIVE ||
+                dep->legal.patent_posture != OBI_LEGAL_PATENT_POSTURE_ORDINARY ||
+                !dep->legal.spdx_expression || strcmp(dep->legal.spdx_expression, "Unicode-3.0") != 0) {
+                fprintf(stderr, "time.datetime exercise: provider=%s icu dependency[%zu] legal metadata mismatch\n",
+                        provider_id,
+                        i);
+                return 0;
+            }
         }
     }
 
@@ -4786,6 +7563,26 @@ static int _exercise_time_datetime_profile(obi_rt_v0* rt, const char* provider_i
                 provider_id,
                 (int)st,
                 obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:time.inhouse") == 0 &&
+        (dt.api->caps & (OBI_TIME_DATETIME_CAP_TZ_IANA | OBI_TIME_DATETIME_CAP_TZ_LOCAL)) != 0u) {
+        fprintf(stderr,
+                "time.datetime exercise: provider=%s unexpected timezone capability mask=0x%llx\n",
+                provider_id,
+                (unsigned long long)dt.api->caps);
+        return 0;
+    }
+
+    if ((strcmp(provider_id, "obi.provider:time.glib") == 0 ||
+         strcmp(provider_id, "obi.provider:time.icu") == 0) &&
+        (dt.api->caps & (OBI_TIME_DATETIME_CAP_TZ_IANA | OBI_TIME_DATETIME_CAP_TZ_LOCAL)) !=
+            (OBI_TIME_DATETIME_CAP_TZ_IANA | OBI_TIME_DATETIME_CAP_TZ_LOCAL)) {
+        fprintf(stderr,
+                "time.datetime exercise: provider=%s missing expected timezone capability mask=0x%llx\n",
+                provider_id,
+                (unsigned long long)dt.api->caps);
         return 0;
     }
 
@@ -4992,6 +7789,49 @@ static int _exercise_time_datetime_profile(obi_rt_v0* rt, const char* provider_i
                     (int)st);
             return 0;
         }
+
+        if (strcmp(provider_id, "obi.provider:time.glib") == 0) {
+            obi_time_zone_spec_v0 zone_iana_utc;
+            memset(&zone_iana_utc, 0, sizeof(zone_iana_utc));
+            zone_iana_utc.struct_size = (uint32_t)sizeof(zone_iana_utc);
+            zone_iana_utc.kind = OBI_TIME_ZONE_IANA_NAME;
+            zone_iana_utc.iana_name = "UTC";
+
+            obi_time_civil_v0 min_civil;
+            memset(&min_civil, 0, sizeof(min_civil));
+            int32_t min_off = 0;
+            st = dt.api->unix_ns_to_civil(dt.ctx, INT64_MIN, &zone_iana_utc, &min_civil, &min_off);
+            if (st != OBI_STATUS_OK || min_off != 0 ||
+                min_civil.year != 1677 || min_civil.month != 9u || min_civil.day != 21u ||
+                min_civil.hour != 0u || min_civil.minute != 12u || min_civil.second != 43u ||
+                min_civil.nanosecond != 145224192u) {
+                fprintf(stderr,
+                        "time.datetime exercise: provider=%s iana unix_ns_to_civil INT64_MIN failed (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            int64_t min_roundtrip_ns = 0;
+            int32_t min_roundtrip_off = 0;
+            st = dt.api->civil_to_unix_ns(dt.ctx,
+                                          &min_civil,
+                                          &zone_iana_utc,
+                                          OBI_TIME_CIVIL_TO_UNIX_REQUIRE_VALID,
+                                          &min_roundtrip_ns,
+                                          &min_roundtrip_off);
+            if (st != OBI_STATUS_OK || min_roundtrip_ns != INT64_MIN || min_roundtrip_off != 0) {
+                fprintf(stderr,
+                        "time.datetime exercise: provider=%s iana civil_to_unix_ns INT64_MIN failed (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+
+        if (!_exercise_time_iana_dst_roundtrip(&dt, provider_id)) {
+            return 0;
+        }
     }
 
     if ((dt.api->caps & OBI_TIME_DATETIME_CAP_TZ_LOCAL) != 0ull) {
@@ -5026,6 +7866,10 @@ static int _exercise_time_datetime_profile(obi_rt_v0* rt, const char* provider_i
                     (int)st);
             return 0;
         }
+    }
+
+    if (!_exercise_time_provider_legal_metadata(rt, provider_id)) {
+        return 0;
     }
 
     return 1;
@@ -5164,6 +8008,442 @@ static int _exercise_ipc_bus_profile(obi_rt_v0* rt, const char* provider_id, int
     return 1;
 }
 
+static int _exercise_os_env_known_dir_contract(const obi_os_env_v0* envp, const char* provider_id) {
+    if (!envp || !envp->api || !envp->api->known_dir_utf8) {
+        return 0;
+    }
+
+    char path[PATH_MAX];
+    size_t path_len = 0u;
+    bool found = false;
+    obi_status st = envp->api->known_dir_utf8(envp->ctx,
+                                               OBI_ENV_KNOWN_DIR_TEMP,
+                                               NULL,
+                                               0u,
+                                               &path_len,
+                                               &found);
+    if ((st != OBI_STATUS_BUFFER_TOO_SMALL && st != OBI_STATUS_OK) || !found || path_len == 0u) {
+        fprintf(stderr,
+                "os.env exercise: provider=%s known_dir temp sizing failed (status=%d found=%d size=%zu)\n",
+                provider_id,
+                (int)st,
+                (int)found,
+                path_len);
+        return 0;
+    }
+
+    if (path_len >= sizeof(path)) {
+        fprintf(stderr, "os.env exercise: provider=%s known_dir temp path too long\n", provider_id);
+        return 0;
+    }
+
+    memset(path, 0, sizeof(path));
+    st = envp->api->known_dir_utf8(envp->ctx,
+                                   OBI_ENV_KNOWN_DIR_TEMP,
+                                   path,
+                                   path_len,
+                                   &path_len,
+                                   &found);
+    if (st != OBI_STATUS_OK || !found || path_len == 0u || path[path_len - 1u] == '\0') {
+        fprintf(stderr,
+                "os.env exercise: provider=%s known_dir temp exact-cap query failed (status=%d found=%d size=%zu)\n",
+                provider_id,
+                (int)st,
+                (int)found,
+                path_len);
+        return 0;
+    }
+
+#if defined(_WIN32)
+    return 1;
+#else
+    int ok = 1;
+    obi_env_saved_value_v0 saved_home;
+    obi_env_saved_value_v0 saved_tmpdir;
+    obi_env_saved_value_v0 saved_xdg_config_home;
+    obi_env_saved_value_v0 saved_xdg_data_home;
+    obi_env_saved_value_v0 saved_xdg_cache_home;
+    memset(&saved_home, 0, sizeof(saved_home));
+    memset(&saved_tmpdir, 0, sizeof(saved_tmpdir));
+    memset(&saved_xdg_config_home, 0, sizeof(saved_xdg_config_home));
+    memset(&saved_xdg_data_home, 0, sizeof(saved_xdg_data_home));
+    memset(&saved_xdg_cache_home, 0, sizeof(saved_xdg_cache_home));
+
+    if (!_capture_env_value("HOME", &saved_home) ||
+        !_capture_env_value("TMPDIR", &saved_tmpdir) ||
+        !_capture_env_value("XDG_CONFIG_HOME", &saved_xdg_config_home) ||
+        !_capture_env_value("XDG_DATA_HOME", &saved_xdg_data_home) ||
+        !_capture_env_value("XDG_CACHE_HOME", &saved_xdg_cache_home)) {
+        fprintf(stderr, "os.env exercise: provider=%s failed to capture environment snapshot\n", provider_id);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    const long pid = (long)getpid();
+    char home_override[PATH_MAX];
+    char tmp_override[PATH_MAX];
+    char xdg_config_override[PATH_MAX];
+    (void)snprintf(home_override, sizeof(home_override), "/tmp/obi_smoke_home_%ld", pid);
+    (void)snprintf(tmp_override, sizeof(tmp_override), "/tmp/obi_smoke_tmp_%ld", pid);
+    (void)snprintf(xdg_config_override, sizeof(xdg_config_override), "/tmp/obi_smoke_xdg_cfg_%ld", pid);
+
+    if (_set_env_value("HOME", home_override) != 0 ||
+        _set_env_value("TMPDIR", NULL) != 0 ||
+        _set_env_value("XDG_CONFIG_HOME", NULL) != 0 ||
+        _set_env_value("XDG_DATA_HOME", NULL) != 0 ||
+        _set_env_value("XDG_CACHE_HOME", NULL) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s failed to set known-dir fixture environment\n", provider_id);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    {
+        const char* const expected = "/.config";
+        char expected_path[PATH_MAX];
+        size_t expected_len = strlen(home_override) + strlen(expected);
+        if (expected_len >= sizeof(expected_path)) {
+            fprintf(stderr, "os.env exercise: provider=%s expected known-dir path overflow\n", provider_id);
+            ok = 0;
+            goto os_env_known_dir_cleanup;
+        }
+        memcpy(expected_path, home_override, strlen(home_override));
+        memcpy(expected_path + strlen(home_override), expected, strlen(expected));
+        expected_path[expected_len] = '\0';
+
+        path_len = 0u;
+        found = false;
+        st = envp->api->known_dir_utf8(envp->ctx,
+                                       OBI_ENV_KNOWN_DIR_USER_CONFIG,
+                                       NULL,
+                                       0u,
+                                       &path_len,
+                                       &found);
+        if (st != OBI_STATUS_BUFFER_TOO_SMALL || !found || path_len != expected_len) {
+            fprintf(stderr,
+                    "os.env exercise: provider=%s known_dir user_config HOME fallback sizing failed (status=%d found=%d size=%zu expected=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    (int)found,
+                    path_len,
+                    expected_len);
+            ok = 0;
+            goto os_env_known_dir_cleanup;
+        }
+
+        memset(path, 0, sizeof(path));
+        st = envp->api->known_dir_utf8(envp->ctx,
+                                       OBI_ENV_KNOWN_DIR_USER_CONFIG,
+                                       path,
+                                       path_len,
+                                       &path_len,
+                                       &found);
+        if (st != OBI_STATUS_OK || !found || path_len != expected_len ||
+            memcmp(path, expected_path, expected_len) != 0) {
+            fprintf(stderr, "os.env exercise: provider=%s known_dir user_config HOME fallback mismatch (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            ok = 0;
+            goto os_env_known_dir_cleanup;
+        }
+    }
+
+    if (_set_env_value("XDG_CONFIG_HOME", xdg_config_override) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s failed to set XDG_CONFIG_HOME override\n", provider_id);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    path_len = 0u;
+    found = false;
+    st = envp->api->known_dir_utf8(envp->ctx,
+                                   OBI_ENV_KNOWN_DIR_USER_CONFIG,
+                                   NULL,
+                                   0u,
+                                   &path_len,
+                                   &found);
+    if (st != OBI_STATUS_BUFFER_TOO_SMALL || !found || path_len != strlen(xdg_config_override)) {
+        fprintf(stderr,
+                "os.env exercise: provider=%s known_dir XDG_CONFIG_HOME sizing failed (status=%d found=%d size=%zu)\n",
+                provider_id,
+                (int)st,
+                (int)found,
+                path_len);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    memset(path, 0, sizeof(path));
+    st = envp->api->known_dir_utf8(envp->ctx,
+                                   OBI_ENV_KNOWN_DIR_USER_CONFIG,
+                                   path,
+                                   path_len,
+                                   &path_len,
+                                   &found);
+    if (st != OBI_STATUS_OK || !found || path_len != strlen(xdg_config_override) ||
+        memcmp(path, xdg_config_override, path_len) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s known_dir XDG_CONFIG_HOME mismatch (status=%d)\n",
+                provider_id,
+                (int)st);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    if (_set_env_value("HOME", NULL) != 0 ||
+        _set_env_value("XDG_CONFIG_HOME", NULL) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s failed to clear HOME/XDG_CONFIG_HOME for not-found case\n",
+                provider_id);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    path_len = SIZE_MAX;
+    found = true;
+    memset(path, 0xA5, sizeof(path));
+    st = envp->api->known_dir_utf8(envp->ctx,
+                                   OBI_ENV_KNOWN_DIR_USER_CONFIG,
+                                   path,
+                                   sizeof(path),
+                                   &path_len,
+                                   &found);
+    if (st != OBI_STATUS_OK || found || path_len != 0u) {
+        fprintf(stderr,
+                "os.env exercise: provider=%s known_dir missing HOME contract failed (status=%d found=%d size=%zu)\n",
+                provider_id,
+                (int)st,
+                (int)found,
+                path_len);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    if (_set_env_value("TMPDIR", tmp_override) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s failed to set TMPDIR override\n", provider_id);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    path_len = 0u;
+    found = false;
+    st = envp->api->known_dir_utf8(envp->ctx,
+                                   OBI_ENV_KNOWN_DIR_TEMP,
+                                   NULL,
+                                   0u,
+                                   &path_len,
+                                   &found);
+    if (st != OBI_STATUS_BUFFER_TOO_SMALL || !found || path_len != strlen(tmp_override)) {
+        fprintf(stderr,
+                "os.env exercise: provider=%s known_dir TMPDIR sizing failed (status=%d found=%d size=%zu)\n",
+                provider_id,
+                (int)st,
+                (int)found,
+                path_len);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    if (path_len == 0u) {
+        fprintf(stderr, "os.env exercise: provider=%s known_dir TMPDIR empty size\n", provider_id);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+    memset(path, 0, sizeof(path));
+    st = envp->api->known_dir_utf8(envp->ctx,
+                                   OBI_ENV_KNOWN_DIR_TEMP,
+                                   path,
+                                   path_len,
+                                   &path_len,
+                                   &found);
+    if (st != OBI_STATUS_OK || !found || path_len != strlen(tmp_override) ||
+        memcmp(path, tmp_override, path_len) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s known_dir TMPDIR mismatch (status=%d)\n",
+                provider_id,
+                (int)st);
+        ok = 0;
+        goto os_env_known_dir_cleanup;
+    }
+
+os_env_known_dir_cleanup:
+    if (!_restore_env_value(&saved_xdg_cache_home) ||
+        !_restore_env_value(&saved_xdg_data_home) ||
+        !_restore_env_value(&saved_xdg_config_home) ||
+        !_restore_env_value(&saved_tmpdir) ||
+        !_restore_env_value(&saved_home)) {
+        fprintf(stderr, "os.env exercise: provider=%s failed to restore environment snapshot\n", provider_id);
+        ok = 0;
+    }
+    return ok;
+#endif
+}
+
+static int _exercise_os_env_iter_lifetime_contract(const obi_os_env_v0* envp, const char* provider_id) {
+    if (!envp || !envp->api || !provider_id) {
+        return 0;
+    }
+    if (strcmp(provider_id, "obi.provider:os.env.native") != 0 &&
+        strcmp(provider_id, "obi.provider:os.env.glib") != 0) {
+        return 1;
+    }
+    if ((envp->api->caps & OBI_ENV_CAP_ENUM) == 0u || !envp->api->env_iter_open) {
+        return 1;
+    }
+    if ((envp->api->caps & OBI_ENV_CAP_SET) == 0u || !envp->api->setenv_utf8 || !envp->api->unsetenv) {
+        return 1;
+    }
+
+#if defined(_WIN32)
+    return 1;
+#else
+    int ok = 1;
+    const long pid = (long)getpid();
+    const char* const value_before = "iter_before_mutation";
+    const char* const value_after = "iter_after_mutation_0123456789";
+    const size_t value_before_len = strlen(value_before);
+    char key[96];
+    size_t key_len = 0u;
+    obi_env_saved_value_v0 saved_key;
+    obi_env_iter_v0 it;
+    obi_utf8_view_v0 name;
+    obi_utf8_view_v0 value;
+    obi_utf8_view_v0 pinned_name;
+    obi_utf8_view_v0 pinned_value;
+    bool has_item = false;
+    int found = 0;
+    char* name_snapshot = NULL;
+    char* value_snapshot = NULL;
+    obi_status st = OBI_STATUS_ERROR;
+
+    memset(&saved_key, 0, sizeof(saved_key));
+    memset(&it, 0, sizeof(it));
+    memset(&name, 0, sizeof(name));
+    memset(&value, 0, sizeof(value));
+    memset(&pinned_name, 0, sizeof(pinned_name));
+    memset(&pinned_value, 0, sizeof(pinned_value));
+
+    (void)snprintf(key, sizeof(key), "OBI_SMOKE_ENV_ITER_%ld", pid);
+    key_len = strlen(key);
+
+    if (!_capture_env_value(key, &saved_key)) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime snapshot capture failed\n", provider_id);
+        return 0;
+    }
+
+    st = envp->api->setenv_utf8(envp->ctx, key, value_before, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime set fixture failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+    st = envp->api->env_iter_open(envp->ctx, &it);
+    if (st != OBI_STATUS_OK || !it.api || !it.api->next || !it.api->destroy) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime env_iter_open failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+    while (1) {
+        st = it.api->next(it.ctx, &name, &value, &has_item);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime next failed (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            ok = 0;
+            goto os_env_iter_lifetime_cleanup;
+        }
+        if (!has_item) {
+            break;
+        }
+        if (name.size != key_len || !name.data || memcmp(name.data, key, key_len) != 0) {
+            continue;
+        }
+
+        if (!value.data && value.size > 0u) {
+            fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime returned invalid value view\n", provider_id);
+            ok = 0;
+            goto os_env_iter_lifetime_cleanup;
+        }
+
+        pinned_name = name;
+        pinned_value = value;
+        name_snapshot = (char*)malloc(pinned_name.size + 1u);
+        value_snapshot = (char*)malloc(pinned_value.size + 1u);
+        if (!name_snapshot || !value_snapshot) {
+            fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime snapshot alloc failed\n", provider_id);
+            ok = 0;
+            goto os_env_iter_lifetime_cleanup;
+        }
+
+        memcpy(name_snapshot, pinned_name.data, pinned_name.size);
+        name_snapshot[pinned_name.size] = '\0';
+        if (pinned_value.size > 0u) {
+            memcpy(value_snapshot, pinned_value.data, pinned_value.size);
+        }
+        value_snapshot[pinned_value.size] = '\0';
+        found = 1;
+        break;
+    }
+
+    if (!found) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime fixture key not enumerated\n", provider_id);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+    st = envp->api->setenv_utf8(envp->ctx, key, value_after, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime mutation setenv failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+    if (pinned_name.size != key_len || pinned_value.size != value_before_len ||
+        memcmp(pinned_name.data, name_snapshot, pinned_name.size) != 0 ||
+        memcmp(pinned_value.data, value_snapshot, pinned_value.size) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime view changed after setenv mutation\n",
+                provider_id);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+    st = envp->api->unsetenv(envp->ctx, key);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime mutation unsetenv failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+    if (pinned_name.size != key_len || pinned_value.size != value_before_len ||
+        memcmp(pinned_name.data, name_snapshot, pinned_name.size) != 0 ||
+        memcmp(pinned_value.data, value_snapshot, pinned_value.size) != 0) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime view changed after unsetenv mutation\n",
+                provider_id);
+        ok = 0;
+        goto os_env_iter_lifetime_cleanup;
+    }
+
+os_env_iter_lifetime_cleanup:
+    if (it.api && it.api->destroy) {
+        it.api->destroy(it.ctx);
+    }
+    free(name_snapshot);
+    free(value_snapshot);
+    if (!_restore_env_value(&saved_key)) {
+        fprintf(stderr, "os.env exercise: provider=%s env_iter lifetime restore failed\n", provider_id);
+        ok = 0;
+    }
+    return ok;
+#endif
+}
+
 static int _exercise_os_env_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_os_env_v0 envp;
     memset(&envp, 0, sizeof(envp));
@@ -5205,10 +8485,30 @@ static int _exercise_os_env_profile(obi_rt_v0* rt, const char* provider_id, int 
         }
     }
 
+    {
+        char missing_key[96];
+        (void)snprintf(missing_key, sizeof(missing_key), "OBI_SMOKE_ENV_MISSING_%ld", (long)getpid());
+        size_t missing_need = SIZE_MAX;
+        bool missing_found = true;
+        char missing_buf[8];
+        memset(missing_buf, 0xA5, sizeof(missing_buf));
+        st = envp.api->getenv_utf8(envp.ctx, missing_key, missing_buf, sizeof(missing_buf), &missing_need, &missing_found);
+        if (st != OBI_STATUS_OK || missing_found || missing_need != 0u) {
+            fprintf(stderr,
+                    "os.env exercise: provider=%s getenv missing-var contract failed (status=%d found=%d size=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    (int)missing_found,
+                    missing_need);
+            return 0;
+        }
+    }
+
     if ((envp.api->caps & OBI_ENV_CAP_SET) != 0u && envp.api->setenv_utf8 && envp.api->unsetenv) {
         char key[96];
         (void)snprintf(key, sizeof(key), "OBI_SMOKE_ENV_%ld", (long)getpid());
         const char* value = "smoke_env_value";
+        const size_t value_len = strlen(value);
 
         st = envp.api->setenv_utf8(envp.ctx, key, value, 0u);
         if (st != OBI_STATUS_OK) {
@@ -5216,11 +8516,56 @@ static int _exercise_os_env_profile(obi_rt_v0* rt, const char* provider_id, int 
             return 0;
         }
 
+        size_t size_query = 0u;
+        bool size_query_found = false;
+        st = envp.api->getenv_utf8(envp.ctx, key, NULL, 0u, &size_query, &size_query_found);
+        if (st != OBI_STATUS_BUFFER_TOO_SMALL || !size_query_found || size_query != value_len) {
+            fprintf(stderr,
+                    "os.env exercise: provider=%s getenv size-query failed (status=%d found=%d size=%zu expected=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    (int)size_query_found,
+                    size_query,
+                    value_len);
+            return 0;
+        }
+
+        char too_small[8];
+        size_t too_small_need = 0u;
+        bool too_small_found = false;
+        memset(too_small, 0, sizeof(too_small));
+        st = envp.api->getenv_utf8(envp.ctx, key, too_small, sizeof(too_small), &too_small_need, &too_small_found);
+        if (st != OBI_STATUS_BUFFER_TOO_SMALL || !too_small_found || too_small_need != value_len) {
+            fprintf(stderr,
+                    "os.env exercise: provider=%s getenv small-buffer contract failed (status=%d found=%d size=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    (int)too_small_found,
+                    too_small_need);
+            return 0;
+        }
+
+        char exact_buf[128];
+        size_t exact_got = 0u;
+        bool exact_found = false;
+        memset(exact_buf, 0, sizeof(exact_buf));
+        st = envp.api->getenv_utf8(envp.ctx, key, exact_buf, value_len, &exact_got, &exact_found);
+        if (st != OBI_STATUS_OK || !exact_found || exact_got != value_len ||
+            memcmp(exact_buf, value, value_len) != 0 || exact_buf[value_len] != '\0') {
+            fprintf(stderr,
+                    "os.env exercise: provider=%s getenv exact-cap contract failed (status=%d found=%d size=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    (int)exact_found,
+                    exact_got);
+            return 0;
+        }
+
         char buf[128];
         size_t got = 0u;
         bool found = false;
         st = envp.api->getenv_utf8(envp.ctx, key, buf, sizeof(buf), &got, &found);
-        if (st != OBI_STATUS_OK || !found || got != strlen(value) || memcmp(buf, value, got) != 0) {
+        if (st != OBI_STATUS_OK || !found || got != value_len || memcmp(buf, value, got) != 0) {
             fprintf(stderr, "os.env exercise: provider=%s getenv roundtrip failed (status=%d)\n", provider_id, (int)st);
             return 0;
         }
@@ -5233,9 +8578,24 @@ static int _exercise_os_env_profile(obi_rt_v0* rt, const char* provider_id, int 
     }
 
     if ((envp.api->caps & OBI_ENV_CAP_CWD) != 0u && envp.api->get_cwd_utf8) {
+        size_t cwd_need = 0u;
+        st = envp.api->get_cwd_utf8(envp.ctx, NULL, 0u, &cwd_need);
+        if (st != OBI_STATUS_BUFFER_TOO_SMALL || cwd_need == 0u) {
+            fprintf(stderr, "os.env exercise: provider=%s get_cwd sizing failed (status=%d size=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    cwd_need);
+            return 0;
+        }
+
         char cwd[PATH_MAX];
         size_t cwd_len = 0u;
-        st = envp.api->get_cwd_utf8(envp.ctx, cwd, sizeof(cwd), &cwd_len);
+        if (cwd_need > sizeof(cwd)) {
+            fprintf(stderr, "os.env exercise: provider=%s get_cwd returned oversized query size=%zu\n", provider_id, cwd_need);
+            return 0;
+        }
+        memset(cwd, 0, sizeof(cwd));
+        st = envp.api->get_cwd_utf8(envp.ctx, cwd, cwd_need, &cwd_len);
         if (st != OBI_STATUS_OK || cwd_len == 0u) {
             fprintf(stderr, "os.env exercise: provider=%s get_cwd failed (status=%d)\n", provider_id, (int)st);
             return 0;
@@ -5243,17 +8603,7 @@ static int _exercise_os_env_profile(obi_rt_v0* rt, const char* provider_id, int 
     }
 
     if ((envp.api->caps & OBI_ENV_CAP_KNOWN_DIRS) != 0u && envp.api->known_dir_utf8) {
-        char path[PATH_MAX];
-        size_t path_len = 0u;
-        bool found = false;
-        st = envp.api->known_dir_utf8(envp.ctx,
-                                      OBI_ENV_KNOWN_DIR_TEMP,
-                                      path,
-                                      sizeof(path),
-                                      &path_len,
-                                      &found);
-        if (st != OBI_STATUS_OK || !found || path_len == 0u) {
-            fprintf(stderr, "os.env exercise: provider=%s known_dir temp failed (status=%d)\n", provider_id, (int)st);
+        if (!_exercise_os_env_known_dir_contract(&envp, provider_id)) {
             return 0;
         }
     }
@@ -5276,6 +8626,10 @@ static int _exercise_os_env_profile(obi_rt_v0* rt, const char* provider_id, int 
         it.api->destroy(it.ctx);
         if (st != OBI_STATUS_OK) {
             fprintf(stderr, "os.env exercise: provider=%s env_iter next failed (status=%d)\n", provider_id, (int)st);
+            return 0;
+        }
+
+        if (!_exercise_os_env_iter_lifetime_contract(&envp, provider_id)) {
             return 0;
         }
     }
@@ -5323,6 +8677,137 @@ static int _exercise_os_fs_profile(obi_rt_v0* rt, const char* provider_id, int a
     if (st != OBI_STATUS_OK) {
         fprintf(stderr, "os.fs exercise: provider=%s mkdir failed (status=%d path=%s)\n", provider_id, (int)st, dir_path);
         return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.fs.libuv") == 0) {
+        obi_reader_v0 bad_reader;
+        obi_fs_open_reader_params_v0 bad_reader_params;
+
+        memset(&bad_reader, 0, sizeof(bad_reader));
+        memset(&bad_reader_params, 0, sizeof(bad_reader_params));
+        bad_reader_params.struct_size = (uint32_t)sizeof(bad_reader_params);
+        bad_reader_params.flags = 1u;
+        st = fs.api->open_reader(fs.ctx, file_a, &bad_reader_params, &bad_reader);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_reader.api && bad_reader.api->destroy) {
+                bad_reader.api->destroy(bad_reader.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s open_reader invalid flags did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_reader, 0, sizeof(bad_reader));
+        memset(&bad_reader_params, 0, sizeof(bad_reader_params));
+        bad_reader_params.struct_size = (uint32_t)sizeof(bad_reader_params);
+        bad_reader_params.options_json.data = NULL;
+        bad_reader_params.options_json.size = 1u;
+        st = fs.api->open_reader(fs.ctx, file_a, &bad_reader_params, &bad_reader);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_reader.api && bad_reader.api->destroy) {
+                bad_reader.api->destroy(bad_reader.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s open_reader malformed options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_writer_v0 bad_writer;
+        obi_fs_open_writer_params_v0 bad_writer_params;
+
+        memset(&bad_writer, 0, sizeof(bad_writer));
+        memset(&bad_writer_params, 0, sizeof(bad_writer_params));
+        bad_writer_params.struct_size = (uint32_t)sizeof(bad_writer_params);
+        bad_writer_params.flags = OBI_FS_OPEN_WRITE_APPEND | OBI_FS_OPEN_WRITE_TRUNCATE;
+        st = fs.api->open_writer(fs.ctx, file_a, &bad_writer_params, &bad_writer);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_writer.api && bad_writer.api->destroy) {
+                bad_writer.api->destroy(bad_writer.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s open_writer append+truncate did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_writer, 0, sizeof(bad_writer));
+        memset(&bad_writer_params, 0, sizeof(bad_writer_params));
+        bad_writer_params.struct_size = (uint32_t)sizeof(bad_writer_params);
+        bad_writer_params.options_json.data = NULL;
+        bad_writer_params.options_json.size = 1u;
+        st = fs.api->open_writer(fs.ctx, file_a, &bad_writer_params, &bad_writer);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_writer.api && bad_writer.api->destroy) {
+                bad_writer.api->destroy(bad_writer.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s open_writer malformed options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        if (fs.api->open_dir_iter) {
+            obi_fs_dir_iter_v0 bad_iter;
+            obi_fs_dir_open_params_v0 bad_dir_params;
+
+            memset(&bad_iter, 0, sizeof(bad_iter));
+            memset(&bad_dir_params, 0, sizeof(bad_dir_params));
+            bad_dir_params.struct_size = (uint32_t)sizeof(bad_dir_params);
+            bad_dir_params.flags = 1u;
+            st = fs.api->open_dir_iter(fs.ctx, dir_path, &bad_dir_params, &bad_iter);
+            if (st != OBI_STATUS_BAD_ARG) {
+                if (bad_iter.api && bad_iter.api->destroy) {
+                    bad_iter.api->destroy(bad_iter.ctx);
+                }
+                fprintf(stderr,
+                        "os.fs exercise: provider=%s open_dir_iter invalid flags did not return BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+
+            memset(&bad_iter, 0, sizeof(bad_iter));
+            memset(&bad_dir_params, 0, sizeof(bad_dir_params));
+            bad_dir_params.struct_size = (uint32_t)sizeof(bad_dir_params);
+            bad_dir_params.options_json.data = NULL;
+            bad_dir_params.options_json.size = 1u;
+            st = fs.api->open_dir_iter(fs.ctx, dir_path, &bad_dir_params, &bad_iter);
+            if (st != OBI_STATUS_BAD_ARG) {
+                if (bad_iter.api && bad_iter.api->destroy) {
+                    bad_iter.api->destroy(bad_iter.ctx);
+                }
+                fprintf(stderr,
+                        "os.fs exercise: provider=%s open_dir_iter malformed options_json did not return BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.fs.native") == 0) {
+        obi_writer_v0 no_create_writer;
+        memset(&no_create_writer, 0, sizeof(no_create_writer));
+        obi_fs_open_writer_params_v0 no_create_params;
+        memset(&no_create_params, 0, sizeof(no_create_params));
+        no_create_params.struct_size = (uint32_t)sizeof(no_create_params);
+
+        st = fs.api->open_writer(fs.ctx, file_a, &no_create_params, &no_create_writer);
+        if (st == OBI_STATUS_OK) {
+            if (no_create_writer.api && no_create_writer.api->destroy) {
+                no_create_writer.api->destroy(no_create_writer.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s unexpectedly created writer without CREATE flag on missing path\n",
+                    provider_id);
+            return 0;
+        }
     }
 
     obi_writer_v0 writer;
@@ -5383,6 +8868,67 @@ static int _exercise_os_fs_profile(obi_rt_v0* rt, const char* provider_id, int a
     if (st != OBI_STATUS_OK || read_n != strlen(payload) || memcmp(read_buf, payload, read_n) != 0) {
         fprintf(stderr, "os.fs exercise: provider=%s read roundtrip failed (status=%d)\n", provider_id, (int)st);
         return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.fs.native") == 0) {
+        obi_writer_v0 rewrite_writer;
+        memset(&rewrite_writer, 0, sizeof(rewrite_writer));
+        obi_fs_open_writer_params_v0 rewrite_params;
+        memset(&rewrite_params, 0, sizeof(rewrite_params));
+        rewrite_params.struct_size = (uint32_t)sizeof(rewrite_params);
+
+        st = fs.api->open_writer(fs.ctx, file_a, &rewrite_params, &rewrite_writer);
+        if (st != OBI_STATUS_OK || !rewrite_writer.api || !rewrite_writer.api->write || !rewrite_writer.api->destroy) {
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s failed reopening writer without truncate/create flags (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        static const char rewrite_prefix[] = "XY";
+        size_t rewrite_n = 0u;
+        st = rewrite_writer.api->write(rewrite_writer.ctx,
+                                       rewrite_prefix,
+                                       sizeof(rewrite_prefix) - 1u,
+                                       &rewrite_n);
+        rewrite_writer.api->destroy(rewrite_writer.ctx);
+        if (st != OBI_STATUS_OK || rewrite_n != (sizeof(rewrite_prefix) - 1u)) {
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s rewrite without truncate failed (status=%d written=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    rewrite_n);
+            return 0;
+        }
+
+        memset(&reader, 0, sizeof(reader));
+        st = fs.api->open_reader(fs.ctx, file_a, &rparams, &reader);
+        if (st != OBI_STATUS_OK || !reader.api || !reader.api->read || !reader.api->destroy) {
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s open_reader after rewrite failed (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(read_buf, 0, sizeof(read_buf));
+        read_n = 0u;
+        st = reader.api->read(reader.ctx, read_buf, sizeof(read_buf), &read_n);
+        reader.api->destroy(reader.ctx);
+        if (st != OBI_STATUS_OK ||
+            read_n != strlen(payload) ||
+            memcmp(read_buf, rewrite_prefix, sizeof(rewrite_prefix) - 1u) != 0 ||
+            memcmp(read_buf + (sizeof(rewrite_prefix) - 1u),
+                   payload + (sizeof(rewrite_prefix) - 1u),
+                   strlen(payload) - (sizeof(rewrite_prefix) - 1u)) != 0) {
+            fprintf(stderr,
+                    "os.fs exercise: provider=%s default writer unexpectedly truncated/shifted file (status=%d size=%zu)\n",
+                    provider_id,
+                    (int)st,
+                    read_n);
+            return 0;
+        }
     }
 
     st = fs.api->rename(fs.ctx, file_a, file_b, OBI_FS_RENAME_REPLACE);
@@ -5453,6 +8999,128 @@ static int _exercise_os_process_profile(obi_rt_v0* rt, const char* provider_id, 
         return 0;
     }
 
+    if (strcmp(provider_id, "obi.provider:os.process.native") == 0 ||
+        strcmp(provider_id, "obi.provider:os.process.libuv") == 0) {
+        obi_utf8_view_v0 bad_argv[1];
+        memset(bad_argv, 0, sizeof(bad_argv));
+        bad_argv[0].data = NULL;
+        bad_argv[0].size = 1u;
+
+        obi_process_spawn_params_v0 bad_argv_params;
+        memset(&bad_argv_params, 0, sizeof(bad_argv_params));
+        bad_argv_params.struct_size = (uint32_t)sizeof(bad_argv_params);
+        bad_argv_params.program = (obi_utf8_view_v0){ "x", 1u };
+        bad_argv_params.argv = bad_argv;
+        bad_argv_params.argc = 1u;
+
+        obi_process_v0 bad_proc;
+        memset(&bad_proc, 0, sizeof(bad_proc));
+        st = proc_root.api->spawn(proc_root.ctx, &bad_argv_params, &bad_proc, NULL, NULL, NULL);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_proc.api && bad_proc.api->destroy) {
+                bad_proc.api->destroy(bad_proc.ctx);
+            }
+            fprintf(stderr,
+                    "os.process exercise: provider=%s invalid argv view did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_process_spawn_params_v0 missing_argv_params;
+        memset(&missing_argv_params, 0, sizeof(missing_argv_params));
+        missing_argv_params.struct_size = (uint32_t)sizeof(missing_argv_params);
+        missing_argv_params.program = (obi_utf8_view_v0){ "x", 1u };
+        missing_argv_params.argc = 1u;
+
+        memset(&bad_proc, 0, sizeof(bad_proc));
+        st = proc_root.api->spawn(proc_root.ctx, &missing_argv_params, &bad_proc, NULL, NULL, NULL);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_proc.api && bad_proc.api->destroy) {
+                bad_proc.api->destroy(bad_proc.ctx);
+            }
+            fprintf(stderr,
+                    "os.process exercise: provider=%s argc>0 with NULL argv did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.process.libuv") == 0) {
+        obi_process_spawn_params_v0 bad_flags_params;
+        obi_process_v0 bad_proc;
+        memset(&bad_flags_params, 0, sizeof(bad_flags_params));
+        bad_flags_params.struct_size = (uint32_t)sizeof(bad_flags_params);
+        bad_flags_params.program = (obi_utf8_view_v0){ "x", 1u };
+        bad_flags_params.flags = (1u << 31);
+
+        memset(&bad_proc, 0, sizeof(bad_proc));
+        st = proc_root.api->spawn(proc_root.ctx, &bad_flags_params, &bad_proc, NULL, NULL, NULL);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_proc.api && bad_proc.api->destroy) {
+                bad_proc.api->destroy(bad_proc.ctx);
+            }
+            fprintf(stderr,
+                    "os.process exercise: provider=%s unknown flags did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_process_spawn_params_v0 bad_options_params;
+        memset(&bad_options_params, 0, sizeof(bad_options_params));
+        bad_options_params.struct_size = (uint32_t)sizeof(bad_options_params);
+        bad_options_params.program = (obi_utf8_view_v0){ "x", 1u };
+        bad_options_params.options_json.data = NULL;
+        bad_options_params.options_json.size = 1u;
+
+        memset(&bad_proc, 0, sizeof(bad_proc));
+        st = proc_root.api->spawn(proc_root.ctx, &bad_options_params, &bad_proc, NULL, NULL, NULL);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_proc.api && bad_proc.api->destroy) {
+                bad_proc.api->destroy(bad_proc.ctx);
+            }
+            fprintf(stderr,
+                    "os.process exercise: provider=%s malformed options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.process.native") == 0) {
+        obi_process_v0 bad_proc;
+        memset(&bad_proc, 0, sizeof(bad_proc));
+
+        obi_process_env_kv_v0 bad_env[1];
+        memset(bad_env, 0, sizeof(bad_env));
+        bad_env[0].key.data = "OBI_SMOKE_BAD_ENV";
+        bad_env[0].key.size = strlen("OBI_SMOKE_BAD_ENV");
+        bad_env[0].value.data = NULL;
+        bad_env[0].value.size = 1u;
+
+        obi_process_spawn_params_v0 bad_env_params;
+        memset(&bad_env_params, 0, sizeof(bad_env_params));
+        bad_env_params.struct_size = (uint32_t)sizeof(bad_env_params);
+        bad_env_params.program = (obi_utf8_view_v0){ "x", 1u };
+        bad_env_params.env_overrides = bad_env;
+        bad_env_params.env_overrides_count = 1u;
+
+        memset(&bad_proc, 0, sizeof(bad_proc));
+        st = proc_root.api->spawn(proc_root.ctx, &bad_env_params, &bad_proc, NULL, NULL, NULL);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_proc.api && bad_proc.api->destroy) {
+                bad_proc.api->destroy(bad_proc.ctx);
+            }
+            fprintf(stderr,
+                    "os.process exercise: provider=%s invalid env value view did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     if (access("/bin/sh", X_OK) != 0) {
         fprintf(stderr, "os.process exercise: /bin/sh not available, skipping\n");
         return 1;
@@ -5474,6 +9142,47 @@ static int _exercise_os_process_profile(obi_rt_v0* rt, const char* provider_id, 
     params.program = (obi_utf8_view_v0){ prog, strlen(prog) };
     params.argv = argv;
     params.argc = 3u;
+
+    if (strcmp(provider_id, "obi.provider:os.process.libuv") == 0) {
+        obi_process_v0 proc_null_streams;
+        memset(&proc_null_streams, 0, sizeof(proc_null_streams));
+        st = proc_root.api->spawn(proc_root.ctx, &params, &proc_null_streams, NULL, NULL, NULL);
+        if (st != OBI_STATUS_OK || !proc_null_streams.api || !proc_null_streams.api->wait ||
+            !proc_null_streams.api->destroy) {
+            fprintf(stderr,
+                    "os.process exercise: provider=%s spawn with NULL stdio outputs failed (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        bool null_streams_exited = false;
+        int32_t null_streams_exit_code = 0;
+        for (int i = 0; i < 10 && !null_streams_exited; i++) {
+            st = proc_null_streams.api->wait(proc_null_streams.ctx,
+                                             250000000ull,
+                                             (obi_cancel_token_v0){ 0 },
+                                             &null_streams_exited,
+                                             &null_streams_exit_code);
+            if (st != OBI_STATUS_OK) {
+                proc_null_streams.api->destroy(proc_null_streams.ctx);
+                fprintf(stderr,
+                        "os.process exercise: provider=%s wait after NULL-stdio spawn failed (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                return 0;
+            }
+        }
+        proc_null_streams.api->destroy(proc_null_streams.ctx);
+        if (!null_streams_exited || null_streams_exit_code != 7) {
+            fprintf(stderr,
+                    "os.process exercise: provider=%s bad exit after NULL-stdio spawn (exited=%d code=%d)\n",
+                    provider_id,
+                    (int)null_streams_exited,
+                    (int)null_streams_exit_code);
+            return 0;
+        }
+    }
 
     obi_process_v0 proc;
     obi_writer_v0 inw;
@@ -5535,6 +9244,46 @@ static int _exercise_os_dylib_profile(obi_rt_v0* rt, const char* provider_id, in
         return 0;
     }
 
+    if (strcmp(provider_id, "obi.provider:os.dylib.native") == 0 ||
+        strcmp(provider_id, "obi.provider:os.dylib.gmodule") == 0) {
+        obi_dylib_open_params_v0 bad_options_params;
+        memset(&bad_options_params, 0, sizeof(bad_options_params));
+        bad_options_params.struct_size = (uint32_t)sizeof(bad_options_params);
+        bad_options_params.options_json.data = NULL;
+        bad_options_params.options_json.size = 1u;
+
+        obi_dylib_v0 bad_lib;
+        memset(&bad_lib, 0, sizeof(bad_lib));
+        st = dylib.api->open(dylib.ctx, NULL, &bad_options_params, &bad_lib);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_lib.api && bad_lib.api->destroy) {
+                bad_lib.api->destroy(bad_lib.ctx);
+            }
+            fprintf(stderr,
+                    "os.dylib exercise: provider=%s malformed options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        obi_dylib_open_params_v0 empty_path_params;
+        memset(&empty_path_params, 0, sizeof(empty_path_params));
+        empty_path_params.struct_size = (uint32_t)sizeof(empty_path_params);
+
+        memset(&bad_lib, 0, sizeof(bad_lib));
+        st = dylib.api->open(dylib.ctx, "", &empty_path_params, &bad_lib);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_lib.api && bad_lib.api->destroy) {
+                bad_lib.api->destroy(bad_lib.ctx);
+            }
+            fprintf(stderr,
+                    "os.dylib exercise: provider=%s empty-path open did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     obi_dylib_open_params_v0 params;
     memset(&params, 0, sizeof(params));
     params.struct_size = (uint32_t)sizeof(params);
@@ -5580,6 +9329,72 @@ static int _exercise_os_dylib_profile(obi_rt_v0* rt, const char* provider_id, in
     return 1;
 }
 
+static int _validate_fswatch_batch_contract(const char* provider_id,
+                                            obi_fs_watch_event_batch_v0* batch,
+                                            int require_release,
+                                            int* out_saw_overflow) {
+    if (!provider_id || !batch) {
+        return 0;
+    }
+
+    if (batch->count > 0u && batch->events == NULL) {
+        fprintf(stderr,
+                "os.fs_watch exercise: provider=%s batch returned count>0 with NULL events\n",
+                provider_id);
+        return 0;
+    }
+
+    for (size_t i = 0u; i < batch->count; i++) {
+        const obi_fs_watch_event_v0* ev = &batch->events[i];
+        if (ev->path.data && ev->path.size != strlen(ev->path.data)) {
+            fprintf(stderr,
+                    "os.fs_watch exercise: provider=%s invalid path size at event=%zu\n",
+                    provider_id,
+                    i);
+            return 0;
+        }
+        if (ev->path2.data && ev->path2.size != strlen(ev->path2.data)) {
+            fprintf(stderr,
+                    "os.fs_watch exercise: provider=%s invalid path2 size at event=%zu\n",
+                    provider_id,
+                    i);
+            return 0;
+        }
+        if ((ev->flags & OBI_FS_WATCH_EVENT_FLAG_OVERFLOW) != 0u) {
+            if (ev->kind != OBI_FS_WATCH_EVENT_OTHER) {
+                fprintf(stderr,
+                        "os.fs_watch exercise: provider=%s overflow event kind mismatch at event=%zu kind=%u\n",
+                        provider_id,
+                        i,
+                        (unsigned)ev->kind);
+                return 0;
+            }
+            if (out_saw_overflow) {
+                *out_saw_overflow = 1;
+            }
+        }
+    }
+
+    if (require_release && batch->count > 0u && !batch->release) {
+        fprintf(stderr,
+                "os.fs_watch exercise: provider=%s batch missing release callback\n",
+                provider_id);
+        return 0;
+    }
+
+    if (batch->release) {
+        batch->release(batch->release_ctx, batch);
+        if (batch->events != NULL || batch->count != 0u || batch->release_ctx != NULL || batch->release != NULL) {
+            fprintf(stderr,
+                    "os.fs_watch exercise: provider=%s batch release did not zero batch state\n",
+                    provider_id);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 static int _exercise_os_fs_watch_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_os_fs_watch_v0 watch_root;
     memset(&watch_root, 0, sizeof(watch_root));
@@ -5599,6 +9414,45 @@ static int _exercise_os_fs_watch_profile(obi_rt_v0* rt, const char* provider_id,
                 (int)st,
                 obi_rt_last_error_utf8(rt));
         return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.fswatch.glib") == 0 ||
+        strcmp(provider_id, "obi.provider:os.fswatch.libuv") == 0) {
+        obi_fs_watcher_v0 bad_watcher;
+        obi_fs_watch_open_params_v0 bad_open;
+
+        memset(&bad_watcher, 0, sizeof(bad_watcher));
+        memset(&bad_open, 0, sizeof(bad_open));
+        bad_open.struct_size = (uint32_t)sizeof(bad_open);
+        bad_open.flags = 1u;
+        st = watch_root.api->open_watcher(watch_root.ctx, &bad_open, &bad_watcher);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_watcher.api && bad_watcher.api->destroy) {
+                bad_watcher.api->destroy(bad_watcher.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs_watch exercise: provider=%s invalid open flags did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_watcher, 0, sizeof(bad_watcher));
+        memset(&bad_open, 0, sizeof(bad_open));
+        bad_open.struct_size = (uint32_t)sizeof(bad_open);
+        bad_open.options_json.data = NULL;
+        bad_open.options_json.size = 1u;
+        st = watch_root.api->open_watcher(watch_root.ctx, &bad_open, &bad_watcher);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_watcher.api && bad_watcher.api->destroy) {
+                bad_watcher.api->destroy(bad_watcher.ctx);
+            }
+            fprintf(stderr,
+                    "os.fs_watch exercise: provider=%s malformed open options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
     }
 
     char file_path[PATH_MAX];
@@ -5652,6 +9506,7 @@ static int _exercise_os_fs_watch_profile(obi_rt_v0* rt, const char* provider_id,
 
     obi_fs_watch_event_batch_v0 batch;
     bool has_batch = false;
+    int saw_overflow = 0;
     memset(&batch, 0, sizeof(batch));
     st = watcher.api->poll_events(watcher.ctx, 300000000ull, &batch, &has_batch);
     if (st != OBI_STATUS_OK || !has_batch || batch.count == 0u) {
@@ -5661,14 +9516,96 @@ static int _exercise_os_fs_watch_profile(obi_rt_v0* rt, const char* provider_id,
                 provider_id, (int)st, (int)has_batch, batch.count);
         return 0;
     }
-    if (batch.release) {
-        batch.release(batch.release_ctx, &batch);
+    if (!_validate_fswatch_batch_contract(provider_id, &batch, 1, &saw_overflow)) {
+        watcher.api->remove_watch(watcher.ctx, watch_id);
+        watcher.api->destroy(watcher.ctx);
+        return 0;
     }
 
     st = watcher.api->remove_watch(watcher.ctx, watch_id);
-    watcher.api->destroy(watcher.ctx);
     if (st != OBI_STATUS_OK) {
+        watcher.api->destroy(watcher.ctx);
         fprintf(stderr, "os.fs_watch exercise: provider=%s remove_watch failed (status=%d)\n", provider_id, (int)st);
+        return 0;
+    }
+
+    if (strcmp(provider_id, "obi.provider:os.fswatch.glib") == 0) {
+        st = watcher.api->remove_watch(watcher.ctx, watch_id);
+        if (st != OBI_STATUS_UNAVAILABLE) {
+            watcher.api->destroy(watcher.ctx);
+            fprintf(stderr,
+                    "os.fs_watch exercise: provider=%s second remove_watch did not return UNAVAILABLE (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    obi_fs_watch_event_batch_v0 post_remove_batch;
+    bool post_remove_has_batch = false;
+    memset(&post_remove_batch, 0, sizeof(post_remove_batch));
+    st = watcher.api->poll_events(watcher.ctx, 0u, &post_remove_batch, &post_remove_has_batch);
+    if (st != OBI_STATUS_OK) {
+        watcher.api->destroy(watcher.ctx);
+        fprintf(stderr,
+                "os.fs_watch exercise: provider=%s poll_events after remove_watch failed (status=%d)\n",
+                provider_id,
+                (int)st);
+        return 0;
+    }
+    if ((post_remove_has_batch || post_remove_batch.release) &&
+        !_validate_fswatch_batch_contract(provider_id, &post_remove_batch, 1, &saw_overflow)) {
+        watcher.api->destroy(watcher.ctx);
+        return 0;
+    }
+
+    watcher.api->destroy(watcher.ctx);
+#if !defined(_WIN32)
+    char life_path[PATH_MAX];
+    _make_smoke_tmp_path("fswatch_life", life_path, sizeof(life_path));
+    FILE* lf = fopen(life_path, "wb");
+    if (!lf) {
+        fprintf(stderr, "os.fs_watch exercise: provider=%s failed to create lifetime stress file\n", provider_id);
+        return 0;
+    }
+    (void)fwrite("x", 1u, 1u, lf);
+    fclose(lf);
+
+    obi_fs_watcher_v0 life_watcher;
+    memset(&life_watcher, 0, sizeof(life_watcher));
+    st = watch_root.api->open_watcher(watch_root.ctx, &open_params, &life_watcher);
+    if (st != OBI_STATUS_OK || !life_watcher.api || !life_watcher.api->add_watch || !life_watcher.api->destroy) {
+        (void)remove(life_path);
+        fprintf(stderr, "os.fs_watch exercise: provider=%s open_watcher(lifetime) failed (status=%d)\n", provider_id, (int)st);
+        return 0;
+    }
+
+    uint64_t life_watch_id = 0u;
+    add_params.path = life_path;
+    st = life_watcher.api->add_watch(life_watcher.ctx, &add_params, &life_watch_id);
+    if (st != OBI_STATUS_OK || life_watch_id == 0u) {
+        life_watcher.api->destroy(life_watcher.ctx);
+        (void)remove(life_path);
+        fprintf(stderr, "os.fs_watch exercise: provider=%s add_watch(lifetime) failed (status=%d)\n", provider_id, (int)st);
+        return 0;
+    }
+
+    lf = fopen(life_path, "ab");
+    if (lf) {
+        (void)fwrite("y", 1u, 1u, lf);
+        fclose(lf);
+    }
+
+    life_watcher.api->destroy(life_watcher.ctx);
+    (void)remove(life_path);
+#endif
+
+    if (saw_overflow) {
+        printf("os_fswatch_overflow_observed provider=%s\n", provider_id);
+    }
+
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "os.fs_watch exercise: provider=%s unexpected status after lifetime path (status=%d)\n", provider_id, (int)st);
         return 0;
     }
 
@@ -5787,6 +9724,49 @@ static int _exercise_net_socket_profile(obi_rt_v0* rt, const char* provider_id, 
     obi_writer_v0 client_writer;
     memset(&client_reader, 0, sizeof(client_reader));
     memset(&client_writer, 0, sizeof(client_writer));
+
+    if (strcmp(provider_id, "obi.provider:net.socket.native") == 0 ||
+        strcmp(provider_id, "obi.provider:net.socket.libuv") == 0) {
+        obi_tcp_connect_params_v0 bad_params;
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.flags = 1u;
+
+        st = net_sock.api->tcp_connect(net_sock.ctx, "127.0.0.1", 1u, &bad_params, &client_reader, &client_writer);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (client_reader.api && client_reader.api->destroy) {
+                client_reader.api->destroy(client_reader.ctx);
+            }
+            if (client_writer.api && client_writer.api->destroy) {
+                client_writer.api->destroy(client_writer.ctx);
+            }
+            fprintf(stderr,
+                    "net.socket exercise: provider=%s invalid connect flags did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 1u;
+
+        st = net_sock.api->tcp_connect(net_sock.ctx, "127.0.0.1", 1u, &bad_params, &client_reader, &client_writer);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (client_reader.api && client_reader.api->destroy) {
+                client_reader.api->destroy(client_reader.ctx);
+            }
+            if (client_writer.api && client_writer.api->destroy) {
+                client_writer.api->destroy(client_writer.ctx);
+            }
+            fprintf(stderr,
+                    "net.socket exercise: provider=%s malformed options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     int ok = 0;
     uint16_t port = 0u;
@@ -6556,6 +10536,25 @@ static int _exercise_crypto_aead_profile(obi_rt_v0* rt, const char* provider_id,
 
     static const uint8_t aad[] = "obi-aead-aad";
     static const uint8_t plaintext[] = "obi-aead-plaintext";
+    if (strcmp(provider_id, "obi.provider:crypto.inhouse") == 0) {
+        size_t huge_size = 0u;
+        st = ctx.api->seal(ctx.ctx,
+                           (obi_bytes_view_v0){ nonce, nonce_size },
+                           (obi_bytes_view_v0){ aad, sizeof(aad) - 1u },
+                           (obi_bytes_view_v0){ plaintext, SIZE_MAX },
+                           NULL,
+                           0u,
+                           &huge_size);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ctx.api->destroy(ctx.ctx);
+            fprintf(stderr,
+                    "crypto.aead exercise: provider=%s overflow-size seal did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     size_t ciphertext_size = 0u;
     st = ctx.api->seal(ctx.ctx,
                        (obi_bytes_view_v0){ nonce, nonce_size },
@@ -7321,6 +11320,31 @@ static int _exercise_math_blas_profile(obi_rt_v0* rt, const char* provider_id, i
         const float a[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
         const float b[4] = { 5.0f, 6.0f, 7.0f, 8.0f };
         float c[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+        st = blas.api->sgemm(blas.ctx,
+                             OBI_BLAS_ROW_MAJOR,
+                             OBI_BLAS_NO_TRANS,
+                             OBI_BLAS_NO_TRANS,
+                             2,
+                             2,
+                             2,
+                             1.0f,
+                             a,
+                             1,
+                             b,
+                             2,
+                             0.0f,
+                             c,
+                             2);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "math.blas exercise: provider=%s sgemm invalid lda should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return ok;
+        }
+
         st = blas.api->sgemm(blas.ctx,
                              OBI_BLAS_ROW_MAJOR,
                              OBI_BLAS_NO_TRANS,
@@ -7351,6 +11375,31 @@ static int _exercise_math_blas_profile(obi_rt_v0* rt, const char* provider_id, i
         const double a[4] = { 1.0, 2.0, 3.0, 4.0 };
         const double b[4] = { 5.0, 6.0, 7.0, 8.0 };
         double c[4] = { 0.0, 0.0, 0.0, 0.0 };
+
+        st = blas.api->dgemm(blas.ctx,
+                             OBI_BLAS_ROW_MAJOR,
+                             OBI_BLAS_NO_TRANS,
+                             OBI_BLAS_NO_TRANS,
+                             2,
+                             2,
+                             2,
+                             1.0,
+                             a,
+                             2,
+                             b,
+                             1,
+                             0.0,
+                             c,
+                             2);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "math.blas exercise: provider=%s dgemm invalid ldb should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return ok;
+        }
+
         st = blas.api->dgemm(blas.ctx,
                              OBI_BLAS_ROW_MAJOR,
                              OBI_BLAS_NO_TRANS,
@@ -7414,6 +11463,46 @@ static int _exercise_math_decimal_profile(obi_rt_v0* rt, const char* provider_id
     params.struct_size = (uint32_t)sizeof(params);
     params.precision_digits = 6u;
     params.round = OBI_DECIMAL_RND_HALF_EVEN;
+
+    {
+        obi_decimal_context_params_v0 bad_params = params;
+        obi_decimal_ctx_id_v0 bad_ctx = 0u;
+
+        bad_params.flags = 1u;
+        st = dec.api->ctx_create(dec.ctx, &bad_params, &bad_ctx);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "math.decimal exercise: provider=%s ctx_create unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            goto cleanup;
+        }
+
+        bad_params = params;
+        bad_params.round = (obi_decimal_round_v0)99;
+        st = dec.api->ctx_create(dec.ctx, &bad_params, &bad_ctx);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "math.decimal exercise: provider=%s ctx_create invalid round should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            goto cleanup;
+        }
+
+        bad_params = params;
+        bad_params.traps = (uint32_t)(1u << 31);
+        st = dec.api->ctx_create(dec.ctx, &bad_params, &bad_ctx);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "math.decimal exercise: provider=%s ctx_create unknown traps should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            goto cleanup;
+        }
+    }
 
     st = dec.api->ctx_create(dec.ctx, &params, &dctx);
     if (st == OBI_STATUS_OK) st = dec.api->create(dec.ctx, dctx, &a);
@@ -7577,6 +11666,86 @@ static int _exercise_math_scientific_ops_profile(obi_rt_v0* rt, const char* prov
         }
     }
 
+    if (strcmp(provider_id, "obi.provider:math.science.native") == 0) {
+        const double tol = 1e-12;
+
+        st = sci.api->bessel_j0(sci.ctx, 1.0, &y);
+        if (st != OBI_STATUS_OK || _f64_abs(y - 0.76519768655796661) > tol) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s native bessel_j0 mismatch (status=%d value=%.17g)\n",
+                    provider_id,
+                    (int)st,
+                    y);
+            return 0;
+        }
+
+        st = sci.api->bessel_j1(sci.ctx, 1.0, &y);
+        if (st != OBI_STATUS_OK || _f64_abs(y - 0.4400505857449335) > tol) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s native bessel_j1 mismatch (status=%d value=%.17g)\n",
+                    provider_id,
+                    (int)st,
+                    y);
+            return 0;
+        }
+
+        st = sci.api->bessel_y0(sci.ctx, 1.0, &y);
+        if (st != OBI_STATUS_OK || _f64_abs(y - 0.088256964215676983) > tol) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s native bessel_y0 mismatch (status=%d value=%.17g)\n",
+                    provider_id,
+                    (int)st,
+                    y);
+            return 0;
+        }
+
+        st = sci.api->bessel_y1(sci.ctx, 1.0, &y);
+        if (st != OBI_STATUS_OK || _f64_abs(y + 0.78121282130028868) > tol) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s native bessel_y1 mismatch (status=%d value=%.17g)\n",
+                    provider_id,
+                    (int)st,
+                    y);
+            return 0;
+        }
+
+        st = sci.api->bessel_y0(sci.ctx, 0.0, &y);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s bessel_y0(0) should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        st = sci.api->bessel_y1(sci.ctx, 0.0, &y);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s bessel_y1(0) should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        st = sci.api->bessel_y0(sci.ctx, -1.0, &y);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s bessel_y0(-1) should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        st = sci.api->bessel_y1(sci.ctx, -1.0, &y);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "math.scientific_ops exercise: provider=%s bessel_y1(-1) should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
     return 1;
 }
 
@@ -7601,6 +11770,32 @@ static int _exercise_db_kv_profile(obi_rt_v0* rt, const char* provider_id, int a
         return 0;
     }
 
+    const int strict_db_kv_contract_provider =
+        (strcmp(provider_id, "obi.provider:db.kv.sqlite") == 0) ||
+        (strcmp(provider_id, "obi.provider:db.kv.lmdb") == 0);
+
+    if (strict_db_kv_contract_provider) {
+        obi_kv_db_open_params_v0 bad_open_params;
+        memset(&bad_open_params, 0, sizeof(bad_open_params));
+        bad_open_params.struct_size = (uint32_t)sizeof(bad_open_params);
+        bad_open_params.flags = OBI_KV_DB_OPEN_CREATE | (1u << 31);
+        bad_open_params.path = ":memory:";
+
+        obi_kv_db_v0 bad_db;
+        memset(&bad_db, 0, sizeof(bad_db));
+        st = kv.api->open(kv.ctx, &bad_open_params, &bad_db);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "db.kv exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_db.api && bad_db.api->destroy) {
+                bad_db.api->destroy(bad_db.ctx);
+            }
+            return 0;
+        }
+    }
+
     obi_kv_db_open_params_v0 open_params;
     memset(&open_params, 0, sizeof(open_params));
     open_params.struct_size = (uint32_t)sizeof(open_params);
@@ -7623,12 +11818,70 @@ static int _exercise_db_kv_profile(obi_rt_v0* rt, const char* provider_id, int a
     memset(&txn_params, 0, sizeof(txn_params));
     txn_params.struct_size = (uint32_t)sizeof(txn_params);
 
+    if (strict_db_kv_contract_provider) {
+        obi_kv_txn_params_v0 bad_txn_params;
+        memset(&bad_txn_params, 0, sizeof(bad_txn_params));
+        bad_txn_params.struct_size = (uint32_t)sizeof(bad_txn_params);
+        bad_txn_params.flags = (1u << 31);
+
+        obi_kv_txn_v0 bad_txn;
+        memset(&bad_txn, 0, sizeof(bad_txn));
+        st = db.api->begin_txn(db.ctx, &bad_txn_params, &bad_txn);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "db.kv exercise: provider=%s unknown txn flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_txn.api) {
+                if (bad_txn.api->abort) {
+                    bad_txn.api->abort(bad_txn.ctx);
+                }
+                if (bad_txn.api->destroy) {
+                    bad_txn.api->destroy(bad_txn.ctx);
+                }
+            }
+            goto cleanup_db;
+        }
+    }
+
     st = db.api->begin_txn(db.ctx, &txn_params, &txn);
     if (st != OBI_STATUS_OK || !txn.api || !txn.api->put || !txn.api->get ||
         !txn.api->del || !txn.api->commit || !txn.api->abort || !txn.api->destroy) {
         ok = 0;
         fprintf(stderr, "db.kv exercise: provider=%s begin_txn failed (status=%d)\n", provider_id, (int)st);
         goto cleanup_db;
+    }
+
+    if (strcmp(provider_id, "obi.provider:db.kv.sqlite") == 0) {
+        const size_t oversized = (size_t)INT_MAX + 1u;
+        st = txn.api->put(txn.ctx,
+                          (obi_bytes_view_v0){ "x", oversized },
+                          (obi_bytes_view_v0){ "v", 1u });
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "db.kv exercise: provider=%s oversized key should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            txn.api->abort(txn.ctx);
+            txn.api->destroy(txn.ctx);
+            goto cleanup_db;
+        }
+
+        st = txn.api->put(txn.ctx,
+                          (obi_bytes_view_v0){ "k", 1u },
+                          (obi_bytes_view_v0){ "x", oversized });
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "db.kv exercise: provider=%s oversized value should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            txn.api->abort(txn.ctx);
+            txn.api->destroy(txn.ctx);
+            goto cleanup_db;
+        }
     }
 
     st = txn.api->put(txn.ctx, (obi_bytes_view_v0){ "a", 1u }, (obi_bytes_view_v0){ "one", 3u });
@@ -7769,6 +12022,32 @@ static int _exercise_db_sql_profile(obi_rt_v0* rt, const char* provider_id, int 
         return 0;
     }
 
+    const int strict_db_sql_contract_provider =
+        (strcmp(provider_id, "obi.provider:db.sql.sqlite") == 0) ||
+        (strcmp(provider_id, "obi.provider:db.sql.postgres") == 0);
+
+    if (strict_db_sql_contract_provider) {
+        obi_sql_open_params_v0 bad_open_params;
+        memset(&bad_open_params, 0, sizeof(bad_open_params));
+        bad_open_params.struct_size = (uint32_t)sizeof(bad_open_params);
+        bad_open_params.flags = OBI_SQL_OPEN_CREATE | (1u << 31);
+        bad_open_params.uri = ":memory:";
+
+        obi_sql_conn_v0 bad_conn;
+        memset(&bad_conn, 0, sizeof(bad_conn));
+        st = sql.api->open(sql.ctx, &bad_open_params, &bad_conn);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "db.sql exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_conn.api && bad_conn.api->destroy) {
+                bad_conn.api->destroy(bad_conn.ctx);
+            }
+            return 0;
+        }
+    }
+
     if (strcmp(provider_id, "obi.provider:db.sql.postgres") == 0) {
         const char* postgres_dsn = getenv("OBI_DB_SQL_POSTGRES_DSN");
         if (!postgres_dsn || postgres_dsn[0] == '\0') {
@@ -7803,10 +12082,36 @@ static int _exercise_db_sql_profile(obi_rt_v0* rt, const char* provider_id, int 
     memset(&stmt, 0, sizeof(stmt));
     st = conn.api->prepare(conn.ctx, "INSERT INTO t(id,name) VALUES(?1,?2)", &stmt);
     if (st != OBI_STATUS_OK || !stmt.api || !stmt.api->bind_int64 || !stmt.api->bind_text_utf8 ||
+        !stmt.api->bind_blob ||
         !stmt.api->step || !stmt.api->reset || !stmt.api->clear_bindings || !stmt.api->destroy) {
         ok = 0;
         fprintf(stderr, "db.sql exercise: provider=%s prepare(insert) failed (status=%d)\n", provider_id, (int)st);
         goto cleanup_conn;
+    }
+
+    if (strcmp(provider_id, "obi.provider:db.sql.sqlite") == 0) {
+        const size_t oversized = (size_t)INT_MAX + 1u;
+        st = stmt.api->bind_text_utf8(stmt.ctx, 2u, (obi_utf8_view_v0){ "x", oversized });
+        if (st != OBI_STATUS_BAD_ARG) {
+            stmt.api->destroy(stmt.ctx);
+            ok = 0;
+            fprintf(stderr,
+                    "db.sql exercise: provider=%s oversized text bind should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            goto cleanup_conn;
+        }
+
+        st = stmt.api->bind_blob(stmt.ctx, 2u, (obi_bytes_view_v0){ "x", oversized });
+        if (st != OBI_STATUS_BAD_ARG) {
+            stmt.api->destroy(stmt.ctx);
+            ok = 0;
+            fprintf(stderr,
+                    "db.sql exercise: provider=%s oversized blob bind should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            goto cleanup_conn;
+        }
     }
 
     bool has_row = true;
@@ -8023,6 +12328,9 @@ static int _exercise_asset_mesh_io_profile(obi_rt_v0* rt, const char* provider_i
     const uint8_t* mesh_bytes = k_mesh_fallback_payload;
     size_t mesh_bytes_size = sizeof(k_mesh_fallback_payload) - 1u;
     const char* mesh_format_hint = "obj";
+    const int strict_asset_loader_provider =
+        (strcmp(provider_id, "obi.provider:asset.meshio.cgltf_fastobj") == 0) ||
+        (strcmp(provider_id, "obi.provider:asset.meshio.ufbx") == 0);
     if (strcmp(provider_id, "obi.provider:asset.meshio.cgltf_fastobj") == 0 ||
         strcmp(provider_id, "obi.provider:asset.meshio.ufbx") == 0) {
         mesh_bytes = k_mesh_obj_payload;
@@ -8040,6 +12348,48 @@ static int _exercise_asset_mesh_io_profile(obi_rt_v0* rt, const char* provider_i
     reader.api = &MEM_READER_API_V0;
     reader.ctx = &rctx;
 
+    if (strict_asset_loader_provider) {
+        obi_mesh_open_params_v0 bad_open_params;
+        memset(&bad_open_params, 0, sizeof(bad_open_params));
+        bad_open_params.struct_size = (uint32_t)sizeof(bad_open_params);
+        bad_open_params.flags = (1u << 31);
+        bad_open_params.format_hint = mesh_format_hint;
+
+        obi_mesh_asset_v0 bad_asset;
+        memset(&bad_asset, 0, sizeof(bad_asset));
+        rctx.off = 0u;
+        st = meshio.api->open_reader(meshio.ctx, reader, &bad_open_params, &bad_asset);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "asset.mesh_io exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_asset.api && bad_asset.api->destroy) {
+                bad_asset.api->destroy(bad_asset.ctx);
+            }
+            return 0;
+        }
+
+        memset(&bad_open_params, 0, sizeof(bad_open_params));
+        bad_open_params.struct_size = (uint32_t)sizeof(bad_open_params);
+        bad_open_params.format_hint = mesh_format_hint;
+        bad_open_params.options_json.data = NULL;
+        bad_open_params.options_json.size = 2u;
+        memset(&bad_asset, 0, sizeof(bad_asset));
+        rctx.off = 0u;
+        st = meshio.api->open_reader(meshio.ctx, reader, &bad_open_params, &bad_asset);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "asset.mesh_io exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_asset.api && bad_asset.api->destroy) {
+                bad_asset.api->destroy(bad_asset.ctx);
+            }
+            return 0;
+        }
+    }
+
     obi_mesh_open_params_v0 params;
     memset(&params, 0, sizeof(params));
     params.struct_size = (uint32_t)sizeof(params);
@@ -8047,6 +12397,7 @@ static int _exercise_asset_mesh_io_profile(obi_rt_v0* rt, const char* provider_i
 
     obi_mesh_asset_v0 asset;
     memset(&asset, 0, sizeof(asset));
+    rctx.off = 0u;
     st = meshio.api->open_reader(meshio.ctx, reader, &params, &asset);
     if (st != OBI_STATUS_OK || !asset.api || !asset.api->destroy ||
         !asset.api->mesh_count || !asset.api->mesh_info || !asset.api->mesh_get_positions) {
@@ -8178,6 +12529,9 @@ static int _exercise_asset_scene_io_profile(obi_rt_v0* rt, const char* provider_
     const uint8_t* scene_bytes = k_scene_fallback_payload;
     size_t scene_bytes_size = sizeof(k_scene_fallback_payload) - 1u;
     const char* scene_format_hint = "gltf";
+    const int strict_asset_loader_provider =
+        (strcmp(provider_id, "obi.provider:asset.meshio.cgltf_fastobj") == 0) ||
+        (strcmp(provider_id, "obi.provider:asset.meshio.ufbx") == 0);
 
     if (strcmp(provider_id, "obi.provider:asset.meshio.cgltf_fastobj") == 0) {
         scene_bytes = k_scene_gltf_payload;
@@ -8200,6 +12554,48 @@ static int _exercise_asset_scene_io_profile(obi_rt_v0* rt, const char* provider_
     reader.api = &MEM_READER_API_V0;
     reader.ctx = &rctx;
 
+    if (strict_asset_loader_provider) {
+        obi_scene_open_params_v0 bad_open_params;
+        memset(&bad_open_params, 0, sizeof(bad_open_params));
+        bad_open_params.struct_size = (uint32_t)sizeof(bad_open_params);
+        bad_open_params.flags = (1u << 31);
+        bad_open_params.format_hint = scene_format_hint;
+
+        obi_scene_asset_v0 bad_asset;
+        memset(&bad_asset, 0, sizeof(bad_asset));
+        rctx.off = 0u;
+        st = sceneio.api->open_reader(sceneio.ctx, reader, &bad_open_params, &bad_asset);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "asset.scene_io exercise: provider=%s unknown open flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_asset.api && bad_asset.api->destroy) {
+                bad_asset.api->destroy(bad_asset.ctx);
+            }
+            return 0;
+        }
+
+        memset(&bad_open_params, 0, sizeof(bad_open_params));
+        bad_open_params.struct_size = (uint32_t)sizeof(bad_open_params);
+        bad_open_params.format_hint = scene_format_hint;
+        bad_open_params.options_json.data = NULL;
+        bad_open_params.options_json.size = 2u;
+        memset(&bad_asset, 0, sizeof(bad_asset));
+        rctx.off = 0u;
+        st = sceneio.api->open_reader(sceneio.ctx, reader, &bad_open_params, &bad_asset);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "asset.scene_io exercise: provider=%s malformed options_json should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_asset.api && bad_asset.api->destroy) {
+                bad_asset.api->destroy(bad_asset.ctx);
+            }
+            return 0;
+        }
+    }
+
     obi_scene_open_params_v0 params;
     memset(&params, 0, sizeof(params));
     params.struct_size = (uint32_t)sizeof(params);
@@ -8207,6 +12603,7 @@ static int _exercise_asset_scene_io_profile(obi_rt_v0* rt, const char* provider_
 
     obi_scene_asset_v0 asset;
     memset(&asset, 0, sizeof(asset));
+    rctx.off = 0u;
     st = sceneio.api->open_reader(sceneio.ctx, reader, &params, &asset);
     if (st != OBI_STATUS_OK || !asset.api || !asset.api->destroy ||
         !asset.api->get_scene_json || !asset.api->blob_count || !asset.api->blob_info || !asset.api->open_blob_reader) {
@@ -8284,6 +12681,64 @@ static int _exercise_asset_scene_io_profile(obi_rt_v0* rt, const char* provider_
             goto cleanup_scene_asset;
         }
         free(wctx.data);
+
+        if (strict_asset_loader_provider) {
+            mem_writer_ctx_v0 wctx_bad_codec;
+            memset(&wctx_bad_codec, 0, sizeof(wctx_bad_codec));
+            obi_writer_v0 writer_bad_codec;
+            memset(&writer_bad_codec, 0, sizeof(writer_bad_codec));
+            writer_bad_codec.api = &MEM_WRITER_API_V0;
+            writer_bad_codec.ctx = &wctx_bad_codec;
+
+            uint64_t bad_written = 0u;
+            st = sceneio.api->export_to_writer(sceneio.ctx,
+                                               "asset/unknown",
+                                               &params,
+                                               &asset,
+                                               writer_bad_codec,
+                                               &bad_written);
+            if (st != OBI_STATUS_UNSUPPORTED) {
+                ok = 0;
+                fprintf(stderr,
+                        "asset.scene_io exercise: provider=%s unsupported codec should be UNSUPPORTED (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                free(wctx_bad_codec.data);
+                goto cleanup_scene_asset;
+            }
+            free(wctx_bad_codec.data);
+
+            mem_writer_ctx_v0 wctx_bad_params;
+            memset(&wctx_bad_params, 0, sizeof(wctx_bad_params));
+            obi_writer_v0 writer_bad_params;
+            memset(&writer_bad_params, 0, sizeof(writer_bad_params));
+            writer_bad_params.api = &MEM_WRITER_API_V0;
+            writer_bad_params.ctx = &wctx_bad_params;
+
+            obi_scene_open_params_v0 bad_export_params;
+            memset(&bad_export_params, 0, sizeof(bad_export_params));
+            bad_export_params.struct_size = (uint32_t)sizeof(bad_export_params);
+            bad_export_params.flags = (1u << 31);
+            bad_export_params.format_hint = scene_format_hint;
+
+            bad_written = 0u;
+            st = sceneio.api->export_to_writer(sceneio.ctx,
+                                               "gltf",
+                                               &bad_export_params,
+                                               &asset,
+                                               writer_bad_params,
+                                               &bad_written);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "asset.scene_io exercise: provider=%s export bad flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                free(wctx_bad_params.data);
+                goto cleanup_scene_asset;
+            }
+            free(wctx_bad_params.data);
+        }
     }
 
 cleanup_scene_asset:
@@ -8329,11 +12784,54 @@ static int _exercise_phys_world2d_profile(obi_rt_v0* rt, const char* provider_id
                 obi_rt_last_error_utf8(rt));
         return 0;
     }
+    const int strict_phys2d_provider =
+        (strcmp(provider_id, "obi.provider:phys2d.box2d") == 0) ||
+        (strcmp(provider_id, "obi.provider:phys2d.chipmunk") == 0);
+
+    if (strict_phys2d_provider) {
+        obi_phys_world3d_v0 unsupported_phys3d;
+        memset(&unsupported_phys3d, 0, sizeof(unsupported_phys3d));
+        st = obi_rt_get_profile_from_provider(rt,
+                                              provider_id,
+                                              OBI_PROFILE_PHYS_WORLD3D_V0,
+                                              OBI_CORE_ABI_MAJOR,
+                                              &unsupported_phys3d,
+                                              sizeof(unsupported_phys3d));
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "phys.world2d exercise: provider=%s should not expose phys.world3d (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     obi_phys2d_world_params_v0 wparams;
     memset(&wparams, 0, sizeof(wparams));
     wparams.struct_size = (uint32_t)sizeof(wparams);
     wparams.gravity = (obi_vec2f_v0){ 0.0f, -9.8f };
+
+    if (strict_phys2d_provider) {
+        obi_phys2d_world_params_v0 bad_wparams;
+        memset(&bad_wparams, 0, sizeof(bad_wparams));
+        bad_wparams.struct_size = (uint32_t)sizeof(bad_wparams);
+        bad_wparams.flags = (1u << 31);
+        bad_wparams.gravity = wparams.gravity;
+
+        obi_phys2d_world_v0 bad_world;
+        memset(&bad_world, 0, sizeof(bad_world));
+        st = phys2d.api->world_create(phys2d.ctx, &bad_wparams, &bad_world);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "phys.world2d exercise: provider=%s unknown world flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_world.api && bad_world.api->destroy) {
+                bad_world.api->destroy(bad_world.ctx);
+            }
+            return 0;
+        }
+    }
 
     obi_phys2d_world_v0 world;
     memset(&world, 0, sizeof(world));
@@ -8351,6 +12849,40 @@ static int _exercise_phys_world2d_profile(obi_rt_v0* rt, const char* provider_id
     body_def.type = OBI_PHYS2D_BODY_DYNAMIC;
     body_def.position = (obi_vec2f_v0){ 0.0f, 1.0f };
 
+    if (strict_phys2d_provider) {
+        obi_phys2d_body_def_v0 bad_body_def = body_def;
+        obi_phys2d_body_id_v0 bad_body = 0u;
+
+        bad_body_def.flags = (1u << 31);
+        st = world.api->body_create(world.ctx, &bad_body_def, &bad_body);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world2d exercise: provider=%s unknown body flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_body != 0u) {
+                world.api->body_destroy(world.ctx, bad_body);
+            }
+            goto cleanup_world2d;
+        }
+
+        bad_body_def = body_def;
+        bad_body_def.type = (obi_phys2d_body_type_v0)0xFF;
+        st = world.api->body_create(world.ctx, &bad_body_def, &bad_body);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world2d exercise: provider=%s invalid body type should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_body != 0u) {
+                world.api->body_destroy(world.ctx, bad_body);
+            }
+            goto cleanup_world2d;
+        }
+    }
+
     obi_phys2d_body_id_v0 body = 0u;
     st = world.api->body_create(world.ctx, &body_def, &body);
     if (st != OBI_STATUS_OK || body == 0u) {
@@ -8363,6 +12895,76 @@ static int _exercise_phys_world2d_profile(obi_rt_v0* rt, const char* provider_id
     memset(&box_def, 0, sizeof(box_def));
     box_def.common.struct_size = (uint32_t)sizeof(box_def.common);
     box_def.half_extents = (obi_vec2f_v0){ 0.25f, 0.25f };
+
+    if (strict_phys2d_provider) {
+        obi_phys2d_box_collider_def_v0 bad_box_def = box_def;
+        obi_phys2d_collider_id_v0 bad_collider = 0u;
+
+        bad_box_def.common.flags = (1u << 31);
+        st = world.api->collider_create_box(world.ctx, body, &bad_box_def, &bad_collider);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world2d exercise: provider=%s unknown collider flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_collider != 0u) {
+                world.api->collider_destroy(world.ctx, bad_collider);
+            }
+            goto cleanup_world2d;
+        }
+
+        bad_box_def = box_def;
+        bad_box_def.half_extents.x = 0.0f;
+        st = world.api->collider_create_box(world.ctx, body, &bad_box_def, &bad_collider);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world2d exercise: provider=%s non-positive box extents should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_collider != 0u) {
+                world.api->collider_destroy(world.ctx, bad_collider);
+            }
+            goto cleanup_world2d;
+        }
+
+        if (world.api->collider_create_circle) {
+            obi_phys2d_circle_collider_def_v0 bad_circle_def;
+            memset(&bad_circle_def, 0, sizeof(bad_circle_def));
+            bad_circle_def.common.struct_size = (uint32_t)sizeof(bad_circle_def.common);
+            bad_circle_def.radius = 0.5f;
+
+            bad_circle_def.common.flags = (1u << 31);
+            st = world.api->collider_create_circle(world.ctx, body, &bad_circle_def, &bad_collider);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.world2d exercise: provider=%s circle unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                if (st == OBI_STATUS_OK && bad_collider != 0u) {
+                    world.api->collider_destroy(world.ctx, bad_collider);
+                }
+                goto cleanup_world2d;
+            }
+
+            bad_circle_def.common.flags = 0u;
+            bad_circle_def.radius = 0.0f;
+            st = world.api->collider_create_circle(world.ctx, body, &bad_circle_def, &bad_collider);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.world2d exercise: provider=%s non-positive circle radius should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                if (st == OBI_STATUS_OK && bad_collider != 0u) {
+                    world.api->collider_destroy(world.ctx, bad_collider);
+                }
+                goto cleanup_world2d;
+            }
+        }
+    }
 
     obi_phys2d_collider_id_v0 collider = 0u;
     st = world.api->collider_create_box(world.ctx, body, &box_def, &collider);
@@ -8455,11 +13057,54 @@ static int _exercise_phys_world3d_profile(obi_rt_v0* rt, const char* provider_id
                 obi_rt_last_error_utf8(rt));
         return 0;
     }
+    const int strict_phys3d_provider =
+        (strcmp(provider_id, "obi.provider:phys3d.ode") == 0) ||
+        (strcmp(provider_id, "obi.provider:phys3d.bullet") == 0);
+
+    if (strict_phys3d_provider) {
+        obi_phys_world2d_v0 unsupported_phys2d;
+        memset(&unsupported_phys2d, 0, sizeof(unsupported_phys2d));
+        st = obi_rt_get_profile_from_provider(rt,
+                                              provider_id,
+                                              OBI_PROFILE_PHYS_WORLD2D_V0,
+                                              OBI_CORE_ABI_MAJOR,
+                                              &unsupported_phys2d,
+                                              sizeof(unsupported_phys2d));
+        if (st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "phys.world3d exercise: provider=%s should not expose phys.world2d (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
 
     obi_phys3d_world_params_v0 wparams;
     memset(&wparams, 0, sizeof(wparams));
     wparams.struct_size = (uint32_t)sizeof(wparams);
     wparams.gravity = (obi_vec3f_v0){ 0.0f, -9.8f, 0.0f };
+
+    if (strict_phys3d_provider) {
+        obi_phys3d_world_params_v0 bad_wparams;
+        memset(&bad_wparams, 0, sizeof(bad_wparams));
+        bad_wparams.struct_size = (uint32_t)sizeof(bad_wparams);
+        bad_wparams.flags = (1u << 31);
+        bad_wparams.gravity = wparams.gravity;
+
+        obi_phys3d_world_v0 bad_world;
+        memset(&bad_world, 0, sizeof(bad_world));
+        st = phys3d.api->world_create(phys3d.ctx, &bad_wparams, &bad_world);
+        if (st != OBI_STATUS_BAD_ARG) {
+            fprintf(stderr,
+                    "phys.world3d exercise: provider=%s unknown world flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_world.api && bad_world.api->destroy) {
+                bad_world.api->destroy(bad_world.ctx);
+            }
+            return 0;
+        }
+    }
 
     obi_phys3d_world_v0 world;
     memset(&world, 0, sizeof(world));
@@ -8478,6 +13123,40 @@ static int _exercise_phys_world3d_profile(obi_rt_v0* rt, const char* provider_id
     body_def.position = (obi_vec3f_v0){ 0.0f, 1.0f, 0.0f };
     body_def.rotation = (obi_quatf_v0){ 0.0f, 0.0f, 0.0f, 1.0f };
 
+    if (strict_phys3d_provider) {
+        obi_phys3d_body_def_v0 bad_body_def = body_def;
+        obi_phys3d_body_id_v0 bad_body = 0u;
+
+        bad_body_def.flags = (1u << 31);
+        st = world.api->body_create(world.ctx, &bad_body_def, &bad_body);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world3d exercise: provider=%s unknown body flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_body != 0u) {
+                world.api->body_destroy(world.ctx, bad_body);
+            }
+            goto cleanup_world3d;
+        }
+
+        bad_body_def = body_def;
+        bad_body_def.type = (obi_phys3d_body_type_v0)0xFF;
+        st = world.api->body_create(world.ctx, &bad_body_def, &bad_body);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world3d exercise: provider=%s invalid body type should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_body != 0u) {
+                world.api->body_destroy(world.ctx, bad_body);
+            }
+            goto cleanup_world3d;
+        }
+    }
+
     obi_phys3d_body_id_v0 body = 0u;
     st = world.api->body_create(world.ctx, &body_def, &body);
     if (st != OBI_STATUS_OK || body == 0u) {
@@ -8490,6 +13169,113 @@ static int _exercise_phys_world3d_profile(obi_rt_v0* rt, const char* provider_id
     memset(&sphere_def, 0, sizeof(sphere_def));
     sphere_def.common.struct_size = (uint32_t)sizeof(sphere_def.common);
     sphere_def.radius = 0.5f;
+
+    if (strict_phys3d_provider) {
+        obi_phys3d_collider_id_v0 bad_collider = 0u;
+        obi_phys3d_sphere_collider_def_v0 bad_sphere = sphere_def;
+
+        bad_sphere.common.flags = (1u << 31);
+        st = world.api->collider_create_sphere(world.ctx, body, &bad_sphere, &bad_collider);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world3d exercise: provider=%s sphere unknown flags should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_collider != 0u && world.api->collider_destroy) {
+                world.api->collider_destroy(world.ctx, bad_collider);
+            }
+            goto cleanup_world3d;
+        }
+
+        bad_sphere = sphere_def;
+        bad_sphere.radius = 0.0f;
+        st = world.api->collider_create_sphere(world.ctx, body, &bad_sphere, &bad_collider);
+        if (st != OBI_STATUS_BAD_ARG) {
+            ok = 0;
+            fprintf(stderr,
+                    "phys.world3d exercise: provider=%s non-positive sphere radius should be BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            if (st == OBI_STATUS_OK && bad_collider != 0u && world.api->collider_destroy) {
+                world.api->collider_destroy(world.ctx, bad_collider);
+            }
+            goto cleanup_world3d;
+        }
+
+        if (world.api->collider_create_box) {
+            obi_phys3d_box_collider_def_v0 bad_box;
+            memset(&bad_box, 0, sizeof(bad_box));
+            bad_box.common.struct_size = (uint32_t)sizeof(bad_box.common);
+            bad_box.half_extents = (obi_vec3f_v0){ 0.25f, 0.25f, 0.25f };
+
+            bad_box.common.flags = (1u << 31);
+            st = world.api->collider_create_box(world.ctx, body, &bad_box, &bad_collider);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.world3d exercise: provider=%s box unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                if (st == OBI_STATUS_OK && bad_collider != 0u && world.api->collider_destroy) {
+                    world.api->collider_destroy(world.ctx, bad_collider);
+                }
+                goto cleanup_world3d;
+            }
+
+            bad_box.common.flags = 0u;
+            bad_box.half_extents.x = 0.0f;
+            st = world.api->collider_create_box(world.ctx, body, &bad_box, &bad_collider);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.world3d exercise: provider=%s non-positive box extents should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                if (st == OBI_STATUS_OK && bad_collider != 0u && world.api->collider_destroy) {
+                    world.api->collider_destroy(world.ctx, bad_collider);
+                }
+                goto cleanup_world3d;
+            }
+        }
+
+        if (world.api->collider_create_capsule) {
+            obi_phys3d_capsule_collider_def_v0 bad_capsule;
+            memset(&bad_capsule, 0, sizeof(bad_capsule));
+            bad_capsule.common.struct_size = (uint32_t)sizeof(bad_capsule.common);
+            bad_capsule.radius = 0.2f;
+            bad_capsule.half_height = 0.4f;
+
+            bad_capsule.common.flags = (1u << 31);
+            st = world.api->collider_create_capsule(world.ctx, body, &bad_capsule, &bad_collider);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.world3d exercise: provider=%s capsule unknown flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                if (st == OBI_STATUS_OK && bad_collider != 0u && world.api->collider_destroy) {
+                    world.api->collider_destroy(world.ctx, bad_collider);
+                }
+                goto cleanup_world3d;
+            }
+
+            bad_capsule.common.flags = 0u;
+            bad_capsule.radius = 0.0f;
+            st = world.api->collider_create_capsule(world.ctx, body, &bad_capsule, &bad_collider);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.world3d exercise: provider=%s non-positive capsule radius should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                if (st == OBI_STATUS_OK && bad_collider != 0u && world.api->collider_destroy) {
+                    world.api->collider_destroy(world.ctx, bad_collider);
+                }
+                goto cleanup_world3d;
+            }
+        }
+    }
 
     obi_phys3d_collider_id_v0 collider = 0u;
     st = world.api->collider_create_sphere(world.ctx, body, &sphere_def, &collider);
@@ -8580,6 +13366,25 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
                 provider_id,
                 (int)st,
                 obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    const int strict_phys2d_provider =
+        (strcmp(provider_id, "obi.provider:phys2d.box2d") == 0) ||
+        (strcmp(provider_id, "obi.provider:phys2d.chipmunk") == 0);
+    const int strict_phys3d_provider =
+        (strcmp(provider_id, "obi.provider:phys3d.ode") == 0) ||
+        (strcmp(provider_id, "obi.provider:phys3d.bullet") == 0);
+    if (strict_phys2d_provider && (dbg.api->caps & OBI_PHYS_DEBUG_CAP_WORLD3D) != 0u) {
+        fprintf(stderr,
+                "phys.debug_draw exercise: provider=%s should not advertise WORLD3D debug cap\n",
+                provider_id);
+        return 0;
+    }
+    if (strict_phys3d_provider && (dbg.api->caps & OBI_PHYS_DEBUG_CAP_WORLD2D) != 0u) {
+        fprintf(stderr,
+                "phys.debug_draw exercise: provider=%s should not advertise WORLD2D debug cap\n",
+                provider_id);
         return 0;
     }
 
@@ -8718,6 +13523,28 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
             fprintf(stderr, "phys.debug_draw exercise: provider=%s collect_world2d failed (status=%d)\n", provider_id, (int)st);
             goto cleanup_debug;
         }
+
+        if (strict_phys2d_provider) {
+            obi_phys_debug_draw_params_v0 bad_params = dparams;
+            bad_params.flags = (1u << 31);
+            st = dbg.api->collect_world2d(dbg.ctx,
+                                          &world2d,
+                                          &bad_params,
+                                          lines2,
+                                          16u,
+                                          &line2_count,
+                                          tris2,
+                                          16u,
+                                          &tri2_count);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.debug_draw exercise: provider=%s bad world2d debug flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                goto cleanup_debug;
+            }
+        }
     }
 
     if (need_world3d) {
@@ -8738,6 +13565,28 @@ static int _exercise_phys_debug_draw_profile(obi_rt_v0* rt, const char* provider
             ok = 0;
             fprintf(stderr, "phys.debug_draw exercise: provider=%s collect_world3d failed (status=%d)\n", provider_id, (int)st);
             goto cleanup_debug;
+        }
+
+        if (strict_phys3d_provider) {
+            obi_phys_debug_draw_params_v0 bad_params = dparams;
+            bad_params.flags = (1u << 31);
+            st = dbg.api->collect_world3d(dbg.ctx,
+                                          &world3d,
+                                          &bad_params,
+                                          lines3,
+                                          16u,
+                                          &line3_count,
+                                          tris3,
+                                          16u,
+                                          &tri3_count);
+            if (st != OBI_STATUS_BAD_ARG) {
+                ok = 0;
+                fprintf(stderr,
+                        "phys.debug_draw exercise: provider=%s bad world3d debug flags should be BAD_ARG (status=%d)\n",
+                        provider_id,
+                        (int)st);
+                goto cleanup_debug;
+            }
         }
     }
 
@@ -8799,7 +13648,10 @@ static int _is_gpio_hardware_target(void) {
 }
 
 static int _exercise_hw_gpio_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
-    if (!_is_gpio_hardware_target()) {
+    const int is_hw_target = _is_gpio_hardware_target();
+    const int is_native_provider = (strcmp(provider_id, "obi.provider:hw.gpio.inhouse") == 0);
+    const int is_libgpiod_provider = (strcmp(provider_id, "obi.provider:hw.gpio.libgpiod") == 0);
+    if (!is_hw_target && !is_native_provider && !is_libgpiod_provider) {
         fprintf(stderr,
                 "hw.gpio exercise: provider=%s SKIP (non-Raspberry Pi/non-test-jig target; set OBI_GPIO_TEST_JIG=1 on Linux jig targets)\n",
                 provider_id);
@@ -8832,9 +13684,109 @@ static int _exercise_hw_gpio_profile(obi_rt_v0* rt, const char* provider_id, int
     const char* in_line_env = getenv("OBI_GPIO_LINE_IN");
     uint32_t line_out = 0u;
     uint32_t line_in = 0u;
-    if (!chip || !out_line_env || !in_line_env ||
-        !_parse_u32_env(out_line_env, &line_out) ||
-        !_parse_u32_env(in_line_env, &line_in)) {
+    int have_live_lines = 0;
+    if (chip && out_line_env && in_line_env &&
+        _parse_u32_env(out_line_env, &line_out) &&
+        _parse_u32_env(in_line_env, &line_in)) {
+        /* Hardware env configured; use configured line pair. */
+        have_live_lines = 1;
+    } else if (is_native_provider) {
+        chip = "/dev/obi-gpio-smokechip0";
+        line_out = 17u;
+        line_in = 18u;
+        have_live_lines = 1;
+    }
+
+    const char* contract_chip = chip;
+    uint32_t contract_line_out = line_out;
+    uint32_t contract_line_in = line_in;
+    if (!contract_chip) {
+        contract_chip = "/dev/obi-gpio-smokechip0";
+    }
+    if (contract_line_out == 0u) {
+        contract_line_out = 17u;
+    }
+    if (contract_line_in == 0u) {
+        contract_line_in = 18u;
+    }
+
+    if (is_native_provider || is_libgpiod_provider) {
+        obi_gpio_line_open_params_v0 bad_params;
+        obi_gpio_line_id_v0 bad_line = 0u;
+
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.direction = OBI_GPIO_DIR_INPUT;
+        bad_params.flags = 0x80000000u;
+        st = gpio.api->line_open(gpio.ctx, contract_chip, contract_line_in, &bad_params, &bad_line);
+        if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
+            return 1;
+        }
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_line != 0u) {
+                gpio.api->line_close(gpio.ctx, bad_line);
+            }
+            fprintf(stderr,
+                    "hw.gpio exercise: provider=%s invalid line flags did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.direction = OBI_GPIO_DIR_OUTPUT;
+        bad_params.edge_flags = OBI_GPIO_EDGE_FLAG_RISING;
+        bad_line = 0u;
+        st = gpio.api->line_open(gpio.ctx, contract_chip, contract_line_out, &bad_params, &bad_line);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_line != 0u) {
+                gpio.api->line_close(gpio.ctx, bad_line);
+            }
+            fprintf(stderr,
+                    "hw.gpio exercise: provider=%s output edge-flags did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.direction = OBI_GPIO_DIR_INPUT;
+        bad_params.bias = (obi_gpio_bias_v0)99;
+        bad_line = 0u;
+        st = gpio.api->line_open(gpio.ctx, contract_chip, contract_line_in, &bad_params, &bad_line);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_line != 0u) {
+                gpio.api->line_close(gpio.ctx, bad_line);
+            }
+            fprintf(stderr,
+                    "hw.gpio exercise: provider=%s invalid bias did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+
+        memset(&bad_params, 0, sizeof(bad_params));
+        bad_params.struct_size = (uint32_t)sizeof(bad_params);
+        bad_params.direction = OBI_GPIO_DIR_INPUT;
+        bad_params.options_json.data = NULL;
+        bad_params.options_json.size = 1u;
+        bad_line = 0u;
+        st = gpio.api->line_open(gpio.ctx, contract_chip, contract_line_in, &bad_params, &bad_line);
+        if (st != OBI_STATUS_BAD_ARG) {
+            if (bad_line != 0u) {
+                gpio.api->line_close(gpio.ctx, bad_line);
+            }
+            fprintf(stderr,
+                    "hw.gpio exercise: provider=%s malformed options_json did not return BAD_ARG (status=%d)\n",
+                    provider_id,
+                    (int)st);
+            return 0;
+        }
+    }
+
+    if (!have_live_lines) {
         fprintf(stderr,
                 "hw.gpio exercise: provider=%s SKIP (set OBI_GPIO_CHIP/OBI_GPIO_LINE_OUT/OBI_GPIO_LINE_IN for hardware run)\n",
                 provider_id);
@@ -9367,6 +14319,10 @@ static int _exercise_doc_paged_poppler(obi_rt_v0* rt) {
     return _exercise_profile_for_provider(rt, OBI_PROFILE_DOC_PAGED_DOCUMENT_V0, "obi.provider:doc.paged.poppler", 1);
 }
 
+static int _exercise_doc_textdecode_iconv(obi_rt_v0* rt) {
+    return _exercise_profile_for_provider(rt, OBI_PROFILE_DOC_TEXT_DECODE_V0, "obi.provider:doc.textdecode.iconv", 1);
+}
+
 static int _exercise_gfx_sdl3(obi_rt_v0* rt) {
     return _exercise_profile_for_provider(rt, OBI_PROFILE_GFX_WINDOW_INPUT_V0, "obi.provider:gfx.sdl3", 1) &&
            _exercise_profile_for_provider(rt, OBI_PROFILE_GFX_RENDER2D_V0, "obi.provider:gfx.sdl3", 1) &&
@@ -9451,7 +14407,8 @@ static int _exercise_core_pump(obi_rt_v0* rt) {
 
 static int _exercise_core_waitset(obi_rt_v0* rt) {
     return _exercise_profile_for_provider(rt, OBI_PROFILE_CORE_WAITSET_V0, "obi.provider:core.waitset.libuv", 1) &&
-           _exercise_profile_for_provider(rt, OBI_PROFILE_CORE_WAITSET_V0, "obi.provider:core.waitset.libevent", 1);
+           _exercise_profile_for_provider(rt, OBI_PROFILE_CORE_WAITSET_V0, "obi.provider:core.waitset.libevent", 1) &&
+           _exercise_profile_for_provider(rt, OBI_PROFILE_CORE_WAITSET_V0, "obi.provider:core.waitset.glib", 1);
 }
 
 static int _exercise_os_native(obi_rt_v0* rt) {
@@ -9530,6 +14487,833 @@ static int _provider_index_by_id(obi_rt_v0* rt, const char* provider_id, size_t*
         }
     }
     return 0;
+}
+
+typedef struct obi_runtime_bind_fixture_v0 {
+    const char* profile_id;
+    const char* provider_a;
+    const char* provider_b;
+} obi_runtime_bind_fixture_v0;
+
+static int _fetch_profile_status(obi_rt_v0* rt, const char* profile_id, obi_status* out_status) {
+    if (!rt || !profile_id || !out_status) {
+        return 0;
+    }
+
+    size_t profile_size = _profile_struct_size(profile_id);
+    if (profile_size == 0u) {
+        return 0;
+    }
+
+    void* out_profile = calloc(1u, profile_size);
+    if (!out_profile) {
+        return 0;
+    }
+
+    *out_status = obi_rt_get_profile(rt,
+                                     profile_id,
+                                     OBI_CORE_ABI_MAJOR,
+                                     out_profile,
+                                     profile_size);
+    free(out_profile);
+    return 1;
+}
+
+static int _fetch_profile_from_provider_status(obi_rt_v0* rt,
+                                               const char* provider_id,
+                                               const char* profile_id,
+                                               obi_status* out_status) {
+    if (!rt || !provider_id || !profile_id || !out_status) {
+        return 0;
+    }
+
+    size_t profile_size = _profile_struct_size(profile_id);
+    if (profile_size == 0u) {
+        return 0;
+    }
+
+    void* out_profile = calloc(1u, profile_size);
+    if (!out_profile) {
+        return 0;
+    }
+
+    *out_status = obi_rt_get_profile_from_provider(rt,
+                                                   provider_id,
+                                                   profile_id,
+                                                   OBI_CORE_ABI_MAJOR,
+                                                   out_profile,
+                                                   profile_size);
+    free(out_profile);
+    return 1;
+}
+
+static int _pick_runtime_bind_fixture(obi_rt_v0* rt, obi_runtime_bind_fixture_v0* out_fixture) {
+    static const obi_runtime_bind_fixture_v0 candidates[] = {
+        { OBI_PROFILE_CORE_CANCEL_V0, "obi.provider:core.cancel.atomic", "obi.provider:core.cancel.glib" },
+        { OBI_PROFILE_CORE_PUMP_V0, "obi.provider:core.pump.libuv", "obi.provider:core.pump.glib" },
+        { OBI_PROFILE_CORE_WAITSET_V0, "obi.provider:core.waitset.libuv", "obi.provider:core.waitset.libevent" },
+        { OBI_PROFILE_OS_ENV_V0, "obi.provider:os.env.native", "obi.provider:os.env.glib" },
+        { OBI_PROFILE_TIME_DATETIME_V0, "obi.provider:time.glib", "obi.provider:time.icu" },
+        { OBI_PROFILE_NET_SOCKET_V0, "obi.provider:net.socket.native", "obi.provider:net.socket.libuv" },
+        { OBI_PROFILE_TEXT_REGEX_V0, "obi.provider:text.regex.pcre2", "obi.provider:text.regex.onig" },
+        { OBI_PROFILE_MEDIA_VIDEO_SCALE_CONVERT_V0, "obi.provider:media.scale.ffmpeg", "obi.provider:media.scale.libyuv" },
+        { OBI_PROFILE_DB_KV_V0, "obi.provider:db.kv.sqlite", "obi.provider:db.kv.lmdb" },
+        { OBI_PROFILE_PHYS_WORLD2D_V0, "obi.provider:phys2d.box2d", "obi.provider:phys2d.chipmunk" },
+    };
+
+    if (!rt || !out_fixture) {
+        return 0;
+    }
+
+    for (size_t i = 0u; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        const obi_runtime_bind_fixture_v0* candidate = &candidates[i];
+        if (!_provider_loaded(rt, candidate->provider_a) ||
+            !_provider_loaded(rt, candidate->provider_b)) {
+            continue;
+        }
+        if (!_provider_has_profile(rt, candidate->provider_a, candidate->profile_id) ||
+            !_provider_has_profile(rt, candidate->provider_b, candidate->profile_id)) {
+            continue;
+        }
+
+        *out_fixture = *candidate;
+        return 1;
+    }
+
+    return 0;
+}
+
+static const char* _pick_loaded_provider_without_profile(obi_rt_v0* rt,
+                                                         const char* profile_id,
+                                                         const char* avoid_provider_a,
+                                                         const char* avoid_provider_b) {
+    if (!rt || !profile_id) {
+        return NULL;
+    }
+
+    size_t provider_count = 0u;
+    if (obi_rt_provider_count(rt, &provider_count) != OBI_STATUS_OK) {
+        return NULL;
+    }
+
+    for (size_t i = 0u; i < provider_count; i++) {
+        const char* candidate = NULL;
+        if (obi_rt_provider_id(rt, i, &candidate) != OBI_STATUS_OK || !candidate) {
+            continue;
+        }
+        if ((avoid_provider_a && strcmp(candidate, avoid_provider_a) == 0) ||
+            (avoid_provider_b && strcmp(candidate, avoid_provider_b) == 0)) {
+            continue;
+        }
+
+        obi_status st = OBI_STATUS_ERROR;
+        if (!_fetch_profile_from_provider_status(rt, candidate, profile_id, &st)) {
+            return NULL;
+        }
+        if (st == OBI_STATUS_UNSUPPORTED) {
+            return candidate;
+        }
+    }
+
+    return NULL;
+}
+
+static int _exercise_runtime_binding_precedence(obi_rt_v0* rt) {
+    if (!rt) {
+        return 0;
+    }
+
+    obi_status st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: initial policy_clear failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    obi_runtime_bind_fixture_v0 fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    if (!_pick_runtime_bind_fixture(rt, &fixture)) {
+        printf("runtime_binding_precedence: SKIP no 2-provider fixture\n");
+        return 1;
+    }
+
+    const size_t profile_len = strlen(fixture.profile_id);
+    if (profile_len < 4u || profile_len >= 127u) {
+        fprintf(stderr, "runtime binding precedence: invalid fixture profile id length (%zu)\n", profile_len);
+        return 0;
+    }
+
+    size_t short_len = profile_len / 2u;
+    if (short_len < 8u) {
+        short_len = 8u;
+    }
+    if (short_len >= profile_len - 1u) {
+        short_len = profile_len - 2u;
+    }
+    const size_t long_len = short_len + 1u;
+
+    char short_prefix[128];
+    char long_prefix[128];
+    memcpy(short_prefix, fixture.profile_id, short_len);
+    short_prefix[short_len] = '\0';
+    memcpy(long_prefix, fixture.profile_id, long_len);
+    long_prefix[long_len] = '\0';
+
+    /* Exact binding must win over prefix binding. */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(exact>prefix) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_prefix(rt, short_prefix, fixture.provider_a, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind_prefix failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_profile(rt, fixture.profile_id, fixture.provider_b, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind_profile failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_b);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: deny exact provider failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    obi_status fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime binding precedence: exact binding must beat prefix (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* Longest prefix binding must win over shorter prefix binding. */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(prefix-length) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_prefix(rt, short_prefix, fixture.provider_a, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind short prefix failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_prefix(rt, long_prefix, fixture.provider_b, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind long prefix failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_b);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: deny long-prefix provider failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime binding precedence: longest prefix must win (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* Missing strict bound provider should be unsupported; fallback binding should continue. */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(missing strict) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_profile(rt, fixture.profile_id, "obi.provider:runtime.smoke.missing", 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind missing strict failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_UNSUPPORTED) {
+        fprintf(stderr,
+                "runtime binding precedence: missing strict binding should be unsupported (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(missing fallback) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_profile(rt,
+                                    fixture.profile_id,
+                                    "obi.provider:runtime.smoke.missing",
+                                    OBI_RT_BIND_ALLOW_FALLBACK);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind missing fallback failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime binding precedence: missing fallback binding should continue (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* Denied strict bound provider should return permission denied; fallback should continue. */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(denied strict) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_a);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: deny provider_a failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_profile(rt, fixture.profile_id, fixture.provider_a, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind denied strict failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime binding precedence: denied strict binding should return permission denied (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(denied fallback) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_a);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: deny provider_a fallback failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_profile(rt,
+                                    fixture.profile_id,
+                                    fixture.provider_a,
+                                    OBI_RT_BIND_ALLOW_FALLBACK);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: bind denied fallback failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime binding precedence: denied fallback binding should continue (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* Direct selection status normalization: missing/denied/unsupported providers. */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(direct statuses) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    obi_status direct_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_from_provider_status(rt,
+                                             "obi.provider:runtime.smoke.missing",
+                                             fixture.profile_id,
+                                             &direct_st) ||
+        direct_st != OBI_STATUS_UNSUPPORTED) {
+        fprintf(stderr,
+                "runtime binding precedence: direct missing provider should be unsupported (status=%d err=%s)\n",
+                (int)direct_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_a);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: deny provider_a direct failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    direct_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_from_provider_status(rt, fixture.provider_a, fixture.profile_id, &direct_st) ||
+        direct_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime binding precedence: direct denied provider should return permission denied (status=%d err=%s)\n",
+                (int)direct_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: policy_clear(unsupported fixture) failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    const char* unsupported_provider =
+        _pick_loaded_provider_without_profile(rt, fixture.profile_id, fixture.provider_a, fixture.provider_b);
+    if (unsupported_provider) {
+        st = obi_rt_policy_bind_profile(rt, fixture.profile_id, unsupported_provider, 0u);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "runtime binding precedence: bind unsupported strict failed (status=%d)\n", (int)st);
+            return 0;
+        }
+        fetch_st = OBI_STATUS_ERROR;
+        if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+            fetch_st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "runtime binding precedence: unsupported strict binding should be unsupported (status=%d err=%s)\n",
+                    (int)fetch_st,
+                    obi_rt_last_error_utf8(rt));
+            return 0;
+        }
+
+        st = obi_rt_policy_clear(rt);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "runtime binding precedence: policy_clear(unsupported fallback) failed (status=%d)\n", (int)st);
+            return 0;
+        }
+        st = obi_rt_policy_bind_profile(rt,
+                                        fixture.profile_id,
+                                        unsupported_provider,
+                                        OBI_RT_BIND_ALLOW_FALLBACK);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "runtime binding precedence: bind unsupported fallback failed (status=%d)\n", (int)st);
+            return 0;
+        }
+        fetch_st = OBI_STATUS_ERROR;
+        if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+            fprintf(stderr,
+                    "runtime binding precedence: unsupported fallback binding should continue (status=%d err=%s)\n",
+                    (int)fetch_st,
+                    obi_rt_last_error_utf8(rt));
+            return 0;
+        }
+
+        direct_st = OBI_STATUS_ERROR;
+        if (!_fetch_profile_from_provider_status(rt,
+                                                 unsupported_provider,
+                                                 fixture.profile_id,
+                                                 &direct_st) ||
+            direct_st != OBI_STATUS_UNSUPPORTED) {
+            fprintf(stderr,
+                    "runtime binding precedence: direct unsupported provider should be unsupported (status=%d err=%s)\n",
+                    (int)direct_st,
+                    obi_rt_last_error_utf8(rt));
+            return 0;
+        }
+    } else {
+        printf("runtime_binding_precedence: SKIP unsupported-provider check (no candidate)\n");
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime binding precedence: final policy_clear failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    return 1;
+}
+
+static int _exercise_runtime_glue_snapshots_and_atomicity(obi_rt_v0* rt,
+                                                          const char* time_inhouse_provider_path) {
+    if (!rt) {
+        return 0;
+    }
+
+    obi_status st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: initial policy_clear failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    obi_runtime_bind_fixture_v0 fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    if (!_pick_runtime_bind_fixture(rt, &fixture)) {
+        printf("runtime_glue_snapshots: SKIP no 2-provider fixture\n");
+        return 1;
+    }
+
+    char preferred_csv[256];
+    (void)snprintf(preferred_csv, sizeof(preferred_csv), "%s,%s", fixture.provider_a, fixture.provider_b);
+
+    /* Cache invalidation after bind_profile + policy_clear. */
+    st = obi_rt_policy_set_preferred_providers_csv(rt, preferred_csv);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: set preferred csv failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    obi_status fetch_st = OBI_STATUS_ERROR;
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime glue: pre-bind cache prime failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_bind_profile(rt, fixture.profile_id, fixture.provider_b, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: bind_profile failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_b);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: deny bound provider failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime glue: bind_profile cache invalidation failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: policy_clear after bind_profile failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_preferred_providers_csv(rt, preferred_csv);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: set preferred csv post-clear failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime glue: policy_clear cache reset failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* Cache invalidation after bind_prefix + policy_clear. */
+    const size_t profile_len = strlen(fixture.profile_id);
+    if (profile_len < 3u || profile_len >= 127u) {
+        fprintf(stderr, "runtime glue: invalid fixture profile id length for prefix (%zu)\n", profile_len);
+        return 0;
+    }
+    size_t prefix_len = profile_len / 2u;
+    if (prefix_len < 8u) {
+        prefix_len = 8u;
+    }
+    if (prefix_len >= profile_len) {
+        prefix_len = profile_len - 1u;
+    }
+    char profile_prefix[128];
+    memcpy(profile_prefix, fixture.profile_id, prefix_len);
+    profile_prefix[prefix_len] = '\0';
+
+    st = obi_rt_policy_set_preferred_providers_csv(rt, preferred_csv);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: set preferred csv for prefix test failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime glue: prefix pre-bind cache prime failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_bind_prefix(rt, profile_prefix, fixture.provider_b, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: bind_prefix failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_b);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: deny prefix-bound provider failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime glue: bind_prefix cache invalidation failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: policy_clear after bind_prefix failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_set_preferred_providers_csv(rt, preferred_csv);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: set preferred csv after prefix clear failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime glue: policy_clear after prefix failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* legal_apply_plan must be all-or-nothing when any item is blocked. */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: policy_clear before apply_plan atomicity failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    st = obi_rt_policy_bind_profile(rt, fixture.profile_id, fixture.provider_a, 0u);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: seed bind_profile failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) || fetch_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "runtime glue: seeded binding preflight failed (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    obi_legal_plan_item_v0 fake_items[2];
+    memset(fake_items, 0, sizeof(fake_items));
+    fake_items[0].struct_size = (uint32_t)sizeof(fake_items[0]);
+    fake_items[0].status = OBI_LEGAL_PLAN_STATUS_SELECTABLE;
+    fake_items[0].profile_id = fixture.profile_id;
+    fake_items[0].provider_id = fixture.provider_b;
+    fake_items[1].struct_size = (uint32_t)sizeof(fake_items[1]);
+    fake_items[1].status = OBI_LEGAL_PLAN_STATUS_BLOCKED;
+    fake_items[1].profile_id = fixture.profile_id;
+    fake_items[1].provider_id = fixture.provider_b;
+
+    obi_legal_plan_v0 fake_plan;
+    memset(&fake_plan, 0, sizeof(fake_plan));
+    fake_plan.struct_size = (uint32_t)sizeof(fake_plan);
+    fake_plan.overall_status = OBI_LEGAL_PLAN_STATUS_BLOCKED;
+    fake_plan.items = fake_items;
+    fake_plan.item_count = 2u;
+
+    st = obi_rt_legal_apply_plan(rt, &fake_plan, 0u);
+    if (st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr, "runtime glue: apply_plan(blocked) expected permission denied (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    st = obi_rt_policy_set_denied_providers_csv(rt, fixture.provider_a);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: deny seeded provider after failed apply failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (!_fetch_profile_status(rt, fixture.profile_id, &fetch_st) ||
+        fetch_st != OBI_STATUS_PERMISSION_DENIED) {
+        fprintf(stderr,
+                "runtime glue: failed apply_plan mutated bindings unexpectedly (status=%d err=%s)\n",
+                (int)fetch_st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    /* plan/report snapshots must reflect policy mutations (no stale selection replay). */
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: policy_clear before snapshot checks failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    obi_legal_selector_policy_v0 permissive_policy;
+    memset(&permissive_policy, 0, sizeof(permissive_policy));
+    permissive_policy.struct_size = (uint32_t)sizeof(permissive_policy);
+    permissive_policy.preset = OBI_LEGAL_PRESET_CUSTOM;
+    permissive_policy.max_copyleft_class = OBI_LEGAL_COPYLEFT_STRONG;
+    permissive_policy.allowed_patent_postures = OBI_LEGAL_PATENT_MASK_ALL;
+    permissive_policy.flags = OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_COPYLEFT |
+                              OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNKNOWN_PATENT_POSTURE |
+                              OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_OPTIONAL_RUNTIME_COMPONENTS |
+                              OBI_LEGAL_SELECTOR_POLICY_FLAG_ALLOW_UNAVAILABLE_ROUTES;
+
+    obi_legal_requirement_v0 req;
+    memset(&req, 0, sizeof(req));
+    req.struct_size = (uint32_t)sizeof(req);
+    req.profile_id = fixture.profile_id;
+
+    const obi_legal_plan_v0* plan_before = NULL;
+    st = obi_rt_legal_plan(rt, &permissive_policy, &req, 1u, &plan_before);
+    if (st != OBI_STATUS_OK || !plan_before || plan_before->item_count != 1u ||
+        plan_before->items[0].status != OBI_LEGAL_PLAN_STATUS_SELECTABLE ||
+        !plan_before->items[0].provider_id) {
+        fprintf(stderr, "runtime glue: legal_plan baseline unavailable (status=%d)\n", (int)st);
+        return 0;
+    }
+    const char* selected_before = plan_before->items[0].provider_id;
+    char selected_before_id[160];
+    if (strlen(selected_before) >= sizeof(selected_before_id)) {
+        fprintf(stderr, "runtime glue: selected provider id too long for stable copy\n");
+        return 0;
+    }
+    (void)snprintf(selected_before_id, sizeof(selected_before_id), "%s", selected_before);
+
+    st = obi_rt_policy_set_denied_providers_csv(rt, selected_before_id);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: deny selected_before failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    const obi_legal_plan_v0* plan_after = NULL;
+    st = obi_rt_legal_plan(rt, &permissive_policy, &req, 1u, &plan_after);
+    if (st != OBI_STATUS_OK || !plan_after || plan_after->item_count != 1u) {
+        fprintf(stderr, "runtime glue: legal_plan after policy mutation failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    if (plan_after->items[0].status == OBI_LEGAL_PLAN_STATUS_SELECTABLE &&
+        plan_after->items[0].provider_id &&
+        strcmp(plan_after->items[0].provider_id, selected_before_id) == 0) {
+        fprintf(stderr,
+                "runtime glue: legal_plan snapshot stale after policy mutation provider=%s\n",
+                selected_before_id);
+        return 0;
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: policy_clear before preset report checks failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    const obi_rt_legal_preset_report_v0* report_before = NULL;
+    st = obi_rt_legal_report_presets(rt, &req, 1u, &report_before);
+    if (st != OBI_STATUS_OK || !report_before || report_before->result_count == 0u) {
+        fprintf(stderr, "runtime glue: preset report baseline failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    size_t baseline_selected_hits = 0u;
+    for (size_t i = 0u; i < report_before->result_count; i++) {
+        const obi_rt_legal_preset_result_v0* result = &report_before->results[i];
+        if (result->item_count == 0u || !result->items) {
+            continue;
+        }
+        if (result->items[0].status == OBI_LEGAL_PLAN_STATUS_SELECTABLE &&
+            result->items[0].provider_id &&
+            strcmp(result->items[0].provider_id, selected_before_id) == 0) {
+            baseline_selected_hits++;
+        }
+    }
+    const size_t baseline_result_count = report_before->result_count;
+
+    st = obi_rt_policy_set_denied_providers_csv(rt, selected_before_id);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: deny selected_before for report failed (status=%d)\n", (int)st);
+        return 0;
+    }
+    const obi_rt_legal_preset_report_v0* report_after = NULL;
+    st = obi_rt_legal_report_presets(rt, &req, 1u, &report_after);
+    if (st != OBI_STATUS_OK || !report_after || report_after->result_count != baseline_result_count) {
+        fprintf(stderr, "runtime glue: preset report after mutation failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    size_t after_selected_hits = 0u;
+    for (size_t i = 0u; i < report_after->result_count; i++) {
+        const obi_rt_legal_preset_result_v0* result = &report_after->results[i];
+        if (result->item_count == 0u || !result->items) {
+            continue;
+        }
+        if (result->items[0].status == OBI_LEGAL_PLAN_STATUS_SELECTABLE &&
+            result->items[0].provider_id &&
+            strcmp(result->items[0].provider_id, selected_before_id) == 0) {
+            after_selected_hits++;
+        }
+    }
+
+    if (baseline_selected_hits > 0u && after_selected_hits > 0u) {
+        fprintf(stderr,
+                "runtime glue: preset report appears stale after policy mutation selected_provider=%s baseline_hits=%zu after_hits=%zu\n",
+                selected_before_id,
+                baseline_selected_hits,
+                after_selected_hits);
+        return 0;
+    }
+
+    /* Eager reject blocks disallowed provider loads; lazy deny blocks selection only. */
+    if (time_inhouse_provider_path && time_inhouse_provider_path[0] != '\0') {
+        const char* time_provider_id = "obi.provider:time.inhouse";
+        obi_rt_v0* rt_lazy = NULL;
+        st = obi_rt_create(NULL, &rt_lazy);
+        if (st != OBI_STATUS_OK || !rt_lazy) {
+            fprintf(stderr, "runtime glue: lazy runtime create failed (status=%d)\n", (int)st);
+            return 0;
+        }
+        st = obi_rt_policy_set_denied_providers_csv(rt_lazy, time_provider_id);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "runtime glue: lazy set denied providers failed (status=%d)\n", (int)st);
+            obi_rt_destroy(rt_lazy);
+            return 0;
+        }
+        st = obi_rt_load_provider_path(rt_lazy, time_inhouse_provider_path);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr,
+                    "runtime glue: lazy load denied provider failed unexpectedly (status=%d path=%s)\n",
+                    (int)st,
+                    time_inhouse_provider_path);
+            obi_rt_destroy(rt_lazy);
+            return 0;
+        }
+        obi_time_datetime_v0 dt;
+        memset(&dt, 0, sizeof(dt));
+        st = obi_rt_get_profile_from_provider(rt_lazy,
+                                              time_provider_id,
+                                              OBI_PROFILE_TIME_DATETIME_V0,
+                                              OBI_CORE_ABI_MAJOR,
+                                              &dt,
+                                              sizeof(dt));
+        obi_rt_destroy(rt_lazy);
+        if (st != OBI_STATUS_PERMISSION_DENIED) {
+            fprintf(stderr,
+                    "runtime glue: lazy denied provider should fail at selection time (status=%d)\n",
+                    (int)st);
+            return 0;
+        }
+
+        obi_rt_v0* rt_eager = NULL;
+        st = obi_rt_create(NULL, &rt_eager);
+        if (st != OBI_STATUS_OK || !rt_eager) {
+            fprintf(stderr, "runtime glue: eager runtime create failed (status=%d)\n", (int)st);
+            return 0;
+        }
+        st = obi_rt_policy_set_denied_providers_csv(rt_eager, time_provider_id);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "runtime glue: eager set denied providers failed (status=%d)\n", (int)st);
+            obi_rt_destroy(rt_eager);
+            return 0;
+        }
+        st = obi_rt_policy_set_eager_reject_disallowed_provider_loads(rt_eager, true);
+        if (st != OBI_STATUS_OK) {
+            fprintf(stderr, "runtime glue: eager enable failed (status=%d)\n", (int)st);
+            obi_rt_destroy(rt_eager);
+            return 0;
+        }
+        st = obi_rt_load_provider_path(rt_eager, time_inhouse_provider_path);
+        obi_rt_destroy(rt_eager);
+        if (st != OBI_STATUS_PERMISSION_DENIED) {
+            fprintf(stderr,
+                    "runtime glue: eager denied provider should fail at load time (status=%d path=%s)\n",
+                    (int)st,
+                    time_inhouse_provider_path);
+            return 0;
+        }
+    }
+
+    st = obi_rt_policy_clear(rt);
+    if (st != OBI_STATUS_OK) {
+        fprintf(stderr, "runtime glue: final policy_clear failed (status=%d)\n", (int)st);
+        return 0;
+    }
+
+    return 1;
 }
 
 static int _exercise_legal_selector_api(obi_rt_v0* rt) {
@@ -10276,6 +16060,27 @@ static int _provider_loaded(obi_rt_v0* rt, const char* provider_id) {
     return 0;
 }
 
+static size_t _count_loaded_provider_id(obi_rt_v0* rt, const char* provider_id) {
+    if (!rt || !provider_id) {
+        return 0u;
+    }
+
+    size_t count = 0u;
+    if (obi_rt_provider_count(rt, &count) != OBI_STATUS_OK) {
+        return 0u;
+    }
+
+    size_t matches = 0u;
+    for (size_t i = 0u; i < count; i++) {
+        const char* pid = NULL;
+        if (obi_rt_provider_id(rt, i, &pid) == OBI_STATUS_OK && pid && strcmp(pid, provider_id) == 0) {
+            matches++;
+        }
+    }
+
+    return matches;
+}
+
 static int _provider_id_exists(const char* const* ids, size_t count, const char* provider_id) {
     if (!ids || !provider_id) {
         return 0;
@@ -10321,6 +16126,10 @@ static int _provider_has_profile(obi_rt_v0* rt, const char* provider_id, const c
 
     size_t sz = _profile_struct_size(profile_id);
     if (sz == 0u) {
+        fprintf(stderr,
+                "provider/profile probe failed: missing smoke size-map entry for profile=%s provider=%s\n",
+                profile_id,
+                provider_id);
         return 0;
     }
 
@@ -10336,7 +16145,19 @@ static int _provider_has_profile(obi_rt_v0* rt, const char* provider_id, const c
                                                       out_profile,
                                                       sz);
     free(out_profile);
-    return st == OBI_STATUS_OK;
+
+    if (st == OBI_STATUS_OK) {
+        return 1;
+    }
+    if (st != OBI_STATUS_UNSUPPORTED) {
+        fprintf(stderr,
+                "provider/profile probe failed: provider=%s profile=%s status=%d err=%s\n",
+                provider_id,
+                profile_id,
+                (int)st,
+                obi_rt_last_error_utf8(rt));
+    }
+    return 0;
 }
 
 static size_t _collect_loaded_providers_for_profile(obi_rt_v0* rt,
@@ -10390,28 +16211,111 @@ static const char* _pick_loaded_provider_for_profile(obi_rt_v0* rt,
     return NULL;
 }
 
-static const char* _resolve_profile_provider_target(obi_rt_v0* rt,
-                                                     const char* profile_id,
-                                                     const char* requested_provider_id) {
-    if (!rt || !profile_id || !requested_provider_id) {
-        return requested_provider_id;
+static const char* _pick_any_loaded_provider_for_profile(obi_rt_v0* rt, const char* profile_id) {
+    if (!rt || !profile_id) {
+        return NULL;
     }
 
-    if (strcmp(requested_provider_id, "obi.provider:data.gio") == 0) {
-        static const char* k_data_candidates[] = {
-            "obi.provider:data.gio",
-            "obi.provider:data.bootstrap",
-        };
-        const char* resolved = _pick_loaded_provider_for_profile(rt,
-                                                                 profile_id,
-                                                                 k_data_candidates,
-                                                                 sizeof(k_data_candidates) / sizeof(k_data_candidates[0]));
-        if (resolved) {
-            return resolved;
+    size_t provider_count = 0u;
+    if (obi_rt_provider_count(rt, &provider_count) != OBI_STATUS_OK) {
+        return NULL;
+    }
+
+    for (size_t i = 0u; i < provider_count; i++) {
+        const char* provider_id = NULL;
+        if (obi_rt_provider_id(rt, i, &provider_id) != OBI_STATUS_OK || !provider_id) {
+            continue;
+        }
+        if (_provider_has_profile(rt, provider_id, profile_id)) {
+            return provider_id;
         }
     }
 
-    return requested_provider_id;
+    return NULL;
+}
+
+static int _resolve_profile_provider_target(obi_rt_v0* rt,
+                                            const char* profile_id,
+                                            const char* requested_provider_id,
+                                            const char** out_resolved_provider_id,
+                                            int* out_used_helper_fallback) {
+    if (out_used_helper_fallback) {
+        *out_used_helper_fallback = 0;
+    }
+    if (out_resolved_provider_id) {
+        *out_resolved_provider_id = NULL;
+    }
+
+    if (!rt || !profile_id || !requested_provider_id || !out_resolved_provider_id) {
+        fprintf(stderr, "profile-provider exercise: invalid provider resolution input\n");
+        return 0;
+    }
+
+    const size_t requested_count = _count_loaded_provider_id(rt, requested_provider_id);
+    if (requested_count != 1u) {
+        fprintf(stderr,
+                "profile-provider exercise: requested provider id is ambiguous or missing: provider=%s count=%zu\n",
+                requested_provider_id,
+                requested_count);
+        return 0;
+    }
+
+    if (_provider_has_profile(rt, requested_provider_id, profile_id)) {
+        *out_resolved_provider_id = requested_provider_id;
+        return 1;
+    }
+
+    if (strcmp(requested_provider_id, "obi.provider:data.gio") != 0) {
+        const char* alternate_provider = _pick_any_loaded_provider_for_profile(rt, profile_id);
+        if (alternate_provider) {
+            fprintf(stderr,
+                    "profile-provider exercise: provider/profile mismatch: requested_provider=%s profile=%s alternate_provider=%s\n",
+                    requested_provider_id,
+                    profile_id,
+                    alternate_provider);
+        } else {
+            fprintf(stderr,
+                    "profile-provider exercise: provider/profile mismatch: requested_provider=%s profile=%s\n",
+                    requested_provider_id,
+                    profile_id);
+        }
+        return 0;
+    }
+
+    if (!_profile_is_data_gio_helper_backed(profile_id)) {
+        fprintf(stderr,
+                "profile-provider exercise: unintended fallback rejected: requested_provider=%s profile=%s\n",
+                requested_provider_id,
+                profile_id);
+        return 0;
+    }
+
+    const char* helper_provider_id = "obi.provider:data.bootstrap";
+    const size_t helper_count = _count_loaded_provider_id(rt, helper_provider_id);
+    if (helper_count != 1u) {
+        fprintf(stderr,
+                "profile-provider exercise: helper-backed fallback unavailable: helper_provider=%s count=%zu profile=%s requested_provider=%s\n",
+                helper_provider_id,
+                helper_count,
+                profile_id,
+                requested_provider_id);
+        return 0;
+    }
+
+    if (!_provider_has_profile(rt, helper_provider_id, profile_id)) {
+        fprintf(stderr,
+                "profile-provider exercise: helper provider does not satisfy API assumptions: helper_provider=%s profile=%s requested_provider=%s\n",
+                helper_provider_id,
+                profile_id,
+                requested_provider_id);
+        return 0;
+    }
+
+    *out_resolved_provider_id = helper_provider_id;
+    if (out_used_helper_fallback) {
+        *out_used_helper_fallback = 1;
+    }
+    return 1;
 }
 
 static void _mix_append_task_unique(obi_mix_task_v0* tasks,
@@ -15965,6 +21869,23 @@ int main(int argc, char** argv) {
         provider_begin = 4;
     }
 
+    if (mode_profiles) {
+        for (int i = split + 1; i < argc; i++) {
+            if (!_require_profile_struct_size("--profiles", argv[i], NULL)) {
+                return 1;
+            }
+        }
+    }
+    if (mode_profile_provider) {
+        if (!_require_profile_struct_size("--profile-provider", target_profile, NULL)) {
+            return 1;
+        }
+        if (!target_provider_id || target_provider_id[0] == '\0') {
+            fprintf(stderr, "--profile-provider: empty provider id\n");
+            return 1;
+        }
+    }
+
     if (mode_mix || mode_mix_pairwise || mode_mix_dual_runtime || mode_mix_media_routes ||
         mode_mix_family_stateful || mode_mix_family_gfx) {
         _configure_mix_headless_hints();
@@ -16104,9 +22025,13 @@ int main(int argc, char** argv) {
     if (mode_profiles) {
         for (int i = split + 1; i < argc; i++) {
             const char* profile = argv[i];
-            size_t out_size = _profile_struct_size(profile);
-            if (out_size == 0u) {
-                fprintf(stderr, "unknown profile for smoke size map: %s\n", profile);
+            size_t out_size = 0u;
+            if (!_require_profile_struct_size("--profiles", profile, &out_size)) {
+                obi_rt_destroy(rt);
+                return 1;
+            }
+            if (!_pick_any_loaded_provider_for_profile(rt, profile)) {
+                fprintf(stderr, "profile/provider mismatch: no loaded provider advertises profile=%s\n", profile);
                 obi_rt_destroy(rt);
                 return 1;
             }
@@ -16457,6 +22382,15 @@ int main(int argc, char** argv) {
             printf("exercise_ok=doc.paged.poppler\n");
         }
 
+        if (_provider_loaded(rt, "obi.provider:doc.textdecode.iconv")) {
+            if (!_exercise_doc_textdecode_iconv(rt)) {
+                fprintf(stderr, "doc.textdecode.iconv exercise failed\n");
+                obi_rt_destroy(rt);
+                return 1;
+            }
+            printf("exercise_ok=doc.textdecode.iconv\n");
+        }
+
         if (!_exercise_gfx_sdl3(rt)) {
             fprintf(stderr, "gfx exercise failed\n");
             obi_rt_destroy(rt);
@@ -16686,13 +22620,44 @@ int main(int argc, char** argv) {
             return 1;
         }
         printf("exercise_ok=legal.selector\n");
+
+        if (!_exercise_runtime_binding_precedence(rt)) {
+            fprintf(stderr, "runtime binding precedence exercise failed\n");
+            obi_rt_destroy(rt);
+            return 1;
+        }
+        printf("exercise_ok=runtime.binding_precedence\n");
+
+        if (!_exercise_runtime_glue_snapshots_and_atomicity(rt, time_inhouse_provider_path)) {
+            fprintf(stderr, "runtime glue snapshot/atomicity exercise failed\n");
+            obi_rt_destroy(rt);
+            return 1;
+        }
+        printf("exercise_ok=runtime.glue.snapshots+atomicity\n");
     } else if (mode_profile_provider) {
-        const char* resolved_provider_id = _resolve_profile_provider_target(rt, target_profile, target_provider_id);
+        const char* resolved_provider_id = NULL;
+        int used_helper_fallback = 0;
+        if (!_resolve_profile_provider_target(rt,
+                                              target_profile,
+                                              target_provider_id,
+                                              &resolved_provider_id,
+                                              &used_helper_fallback)) {
+            obi_rt_destroy(rt);
+            return 1;
+        }
         if (!_exercise_profile_for_provider(rt, target_profile, resolved_provider_id, 0)) {
-            fprintf(stderr,
-                    "profile-provider exercise failed: profile=%s provider=%s\n",
-                    target_profile,
-                    target_provider_id);
+            if (used_helper_fallback) {
+                fprintf(stderr,
+                        "profile-provider exercise failed: profile=%s requested_provider=%s resolved_provider=%s\n",
+                        target_profile,
+                        target_provider_id,
+                        resolved_provider_id ? resolved_provider_id : "<none>");
+            } else {
+                fprintf(stderr,
+                        "profile-provider exercise failed: profile=%s provider=%s\n",
+                        target_profile,
+                        target_provider_id);
+            }
             obi_rt_destroy(rt);
             return 1;
         }

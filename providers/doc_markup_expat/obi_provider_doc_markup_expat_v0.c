@@ -115,6 +115,25 @@ static int _format_supported(const char* format_hint) {
     return _str_ieq(format_hint, "xml");
 }
 
+static obi_status _validate_markup_open_params(const obi_markup_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
 static int _text_is_ws_only(const char* s, size_t n) {
     for (size_t i = 0u; i < n; i++) {
         if (!isspace((unsigned char)s[i])) {
@@ -346,8 +365,9 @@ static obi_status _markup_parse_from_bytes(obi_bytes_view_v0 bytes,
     if (!out_parser || (!bytes.data && bytes.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_markup_open_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
     if (params && !_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;

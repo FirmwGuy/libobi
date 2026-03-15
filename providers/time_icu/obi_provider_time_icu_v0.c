@@ -37,19 +37,6 @@ static obi_status _obi_time_icu_civil_to_unix_ns_ext(void* ctx,
 #define OBI_TIME_PROVIDER_CIVIL_TO_UNIX_NS_EXT _obi_time_icu_civil_to_unix_ns_ext
 #include "../time_common/obi_provider_time_base.inc"
 
-static int _obi_time_icu_civil_equal(const obi_time_civil_v0* a, const obi_time_civil_v0* b) {
-    if (!a || !b) {
-        return 0;
-    }
-    return a->year == b->year &&
-           a->month == b->month &&
-           a->day == b->day &&
-           a->hour == b->hour &&
-           a->minute == b->minute &&
-           a->second == b->second &&
-           a->nanosecond == b->nanosecond;
-}
-
 static obi_status _obi_time_icu_zone_id_from_spec(const obi_time_zone_spec_v0* zone,
                                                    UChar** out_zone_id,
                                                    int32_t* out_zone_len) {
@@ -234,6 +221,73 @@ static obi_status _obi_time_icu_calendar_to_unix_ns(UCalendar* cal,
     return OBI_STATUS_OK;
 }
 
+static obi_status _obi_time_icu_resolve_civil_with_option(const obi_time_civil_v0* civil,
+                                                           const obi_time_zone_spec_v0* zone,
+                                                           UCalendarWallTimeOption repeated_option,
+                                                           int64_t* out_unix_ns,
+                                                           int32_t* out_offset_minutes,
+                                                           bool* out_exact_match) {
+    if (!civil || !zone || !out_unix_ns || !out_offset_minutes) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    UCalendar* cal = NULL;
+    obi_status st = _obi_time_icu_open_calendar(zone, &cal);
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
+
+    ucal_setAttribute(cal, UCAL_REPEATED_WALL_TIME, (int32_t)repeated_option);
+
+    UErrorCode err = U_ZERO_ERROR;
+    ucal_clear(cal);
+    ucal_setDateTime(cal,
+                     civil->year,
+                     (int32_t)civil->month - 1,
+                     civil->day,
+                     civil->hour,
+                     civil->minute,
+                     civil->second,
+                     &err);
+    if (U_FAILURE(err)) {
+        ucal_close(cal);
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    ucal_set(cal, UCAL_MILLISECOND, (int32_t)(civil->nanosecond / 1000000u));
+
+    err = U_ZERO_ERROR;
+    int32_t got_year = ucal_get(cal, UCAL_YEAR, &err);
+    int32_t got_month0 = ucal_get(cal, UCAL_MONTH, &err);
+    int32_t got_day = ucal_get(cal, UCAL_DATE, &err);
+    int32_t got_hour = ucal_get(cal, UCAL_HOUR_OF_DAY, &err);
+    int32_t got_minute = ucal_get(cal, UCAL_MINUTE, &err);
+    int32_t got_second = ucal_get(cal, UCAL_SECOND, &err);
+    if (U_FAILURE(err)) {
+        ucal_close(cal);
+        return OBI_STATUS_ERROR;
+    }
+
+    if (out_exact_match) {
+        *out_exact_match = (got_year == civil->year &&
+                            (uint8_t)(got_month0 + 1) == civil->month &&
+                            (uint8_t)got_day == civil->day &&
+                            (uint8_t)got_hour == civil->hour &&
+                            (uint8_t)got_minute == civil->minute &&
+                            (uint8_t)got_second == civil->second);
+    }
+
+    st = _obi_time_icu_calendar_to_unix_ns(cal, civil->nanosecond, out_unix_ns);
+    if (st != OBI_STATUS_OK) {
+        ucal_close(cal);
+        return st;
+    }
+
+    st = _obi_time_icu_offset_minutes(cal, out_offset_minutes);
+    ucal_close(cal);
+    return st;
+}
+
 static obi_status _obi_time_icu_unix_ns_to_civil_ext(void* ctx,
                                                       int64_t unix_ns,
                                                       const obi_time_zone_spec_v0* zone,
@@ -298,7 +352,6 @@ static obi_status _obi_time_icu_civil_to_unix_ns_ext(void* ctx,
                                                       uint32_t flags,
                                                       int64_t* out_unix_ns,
                                                       int32_t* out_offset_minutes) {
-    (void)ctx;
     if (!civil || !zone || !out_unix_ns || !out_offset_minutes) {
         return OBI_STATUS_BAD_ARG;
     }
@@ -311,99 +364,62 @@ static obi_status _obi_time_icu_civil_to_unix_ns_ext(void* ctx,
         return OBI_STATUS_UNSUPPORTED;
     }
 
-    UCalendar* cal = NULL;
-    obi_status st = _obi_time_icu_open_calendar(zone, &cal);
+    const UCalendarWallTimeOption preferred_option =
+        ((flags & OBI_TIME_CIVIL_TO_UNIX_PREFER_LATER) != 0u) ? UCAL_WALLTIME_LAST
+                                                               : UCAL_WALLTIME_FIRST;
+    bool exact_match = false;
+    obi_status st = _obi_time_icu_resolve_civil_with_option(civil,
+                                                             zone,
+                                                             preferred_option,
+                                                             out_unix_ns,
+                                                             out_offset_minutes,
+                                                             &exact_match);
     if (st != OBI_STATUS_OK) {
         return st;
     }
-
-    UErrorCode err = U_ZERO_ERROR;
-    ucal_clear(cal);
-    ucal_setDateTime(cal,
-                     civil->year,
-                     (int32_t)civil->month - 1,
-                     civil->day,
-                     civil->hour,
-                     civil->minute,
-                     civil->second,
-                     &err);
-    if (U_FAILURE(err)) {
-        ucal_close(cal);
-        return OBI_STATUS_BAD_ARG;
-    }
-
-    ucal_set(cal, UCAL_MILLISECOND, (int32_t)(civil->nanosecond / 1000000u));
-
-    int32_t got_month0 = ucal_get(cal, UCAL_MONTH, &err);
-    int32_t got_day = ucal_get(cal, UCAL_DATE, &err);
-    int32_t got_hour = ucal_get(cal, UCAL_HOUR_OF_DAY, &err);
-    int32_t got_minute = ucal_get(cal, UCAL_MINUTE, &err);
-    int32_t got_second = ucal_get(cal, UCAL_SECOND, &err);
-    if (U_FAILURE(err)) {
-        ucal_close(cal);
-        return OBI_STATUS_ERROR;
-    }
-
     if ((flags & OBI_TIME_CIVIL_TO_UNIX_REQUIRE_VALID) != 0u) {
-        if ((uint8_t)(got_month0 + 1) != civil->month ||
-            (uint8_t)got_day != civil->day ||
-            (uint8_t)got_hour != civil->hour ||
-            (uint8_t)got_minute != civil->minute ||
-            (uint8_t)got_second != civil->second) {
-            ucal_close(cal);
-            return OBI_STATUS_ERROR;
-        }
-    }
-
-    st = _obi_time_icu_calendar_to_unix_ns(cal, civil->nanosecond, out_unix_ns);
-    if (st != OBI_STATUS_OK) {
-        ucal_close(cal);
-        return st;
-    }
-
-    st = _obi_time_icu_offset_minutes(cal, out_offset_minutes);
-    ucal_close(cal);
-    if (st != OBI_STATUS_OK) {
-        return st;
-    }
-
-    if ((flags & OBI_TIME_CIVIL_TO_UNIX_PREFER_LATER) != 0u) {
-        int64_t chosen_unix_ns = *out_unix_ns;
-        int32_t chosen_offset = *out_offset_minutes;
-
-        int64_t hour_ns = 0;
-        if (_mul_overflow_i64(3600ll, OBI_NS_PER_SEC, &hour_ns)) {
+        if (!exact_match) {
             return OBI_STATUS_ERROR;
         }
 
-        for (int i = 1; i <= 4; i++) {
-            int64_t delta_ns = 0;
-            int64_t candidate_unix_ns = 0;
-            if (_mul_overflow_i64((int64_t)i, hour_ns, &delta_ns) ||
-                _add_overflow_i64(*out_unix_ns, delta_ns, &candidate_unix_ns)) {
-                break;
-            }
-
-            obi_time_civil_v0 probe_civil;
-            memset(&probe_civil, 0, sizeof(probe_civil));
-            int32_t probe_offset = 0;
-            st = _obi_time_icu_unix_ns_to_civil_ext(ctx,
-                                                    candidate_unix_ns,
-                                                    zone,
-                                                    &probe_civil,
-                                                    &probe_offset);
-            if (st != OBI_STATUS_OK) {
-                continue;
-            }
-
-            if (_obi_time_icu_civil_equal(civil, &probe_civil)) {
-                chosen_unix_ns = candidate_unix_ns;
-                chosen_offset = probe_offset;
-            }
+        const UCalendarWallTimeOption alternate_option =
+            (preferred_option == UCAL_WALLTIME_LAST) ? UCAL_WALLTIME_FIRST : UCAL_WALLTIME_LAST;
+        int64_t alternate_unix_ns = 0;
+        int32_t alternate_offset_minutes = 0;
+        bool alternate_exact_match = false;
+        st = _obi_time_icu_resolve_civil_with_option(civil,
+                                                     zone,
+                                                     alternate_option,
+                                                     &alternate_unix_ns,
+                                                     &alternate_offset_minutes,
+                                                     &alternate_exact_match);
+        if (st == OBI_STATUS_OK && alternate_exact_match &&
+            alternate_unix_ns != *out_unix_ns) {
+            return OBI_STATUS_ERROR;
         }
 
-        *out_unix_ns = chosen_unix_ns;
-        *out_offset_minutes = chosen_offset;
+        int64_t earliest_unix_ns = *out_unix_ns;
+        int32_t earliest_offset_minutes = *out_offset_minutes;
+        int64_t latest_unix_ns = *out_unix_ns;
+        int32_t latest_offset_minutes = *out_offset_minutes;
+        bool ambiguous = false;
+        st = _civil_mapping_window_with_ext(ctx,
+                                            civil,
+                                            zone,
+                                            *out_unix_ns,
+                                            *out_offset_minutes,
+                                            _obi_time_icu_unix_ns_to_civil_ext,
+                                            &earliest_unix_ns,
+                                            &earliest_offset_minutes,
+                                            &latest_unix_ns,
+                                            &latest_offset_minutes,
+                                            &ambiguous);
+        if (st != OBI_STATUS_OK) {
+            return st;
+        }
+        if (ambiguous) {
+            return OBI_STATUS_ERROR;
+        }
     }
 
     return OBI_STATUS_OK;

@@ -181,6 +181,11 @@ static void _queue_event(obi_fs_watch_glib_ctx_v0* w,
         w->overflowed = true;
         return;
     }
+    if (!path2 && other_file) {
+        free(path);
+        w->overflowed = true;
+        return;
+    }
 
     _os_fswatch_queue_event_owned(&w->event_head,
                                   &w->event_tail,
@@ -334,7 +339,7 @@ static obi_status _fs_watch_remove_watch(void* ctx, uint64_t watch_id) {
         return OBI_STATUS_OK;
     }
 
-    return OBI_STATUS_UNSUPPORTED;
+    return OBI_STATUS_UNAVAILABLE;
 }
 
 static obi_status _fs_watch_poll_events(void* ctx,
@@ -423,6 +428,14 @@ static obi_status _os_fs_watch_open_watcher(void* ctx,
     }
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
+    }
+    if (params) {
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u && !params->options_json.data) {
+            return OBI_STATUS_BAD_ARG;
+        }
     }
 
     obi_fs_watch_glib_ctx_v0* w = (obi_fs_watch_glib_ctx_v0*)calloc(1u, sizeof(*w));

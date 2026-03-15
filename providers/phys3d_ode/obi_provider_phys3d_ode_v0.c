@@ -3,5 +3,7 @@
 #define OBI_PHYS_PROVIDER_DEPS_JSON "[{\"name\":\"ODE\"}]"
 #define OBI_PHYS_PROVIDER_SPDX "BSD-3-Clause"
 #define OBI_PHYS_PROVIDER_LICENSE_CLASS "permissive"
+#define OBI_PHYS_NATIVE_ENABLE_WORLD2D 0
+#define OBI_PHYS_NATIVE_ENABLE_WORLD3D 1
 #define OBI_PHYS_BACKEND_ODE 1
 #include "../phys_native/obi_provider_phys_native_v0.c"

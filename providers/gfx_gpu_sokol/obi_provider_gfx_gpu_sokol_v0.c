@@ -9,8 +9,10 @@
 #define SOKOL_DUMMY_BACKEND
 #include <sokol_gfx.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -81,40 +83,97 @@ typedef struct obi_gfx_gpu_sokol_ctx_v0 {
     obi_gpu_pipeline_id_v0 next_pipeline_id;
 } obi_gfx_gpu_sokol_ctx_v0;
 
-/* sokol_gfx is process-global inside this provider module. Keep a local refcount so
- * multiple runtimes in one process can acquire/release it without asserting in sg_setup().
+/* sokol_gfx is process-global inside this provider module. Keep a refcount protected
+ * by a local spin lock so multiple runtimes/threads can safely acquire/release it.
  */
-static size_t OBI_GFX_GPU_SOKOL_SG_REFCOUNT = 0u;
+static atomic_flag g_sokol_sg_spin = ATOMIC_FLAG_INIT;
+static atomic_uint g_sokol_sg_refcount = 0u;
+
+static void _sokol_sg_spin_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&g_sokol_sg_spin, memory_order_acquire)) {
+    }
+}
+
+static void _sokol_sg_spin_unlock(void) {
+    atomic_flag_clear_explicit(&g_sokol_sg_spin, memory_order_release);
+}
 
 static int _sokol_sg_acquire(void) {
-    if (OBI_GFX_GPU_SOKOL_SG_REFCOUNT == 0u) {
+    int ok = 1;
+
+    _sokol_sg_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_sokol_sg_refcount, memory_order_relaxed);
+    if (refs == 0u) {
         sg_desc sg_desc_cfg;
         memset(&sg_desc_cfg, 0, sizeof(sg_desc_cfg));
         sg_setup(&sg_desc_cfg);
         if (!sg_isvalid()) {
-            return 0;
+            ok = 0;
         }
     } else if (!sg_isvalid()) {
-        return 0;
+        ok = 0;
     }
+    if (refs == UINT_MAX) {
+        ok = 0;
+    }
+    if (ok) {
+        atomic_store_explicit(&g_sokol_sg_refcount, refs + 1u, memory_order_relaxed);
+    }
+    _sokol_sg_spin_unlock();
 
-    OBI_GFX_GPU_SOKOL_SG_REFCOUNT++;
-    return 1;
+    return ok;
 }
 
 static void _sokol_sg_release(void) {
-    if (OBI_GFX_GPU_SOKOL_SG_REFCOUNT == 0u) {
-        return;
+    _sokol_sg_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_sokol_sg_refcount, memory_order_relaxed);
+    if (refs > 0u) {
+        refs--;
+        atomic_store_explicit(&g_sokol_sg_refcount, refs, memory_order_relaxed);
+        if (refs == 0u && sg_isvalid()) {
+            sg_shutdown();
+        }
     }
-    OBI_GFX_GPU_SOKOL_SG_REFCOUNT--;
-    if (OBI_GFX_GPU_SOKOL_SG_REFCOUNT == 0u && sg_isvalid()) {
-        sg_shutdown();
+    _sokol_sg_spin_unlock();
+}
+
+static int _rgba8_row_bytes(uint32_t width, uint32_t* out_row_bytes) {
+    if (!out_row_bytes || width == 0u || width > (UINT32_MAX / 4u)) {
+        return 0;
     }
+    *out_row_bytes = width * 4u;
+    return 1;
+}
+
+static int _rgba8_stride_and_total_bytes(uint32_t width,
+                                         uint32_t height,
+                                         uint32_t stride_bytes,
+                                         uint32_t* out_stride,
+                                         size_t* out_total_bytes) {
+    uint32_t row_bytes = 0u;
+    if (!out_stride || !out_total_bytes || height == 0u || !_rgba8_row_bytes(width, &row_bytes)) {
+        return 0;
+    }
+
+    uint32_t stride = (stride_bytes == 0u) ? row_bytes : stride_bytes;
+    if (stride < row_bytes) {
+        return 0;
+    }
+    if ((size_t)height > (SIZE_MAX / (size_t)stride)) {
+        return 0;
+    }
+
+    *out_stride = stride;
+    *out_total_bytes = (size_t)stride * (size_t)height;
+    return 1;
 }
 
 static int _grow_slots(void** slots, size_t* cap, size_t elem_size) {
     size_t new_cap = (*cap == 0u) ? 8u : (*cap * 2u);
     if (new_cap < *cap) {
+        return 0;
+    }
+    if (elem_size != 0u && new_cap > (SIZE_MAX / elem_size)) {
         return 0;
     }
     void* mem = realloc(*slots, new_cap * elem_size);
@@ -246,7 +305,14 @@ static obi_status _buffer_create(void* ctx, const obi_gpu_buffer_desc_v0* desc, 
     if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (desc->initial_data && desc->initial_data_size > desc->size_bytes) {
+    if (desc->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->type > OBI_GPU_BUFFER_UNIFORM || desc->usage > OBI_GPU_USAGE_STREAM) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((!desc->initial_data && desc->initial_data_size > 0u) ||
+        (desc->initial_data && desc->initial_data_size > desc->size_bytes)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -327,8 +393,17 @@ static obi_status _image_create(void* ctx, const obi_gpu_image_desc_v0* desc, ob
     if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (desc->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->width > (uint32_t)INT_MAX || desc->height > (uint32_t)INT_MAX) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (desc->format != OBI_GPU_IMAGE_RGBA8) {
         return OBI_STATUS_UNSUPPORTED;
+    }
+    if (!desc->initial_pixels && desc->initial_stride_bytes != 0u) {
+        return OBI_STATUS_BAD_ARG;
     }
 
     if (p->image_count == p->image_cap &&
@@ -343,9 +418,18 @@ static obi_status _image_create(void* ctx, const obi_gpu_image_desc_v0* desc, ob
     sg_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
 
     if (desc->initial_pixels) {
-        uint32_t stride = desc->initial_stride_bytes ? desc->initial_stride_bytes : (desc->width * 4u);
+        uint32_t stride = 0u;
+        size_t total_bytes = 0u;
+        if (!_rgba8_stride_and_total_bytes(desc->width,
+                                           desc->height,
+                                           desc->initial_stride_bytes,
+                                           &stride,
+                                           &total_bytes)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        (void)stride;
         sg_desc.data.mip_levels[0].ptr = desc->initial_pixels;
-        sg_desc.data.mip_levels[0].size = (size_t)stride * (size_t)desc->height;
+        sg_desc.data.mip_levels[0].size = total_bytes;
     }
 
     sg_image handle = sg_make_image(&sg_desc);
@@ -387,9 +471,13 @@ static obi_status _image_update_rgba8(void* ctx,
     if (x >= slot->width || y >= slot->height || w > (slot->width - x) || h > (slot->height - y)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (stride_bytes != 0u && stride_bytes < (w * 4u)) {
+    uint32_t stride = 0u;
+    size_t total_bytes = 0u;
+    if (!_rgba8_stride_and_total_bytes(w, h, stride_bytes, &stride, &total_bytes)) {
         return OBI_STATUS_BAD_ARG;
     }
+    (void)stride;
+    (void)total_bytes;
     return OBI_STATUS_OK;
 }
 
@@ -416,8 +504,13 @@ static void _image_destroy(void* ctx, obi_gpu_image_id_v0 img) {
 
 static obi_status _sampler_create(void* ctx, const obi_gpu_sampler_desc_v0* desc, obi_gpu_sampler_id_v0* out_samp) {
     obi_gfx_gpu_sokol_ctx_v0* p = (obi_gfx_gpu_sokol_ctx_v0*)ctx;
-    (void)desc;
-    if (!p || !out_samp) {
+    if (!p || !desc || !out_samp) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->flags != 0u || (!desc->options_json.data && desc->options_json.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
 

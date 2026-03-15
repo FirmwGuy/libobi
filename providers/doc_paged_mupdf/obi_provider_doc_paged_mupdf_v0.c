@@ -33,13 +33,9 @@ typedef struct obi_paged_image_hold_v0 {
     uint8_t* pixels;
 } obi_paged_image_hold_v0;
 
-typedef struct obi_paged_text_hold_v0 {
-    char* text;
-} obi_paged_text_hold_v0;
-
-typedef struct obi_paged_meta_hold_v0 {
-    char* json;
-} obi_paged_meta_hold_v0;
+typedef struct obi_paged_string_hold_v0 {
+    char* value;
+} obi_paged_string_hold_v0;
 
 static char* _dup_n(const char* s, size_t n) {
     if (!s && n > 0u) {
@@ -89,6 +85,38 @@ static int _format_supported(const char* format_hint) {
     return _str_ieq(format_hint, "pdf");
 }
 
+static obi_status _validate_paged_open_params(const obi_paged_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_paged_render_params(const obi_paged_render_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static void _paged_image_release(void* release_ctx, obi_paged_page_image_v0* image) {
     obi_paged_image_hold_v0* hold = (obi_paged_image_hold_v0*)release_ctx;
     if (image) {
@@ -101,28 +129,29 @@ static void _paged_image_release(void* release_ctx, obi_paged_page_image_v0* ima
     free(hold);
 }
 
-static void _paged_text_release(void* release_ctx, obi_paged_text_v0* txt) {
-    obi_paged_text_hold_v0* hold = (obi_paged_text_hold_v0*)release_ctx;
-    if (txt) {
-        memset(txt, 0, sizeof(*txt));
+static void _paged_release_string_hold(void* payload,
+                                       size_t payload_size,
+                                       obi_paged_string_hold_v0* hold) {
+    if (payload) {
+        memset(payload, 0, payload_size);
     }
     if (!hold) {
         return;
     }
-    free(hold->text);
+    free(hold->value);
     free(hold);
 }
 
+static void _paged_text_release(void* release_ctx, obi_paged_text_v0* txt) {
+    _paged_release_string_hold(txt,
+                               txt ? sizeof(*txt) : 0u,
+                               (obi_paged_string_hold_v0*)release_ctx);
+}
+
 static void _paged_meta_release(void* release_ctx, obi_paged_metadata_v0* meta) {
-    obi_paged_meta_hold_v0* hold = (obi_paged_meta_hold_v0*)release_ctx;
-    if (meta) {
-        memset(meta, 0, sizeof(*meta));
-    }
-    if (!hold) {
-        return;
-    }
-    free(hold->json);
-    free(hold);
+    _paged_release_string_hold(meta,
+                               meta ? sizeof(*meta) : 0u,
+                               (obi_paged_string_hold_v0*)release_ctx);
 }
 
 static obi_status _read_reader_all(obi_reader_v0 reader, uint8_t** out_data, size_t* out_size) {
@@ -269,19 +298,17 @@ static obi_status _paged_doc_render_page(void* ctx,
     if (!d || !d->provider || !d->provider->fz || !d->doc || !out_image) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_paged_render_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     float dpi = 72.0f;
     if (params && params->dpi > 0.0f) {
         dpi = params->dpi;
     }
-    if (dpi <= 0.0f) {
-        dpi = 72.0f;
-    }
 
-    obi_status st = OBI_STATUS_OK;
+    st = OBI_STATUS_OK;
     obi_paged_image_hold_v0* hold = NULL;
     fz_page* page = NULL;
     fz_pixmap* pix = NULL;
@@ -375,20 +402,20 @@ static obi_status _paged_doc_get_metadata_json(void* ctx, obi_paged_metadata_v0*
                    "{\"backend\":\"mupdf\",\"pages\":%d}",
                    pages);
 
-    obi_paged_meta_hold_v0* hold = (obi_paged_meta_hold_v0*)calloc(1u, sizeof(*hold));
+    obi_paged_string_hold_v0* hold = (obi_paged_string_hold_v0*)calloc(1u, sizeof(*hold));
     if (!hold) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    hold->json = _dup_n(json, strlen(json));
-    if (!hold->json) {
+    hold->value = _dup_n(json, strlen(json));
+    if (!hold->value) {
         _paged_meta_release(hold, NULL);
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
     memset(out_meta, 0, sizeof(*out_meta));
-    out_meta->metadata_json.data = hold->json;
-    out_meta->metadata_json.size = strlen(hold->json);
+    out_meta->metadata_json.data = hold->value;
+    out_meta->metadata_json.size = strlen(hold->value);
     out_meta->release_ctx = hold;
     out_meta->release = _paged_meta_release;
     return OBI_STATUS_OK;
@@ -403,16 +430,35 @@ static obi_status _paged_doc_extract_page_text_utf8(void* ctx,
     }
 
     obi_status st = OBI_STATUS_OK;
+    obi_paged_string_hold_v0* hold = (obi_paged_string_hold_v0*)calloc(1u, sizeof(*hold));
+    if (!hold) {
+        return OBI_STATUS_OUT_OF_MEMORY;
+    }
+
     fz_buffer* text_buf = NULL;
-    unsigned char* text_data = NULL;
-    size_t text_size = 0u;
     fz_context* fz = d->provider->fz;
     fz_var(st);
+    fz_var(hold);
     fz_var(text_buf);
 
     fz_try(fz) {
+        unsigned char* text_data = NULL;
+        size_t text_size = 0u;
+        const char* src = "[no text]";
+        size_t src_size = sizeof("[no text]") - 1u;
+
         text_buf = fz_new_buffer_from_page_number(fz, d->doc, (int)page_index, NULL);
         text_size = fz_buffer_storage(fz, text_buf, &text_data);
+        if (text_size > 0u && text_data) {
+            src = (const char*)text_data;
+            src_size = text_size;
+        }
+
+        hold->value = _dup_n(src, src_size);
+        if (!hold->value) {
+            st = OBI_STATUS_OUT_OF_MEMORY;
+            fz_throw(fz, FZ_ERROR_SYSTEM, "out of memory");
+        }
     }
     fz_always(fz) {
         if (text_buf) {
@@ -420,28 +466,13 @@ static obi_status _paged_doc_extract_page_text_utf8(void* ctx,
         }
     }
     fz_catch(fz) {
+        _paged_text_release(hold, NULL);
         return st != OBI_STATUS_OK ? st : OBI_STATUS_ERROR;
     }
 
-    if (text_size == 0u) {
-        text_data = (unsigned char*)"[no text]";
-        text_size = strlen((const char*)text_data);
-    }
-
-    obi_paged_text_hold_v0* hold = (obi_paged_text_hold_v0*)calloc(1u, sizeof(*hold));
-    if (!hold) {
-        return OBI_STATUS_OUT_OF_MEMORY;
-    }
-
-    hold->text = _dup_n((const char*)text_data, text_size);
-    if (!hold->text) {
-        _paged_text_release(hold, NULL);
-        return OBI_STATUS_OUT_OF_MEMORY;
-    }
-
     memset(out_text, 0, sizeof(*out_text));
-    out_text->text_utf8.data = hold->text;
-    out_text->text_utf8.size = strlen(hold->text);
+    out_text->text_utf8.data = hold->value;
+    out_text->text_utf8.size = strlen(hold->value);
     out_text->release_ctx = hold;
     out_text->release = _paged_text_release;
     return OBI_STATUS_OK;
@@ -468,8 +499,9 @@ static obi_status _paged_open_from_bytes(obi_doc_paged_mupdf_ctx_v0* provider,
     if (!provider || !provider->fz || !out_doc || (!bytes.data && bytes.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_paged_open_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
     if (bytes.size == 0u) {
         return OBI_STATUS_BAD_ARG;
@@ -485,7 +517,7 @@ static obi_status _paged_open_from_bytes(obi_doc_paged_mupdf_ctx_v0* provider,
 
     d->provider = provider;
 
-    obi_status st = OBI_STATUS_OK;
+    st = OBI_STATUS_OK;
     fz_buffer* source = NULL;
     fz_document* doc = NULL;
     int needs_password = 0;

@@ -150,6 +150,28 @@ static int _clamp_level(const obi_compression_params_v0* params) {
     return (int)params->level;
 }
 
+static obi_status _compression_params_validate(const obi_compression_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->dictionary.size > 0u && !params->dictionary.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->dictionary.size > 0u || params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
 static obi_status _compression_compress(void* ctx,
                                         const char* codec_id,
                                         const obi_compression_params_v0* params,
@@ -158,11 +180,12 @@ static obi_status _compression_compress(void* ctx,
                                         uint64_t* out_bytes_in,
                                         uint64_t* out_bytes_out) {
     (void)ctx;
+    obi_status params_st = _compression_params_validate(params);
+    if (params_st != OBI_STATUS_OK) {
+        return params_st;
+    }
     if (!_codec_supported(codec_id)) {
         return OBI_STATUS_UNSUPPORTED;
-    }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
     }
 
     uint8_t* in_data = NULL;
@@ -216,11 +239,12 @@ static obi_status _compression_decompress(void* ctx,
                                           uint64_t* out_bytes_in,
                                           uint64_t* out_bytes_out) {
     (void)ctx;
+    obi_status params_st = _compression_params_validate(params);
+    if (params_st != OBI_STATUS_OK) {
+        return params_st;
+    }
     if (!_codec_supported(codec_id)) {
         return OBI_STATUS_UNSUPPORTED;
-    }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
     }
 
     uint8_t* in_data = NULL;

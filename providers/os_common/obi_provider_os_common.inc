@@ -12,6 +12,20 @@ static obi_status _status_from_errno(int e) {
             return OBI_STATUS_OUT_OF_MEMORY;
         case ENOENT:
             return OBI_STATUS_UNAVAILABLE;
+#ifdef ENOSYS
+        case ENOSYS:
+            return OBI_STATUS_UNSUPPORTED;
+#endif
+#ifdef ENOTSUP
+        case ENOTSUP:
+            return OBI_STATUS_UNSUPPORTED;
+#endif
+#ifdef EOPNOTSUPP
+#  if !defined(ENOTSUP) || EOPNOTSUPP != ENOTSUP
+        case EOPNOTSUPP:
+            return OBI_STATUS_UNSUPPORTED;
+#  endif
+#endif
         case EINVAL:
             return OBI_STATUS_BAD_ARG;
         default:
@@ -59,6 +73,9 @@ static obi_status _known_dir_join_home(const char* home,
 
     size_t home_len = strlen(home);
     size_t suffix_len = strlen(suffix);
+    if (home_len > (SIZE_MAX - suffix_len)) {
+        return OBI_STATUS_OUT_OF_MEMORY;
+    }
     size_t total = home_len + suffix_len;
 
     *out_found = true;

@@ -1,7 +1,7 @@
 # libobi
 ## Omni Backstage Interface (OBI) Loader/Runtime
 
-**Last Updated:** 2026-03-08  
+**Last Updated:** 2026-03-15  
 **Status:** Draft  
 **Repository Role:** Implementation (loader/runtime), not the OBI spec
 
@@ -40,6 +40,21 @@ meson compile -C build
 
 ---
 
+## Diagnostics And Threading Contracts
+
+- Diagnostics/error reporting is host-controlled via `obi_host_v0.log` and
+  `obi_host_v0.emit_diagnostic`.
+- Runtime defaults are intentionally silent (`log` defaults to no-op and
+  `emit_diagnostic` defaults to `NULL`).
+- Recoverable failures are returned as `obi_status`; use
+  `obi_rt_last_error_utf8(...)` for best-effort runtime text.
+- Event-loop (`core.pump`, `core.waitset`), window (`gfx.window_input`), audio
+  (`media.audio_device`, `media.audio_mix`, `media.audio_resample`), and GPU
+  (`gfx.gpu_device`) handles are thread-affine by default unless a provider
+  explicitly documents a broader threading model.
+
+---
+
 ## Provider Selection Policy
 
 `libobi` now implements a deterministic provider-selection policy for `obi_rt_get_profile(...)`.
@@ -57,8 +72,10 @@ Additional rules:
 - License-class and SPDX-prefix CSV filters are now compatibility wrappers over cached typed legal facts (`effective_license`) when available.
 - When providers only expose `describe_json`, runtime maps legacy `license`/`deps` fields conservatively into typed legal facts (unknown by default when precision is missing).
 - Optional eager policy enforcement is available at provider load-time (`obi_rt_policy_set_eager_reject_disallowed_provider_loads`), rejecting disallowed modules before they are admitted to the runtime provider set.
+- Provider IDs are unique per runtime; loading a second module with an already-loaded `provider_id` fails with `OBI_STATUS_ERROR` and leaves the existing provider set unchanged.
 - Bindings are strict by default.
 - Set `OBI_RT_BIND_ALLOW_FALLBACK` when binding to allow fallback to later precedence stages if the bound provider is missing, denied, or does not implement the profile.
+- In strict-binding mode (no `OBI_RT_BIND_ALLOW_FALLBACK`), missing/unsupported bound providers return `OBI_STATUS_UNSUPPORTED`, while policy-denied bound providers return `OBI_STATUS_PERMISSION_DENIED`.
 - Policy and provider-load changes invalidate profile-resolution cache entries and legal-plan/report snapshots.
 
 Environment bootstrap at runtime creation:
@@ -84,8 +101,6 @@ Useful APIs:
 - `obi_rt_legal_report_presets(...)` for built-in preset feasibility reporting on current loaded providers.
 - `obi_rt_legal_apply_plan(...)` to materialize a successful legal plan as runtime profile bindings.
 - Legal metadata/plan/report pointers are runtime-owned borrowed snapshots, invalidated by the next legal query, provider set mutation, policy mutation, or runtime destruction.
-
----
 
 ## POC A Provider Baseline
 
@@ -483,13 +498,6 @@ python3 tools/profile_backend_matrix_check.py docs/profile_backend_matrix.csv --
 The matrix policy checker enforces native-retention/removal rules (only approved profiles can keep native final
 rows) and mixed-runtime hard-gate readiness (the overlap gate profiles above must each have >=2 implemented roadmap backends).
 
-Latest audited evidence in this workspace:
-
-- `build/logs/provider_lib_audit_20260301T203750Z.log`
-- `build/logs/meson_test_providers_20260301T210637Z.log`
-- `build/logs/meson_test_provider_load_smoke_20260301T211559Z.log`
-- `build/logs/meson_test_provider_profile_smoke_20260301T211559Z.log`
-
 ---
 
 ## Notes on Licensing
@@ -507,11 +515,11 @@ Current runtime policy extensions:
 - CSV allow/deny policy APIs remain available as legacy convenience filters over runtime effective legal facts;
 - unknown legal facts are conservative by default in the high-level legal selector path unless policy flags explicitly opt in.
 - current in-tree coverage is fully migrated for dual-path metadata exposure: every provider source file that still exposes
-  `describe_json()` also exposes `describe_legal_metadata()` (`91` provider source files in the March 8, 2026 audit).
+  `describe_json()` also exposes `describe_legal_metadata()`.
 
-Provider provenance and fallback notes kept as permanent project policy:
+Provider provenance and fallback policy:
 
-- the in-tree provenance audit found no remaining confirmed copied-source blocks in native/shared-base providers after
+- no remaining confirmed copied-source blocks are known in native/shared-base providers after
   the `data.serde.jsmn` inline parser removal; that provider now includes upstream `jsmn.h` directly (system header first,
   vendored fallback second) instead of embedding third-party parser code;
 - the civil-date helpers in `providers/time_common/obi_provider_time_base.inc` are documented as local expressions of

@@ -341,6 +341,20 @@ static obi_status _create_resampler(void* ctx,
     if (!out_resampler || !_audio_fmt_valid(in_fmt) || !_audio_fmt_valid(out_fmt)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params) {
+        if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u && !params->options_json.data) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u) {
+            return OBI_STATUS_UNSUPPORTED;
+        }
+    }
 
     int err = 0;
     int converter = _lsr_converter_type(params ? params->quality : 0u);

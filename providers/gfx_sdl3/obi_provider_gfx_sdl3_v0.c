@@ -498,6 +498,18 @@ static obi_status _window_create(void* ctx,
     if (!p || !params || !out_window) {
         return OBI_STATUS_BAD_ARG;
     }
+    {
+        const uint32_t known_flags = OBI_WINDOW_CREATE_RESIZABLE |
+                                     OBI_WINDOW_CREATE_HIDDEN |
+                                     OBI_WINDOW_CREATE_HIGH_DPI |
+                                     OBI_WINDOW_CREATE_BORDERLESS;
+        if ((params->flags & ~known_flags) != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
+    if (params->width > (uint32_t)INT_MAX || params->height > (uint32_t)INT_MAX) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_status st = _ensure_video(p);
     if (st != OBI_STATUS_OK) {
@@ -720,6 +732,9 @@ static obi_status _window_clipboard_set_utf8(void* ctx, obi_utf8_view_v0 text) {
     if (!text.data && text.size > 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (text.size == SIZE_MAX) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     char* z = (char*)malloc(text.size + 1u);
     if (!z) {
@@ -859,6 +874,16 @@ static obi_status _render_texture_create_rgba8(void* ctx,
     if (!p || !out_tex || width == 0u || height == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (width > (uint32_t)INT_MAX || height > (uint32_t)INT_MAX || width > (UINT32_MAX / 4u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (pixels) {
+        uint32_t min_stride = width * 4u;
+        uint32_t stride = (stride_bytes == 0u) ? min_stride : stride_bytes;
+        if (stride < min_stride || stride > (uint32_t)INT_MAX) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
 
     SDL_Renderer* renderer = _current_renderer(p);
     if (!renderer) {
@@ -887,10 +912,8 @@ static obi_status _render_texture_create_rgba8(void* ctx,
     }
 
     if (pixels) {
-        int pitch = (int)stride_bytes;
-        if (pitch <= 0) {
-            pitch = (int)(width * 4u);
-        }
+        uint32_t min_stride = width * 4u;
+        int pitch = (int)((stride_bytes == 0u) ? min_stride : stride_bytes);
 
         if (!SDL_UpdateTexture(tex, NULL, pixels, pitch)) {
             SDL_DestroyTexture(tex);
@@ -926,6 +949,18 @@ static obi_status _render_texture_update_rgba8(void* ctx,
     if (!p || tex == 0u || !pixels || w == 0u || h == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (x > (uint32_t)INT_MAX || y > (uint32_t)INT_MAX ||
+        w > (uint32_t)INT_MAX || h > (uint32_t)INT_MAX ||
+        w > (UINT32_MAX / 4u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    {
+        uint32_t min_stride = w * 4u;
+        uint32_t stride = (stride_bytes == 0u) ? min_stride : stride_bytes;
+        if (stride < min_stride || stride > (uint32_t)INT_MAX) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
 
     obi_sdl3_texture_slot_v0* slot = _find_texture_by_id(p, tex);
     if (!slot || !slot->texture) {
@@ -938,10 +973,8 @@ static obi_status _render_texture_update_rgba8(void* ctx,
     r.w = (int)w;
     r.h = (int)h;
 
-    int pitch = (int)stride_bytes;
-    if (pitch <= 0) {
-        pitch = (int)(w * 4u);
-    }
+    uint32_t min_stride = w * 4u;
+    int pitch = (int)((stride_bytes == 0u) ? min_stride : stride_bytes);
 
     return SDL_UpdateTexture(slot->texture, &r, pixels, pitch) ? OBI_STATUS_OK : OBI_STATUS_UNAVAILABLE;
 }
@@ -1077,8 +1110,28 @@ static obi_status _gpu_buffer_create(void* ctx,
     if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (desc->initial_data && desc->initial_data_size > desc->size_bytes) {
+    if (desc->flags != 0u) {
         return OBI_STATUS_BAD_ARG;
+    }
+    if ((!desc->initial_data && desc->initial_data_size > 0u) ||
+        (desc->initial_data && desc->initial_data_size > desc->size_bytes)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    switch ((obi_gpu_buffer_type_v0)desc->type) {
+        case OBI_GPU_BUFFER_VERTEX:
+        case OBI_GPU_BUFFER_INDEX:
+        case OBI_GPU_BUFFER_UNIFORM:
+            break;
+        default:
+            return OBI_STATUS_BAD_ARG;
+    }
+    switch ((obi_gpu_resource_usage_v0)desc->usage) {
+        case OBI_GPU_USAGE_IMMUTABLE:
+        case OBI_GPU_USAGE_DYNAMIC:
+        case OBI_GPU_USAGE_STREAM:
+            break;
+        default:
+            return OBI_STATUS_BAD_ARG;
     }
 
     if (_ensure_gpu_device(p) != OBI_STATUS_OK) {
@@ -1413,8 +1466,13 @@ static obi_status _gpu_sampler_create(void* ctx,
                                       const obi_gpu_sampler_desc_v0* desc,
                                       obi_gpu_sampler_id_v0* out_samp) {
     obi_gfx_sdl3_ctx_v0* p = (obi_gfx_sdl3_ctx_v0*)ctx;
-    (void)desc;
-    if (!p || !out_samp) {
+    if (!p || !desc || !out_samp) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->flags != 0u || (!desc->options_json.data && desc->options_json.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -1585,8 +1643,10 @@ static obi_status _gpu_begin_frame(void* ctx,
                                    obi_window_id_v0 window,
                                    const obi_gpu_frame_params_v0* params) {
     obi_gfx_sdl3_ctx_v0* p = (obi_gfx_sdl3_ctx_v0*)ctx;
-    (void)params;
     if (!p || window == 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (p->gpu_frame_active) {

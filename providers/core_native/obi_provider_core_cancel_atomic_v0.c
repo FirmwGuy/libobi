@@ -23,7 +23,9 @@ typedef struct obi_core_cancel_atomic_ctx_v0 {
 typedef struct obi_cancel_shared_atomic_v0 {
     atomic_uint ref_count;
     atomic_bool cancelled;
-    char* reason_utf8;
+    _Atomic(char*) reason_utf8;
+    atomic_flag reason_lock;
+    struct obi_cancel_reason_node_v0* reason_history;
 } obi_cancel_shared_atomic_v0;
 
 typedef struct obi_cancel_source_atomic_v0 {
@@ -34,8 +36,13 @@ typedef struct obi_cancel_token_atomic_v0 {
     obi_cancel_shared_atomic_v0* shared;
 } obi_cancel_token_atomic_v0;
 
+typedef struct obi_cancel_reason_node_v0 {
+    char* text;
+    struct obi_cancel_reason_node_v0* next;
+} obi_cancel_reason_node_v0;
+
 static char* _dup_utf8_view(obi_utf8_view_v0 view) {
-    if (!view.data && view.size > 0u) {
+    if ((!view.data && view.size > 0u) || view.size == SIZE_MAX) {
         return NULL;
     }
 
@@ -51,6 +58,21 @@ static char* _dup_utf8_view(obi_utf8_view_v0 view) {
     return out;
 }
 
+static void _cancel_reason_lock(obi_cancel_shared_atomic_v0* shared) {
+    if (!shared) {
+        return;
+    }
+    while (atomic_flag_test_and_set_explicit(&shared->reason_lock, memory_order_acquire)) {
+    }
+}
+
+static void _cancel_reason_unlock(obi_cancel_shared_atomic_v0* shared) {
+    if (!shared) {
+        return;
+    }
+    atomic_flag_clear_explicit(&shared->reason_lock, memory_order_release);
+}
+
 static void _cancel_shared_retain(obi_cancel_shared_atomic_v0* shared) {
     if (!shared) {
         return;
@@ -63,7 +85,13 @@ static void _cancel_shared_release(obi_cancel_shared_atomic_v0* shared) {
         return;
     }
     if (atomic_fetch_sub_explicit(&shared->ref_count, 1u, memory_order_acq_rel) == 1u) {
-        free(shared->reason_utf8);
+        obi_cancel_reason_node_v0* node = shared->reason_history;
+        while (node) {
+            obi_cancel_reason_node_v0* next = node->next;
+            free(node->text);
+            free(node);
+            node = next;
+        }
         free(shared);
     }
 }
@@ -82,7 +110,7 @@ static obi_status _token_reason_utf8(void* ctx, obi_utf8_view_v0* out_reason) {
         return OBI_STATUS_BAD_ARG;
     }
 
-    const char* reason = token->shared->reason_utf8;
+    const char* reason = atomic_load_explicit(&token->shared->reason_utf8, memory_order_acquire);
     if (!reason) {
         reason = "";
     }
@@ -132,23 +160,34 @@ static obi_status _cancel_source_token(void* ctx, obi_cancel_token_v0* out_token
 
 static obi_status _cancel_source_cancel(void* ctx, obi_utf8_view_v0 reason) {
     obi_cancel_source_atomic_v0* src = (obi_cancel_source_atomic_v0*)ctx;
-    if (!src || !src->shared || (!reason.data && reason.size > 0u)) {
+    if (!src || !src->shared || (!reason.data && reason.size > 0u) || reason.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
-    char* copy = _dup_utf8_view(reason);
-    if (!copy) {
-        if (reason.size == 0u) {
-            copy = _dup_utf8_view((obi_utf8_view_v0){ "", 0u });
-        }
+    char* copy = NULL;
+    obi_cancel_reason_node_v0* node = NULL;
+    if (reason.size > 0u) {
+        copy = _dup_utf8_view(reason);
         if (!copy) {
             return OBI_STATUS_OUT_OF_MEMORY;
         }
+
+        node = (obi_cancel_reason_node_v0*)calloc(1u, sizeof(*node));
+        if (!node) {
+            free(copy);
+            return OBI_STATUS_OUT_OF_MEMORY;
+        }
+        node->text = copy;
     }
 
-    free(src->shared->reason_utf8);
-    src->shared->reason_utf8 = copy;
+    _cancel_reason_lock(src->shared);
+    if (node) {
+        node->next = src->shared->reason_history;
+        src->shared->reason_history = node;
+    }
+    atomic_store_explicit(&src->shared->reason_utf8, copy, memory_order_release);
     atomic_store_explicit(&src->shared->cancelled, true, memory_order_release);
+    _cancel_reason_unlock(src->shared);
     return OBI_STATUS_OK;
 }
 
@@ -158,9 +197,10 @@ static obi_status _cancel_source_reset(void* ctx) {
         return OBI_STATUS_BAD_ARG;
     }
 
+    _cancel_reason_lock(src->shared);
+    atomic_store_explicit(&src->shared->reason_utf8, NULL, memory_order_release);
     atomic_store_explicit(&src->shared->cancelled, false, memory_order_release);
-    free(src->shared->reason_utf8);
-    src->shared->reason_utf8 = NULL;
+    _cancel_reason_unlock(src->shared);
     return OBI_STATUS_OK;
 }
 
@@ -204,6 +244,9 @@ static obi_status _cancel_create_source(void* ctx,
 
     atomic_init(&shared->ref_count, 1u);
     atomic_init(&shared->cancelled, false);
+    atomic_init(&shared->reason_utf8, NULL);
+    atomic_flag_clear(&shared->reason_lock);
+    shared->reason_history = NULL;
 
     obi_cancel_source_atomic_v0* src =
         (obi_cancel_source_atomic_v0*)calloc(1u, sizeof(*src));

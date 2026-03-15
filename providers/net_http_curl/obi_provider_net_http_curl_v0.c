@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -32,6 +33,46 @@ typedef struct obi_http_body_reader_curl_ctx_v0 {
 typedef struct obi_http_response_curl_state_v0 {
     obi_http_header_kv_v0 headers[1];
 } obi_http_response_curl_state_v0;
+
+static atomic_flag g_curl_global_spin = ATOMIC_FLAG_INIT;
+static atomic_uint g_curl_global_refcount = 0u;
+
+static void _curl_global_spin_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&g_curl_global_spin, memory_order_acquire)) {
+    }
+}
+
+static void _curl_global_spin_unlock(void) {
+    atomic_flag_clear_explicit(&g_curl_global_spin, memory_order_release);
+}
+
+static obi_status _curl_global_acquire(void) {
+    _curl_global_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_curl_global_refcount, memory_order_relaxed);
+    if (refs == 0u) {
+        CURLcode st = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (st != CURLE_OK) {
+            _curl_global_spin_unlock();
+            return OBI_STATUS_UNAVAILABLE;
+        }
+    }
+    atomic_store_explicit(&g_curl_global_refcount, refs + 1u, memory_order_relaxed);
+    _curl_global_spin_unlock();
+    return OBI_STATUS_OK;
+}
+
+static void _curl_global_release(void) {
+    _curl_global_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_curl_global_refcount, memory_order_relaxed);
+    if (refs > 0u) {
+        refs--;
+        atomic_store_explicit(&g_curl_global_refcount, refs, memory_order_relaxed);
+        if (refs == 0u) {
+            curl_global_cleanup();
+        }
+    }
+    _curl_global_spin_unlock();
+}
 
 static obi_status _http_body_reader_read(void* ctx, void* dst, size_t dst_cap, size_t* out_n) {
     obi_http_body_reader_curl_ctx_v0* r = (obi_http_body_reader_curl_ctx_v0*)ctx;
@@ -298,7 +339,7 @@ static void _destroy(void* ctx) {
     }
 
     if (p->curl_initialized) {
-        curl_global_cleanup();
+        _curl_global_release();
     }
 
     if (p->host && p->host->free) {
@@ -330,9 +371,9 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_UNSUPPORTED;
     }
 
-    CURLcode curl_st = curl_global_init(CURL_GLOBAL_DEFAULT);
-    if (curl_st != CURLE_OK) {
-        return OBI_STATUS_UNAVAILABLE;
+    obi_status st = _curl_global_acquire();
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     obi_net_http_curl_ctx_v0* ctx = NULL;
@@ -342,7 +383,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         ctx = (obi_net_http_curl_ctx_v0*)malloc(sizeof(*ctx));
     }
     if (!ctx) {
-        curl_global_cleanup();
+        _curl_global_release();
         return OBI_STATUS_OUT_OF_MEMORY;
     }
     memset(ctx, 0, sizeof(*ctx));

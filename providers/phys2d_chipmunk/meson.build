@@ -20,6 +20,12 @@ elif has_vendor_libraries_root
       join_paths(vendor_libraries_rel_root, 'Chipmunk2D', 'src'),
     )
     chipmunk_vendor_deps = []
+    chipmunk_vendor_c_args = [
+      # Vendored Chipmunk is imported third-party code and emits warnings under
+      # newer compiler baselines; keep provider sources under strict -Werror.
+      '-Wno-unused-parameter',
+      '-Wno-cast-function-type',
+    ]
     chipmunk_vendor_libm = cc.find_library('m', required: false)
     if chipmunk_vendor_libm.found()
       chipmunk_vendor_deps += [chipmunk_vendor_libm]
@@ -66,6 +72,7 @@ elif has_vendor_libraries_root
         chipmunk_vendor_sources,
         include_directories: chipmunk_vendor_inc,
         dependencies: chipmunk_vendor_deps,
+        c_args: chipmunk_vendor_c_args,
         install: false,
       )
       phys2d_chipmunk_backend_linkage = 'static'
@@ -75,6 +82,7 @@ elif has_vendor_libraries_root
         chipmunk_vendor_sources,
         include_directories: chipmunk_vendor_inc,
         dependencies: chipmunk_vendor_deps,
+        c_args: chipmunk_vendor_c_args,
         install: true,
         install_dir: provider_install_dir,
       )

@@ -174,6 +174,25 @@ static const char* _source_encoding(const obi_doc_text_decode_params_v0* params)
     return "utf-8";
 }
 
+static obi_status _validate_decode_params(const obi_doc_text_decode_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    const uint32_t allowed_flags = OBI_TEXT_DECODE_FLAG_STRICT | OBI_TEXT_DECODE_FLAG_REPLACE_INVALID;
+    if ((params->flags & ~allowed_flags) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((params->flags & OBI_TEXT_DECODE_FLAG_STRICT) != 0u &&
+        (params->flags & OBI_TEXT_DECODE_FLAG_REPLACE_INVALID) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static int _replace_invalid(const obi_doc_text_decode_params_v0* params) {
     if (params && ((params->flags & OBI_TEXT_DECODE_FLAG_STRICT) != 0u)) {
         return 0;
@@ -300,20 +319,21 @@ static obi_status _decode_bytes_to_utf8_writer(void* ctx,
     if ((!bytes.data && bytes.size > 0u) || !utf8_out.api || !utf8_out.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_decode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     const char* source_encoding = _source_encoding(params);
     uint32_t had_errors = 0u;
     uint64_t bytes_out = 0u;
-    obi_status st = _decode_with_iconv((const uint8_t*)bytes.data,
-                                       bytes.size,
-                                       source_encoding,
-                                       _replace_invalid(params),
-                                       utf8_out,
-                                       &had_errors,
-                                       &bytes_out);
+    st = _decode_with_iconv((const uint8_t*)bytes.data,
+                            bytes.size,
+                            source_encoding,
+                            _replace_invalid(params),
+                            utf8_out,
+                            &had_errors,
+                            &bytes_out);
     if (st != OBI_STATUS_OK) {
         return st;
     }
@@ -345,8 +365,9 @@ static obi_status _decode_reader_to_utf8_writer(void* ctx,
     if (!reader.api || !reader.api->read || !utf8_out.api || !utf8_out.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_decode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     obi_dynbuf_v0 buf;
@@ -355,7 +376,7 @@ static obi_status _decode_reader_to_utf8_writer(void* ctx,
     for (;;) {
         uint8_t tmp[1024];
         size_t got = 0u;
-        obi_status st = reader.api->read(reader.ctx, tmp, sizeof(tmp), &got);
+        st = reader.api->read(reader.ctx, tmp, sizeof(tmp), &got);
         if (st != OBI_STATUS_OK) {
             _dynbuf_free(&buf);
             return st;
@@ -369,13 +390,13 @@ static obi_status _decode_reader_to_utf8_writer(void* ctx,
         }
     }
 
-    obi_status st = _decode_bytes_to_utf8_writer(ctx,
-                                                  (obi_bytes_view_v0){ buf.data, buf.size },
-                                                  params,
-                                                  utf8_out,
-                                                  out_info,
-                                                  out_bytes_in,
-                                                  out_bytes_out);
+    st = _decode_bytes_to_utf8_writer(ctx,
+                                      (obi_bytes_view_v0){ buf.data, buf.size },
+                                      params,
+                                      utf8_out,
+                                      out_info,
+                                      out_bytes_in,
+                                      out_bytes_out);
     _dynbuf_free(&buf);
     return st;
 }

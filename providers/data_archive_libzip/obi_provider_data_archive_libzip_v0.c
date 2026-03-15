@@ -186,6 +186,38 @@ static int _format_supported(const char* format_hint) {
     return strcmp(format_hint, "zip") == 0;
 }
 
+static obi_status _archive_open_params_validate(const obi_archive_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
+static int _archive_entry_create_validate(const obi_archive_entry_create_v0* entry) {
+    if (!entry || !entry->path || entry->path[0] == '\0') {
+        return 0;
+    }
+    if (entry->struct_size != 0u && entry->struct_size < sizeof(*entry)) {
+        return 0;
+    }
+    if (entry->flags != 0u) {
+        return 0;
+    }
+    return 1;
+}
+
 static mode_t _entry_mode_bits(obi_archive_entry_kind_v0 kind, uint32_t posix_mode) {
     mode_t perms = (mode_t)(posix_mode & 07777u);
     if (perms == 0u) {
@@ -481,7 +513,7 @@ static obi_status _archive_writer_begin_entry(void* ctx,
                                               const obi_archive_entry_create_v0* entry,
                                               obi_writer_v0* out_entry_writer) {
     obi_archive_writer_ctx_v0* w = (obi_archive_writer_ctx_v0*)ctx;
-    if (!w || !entry || !out_entry_writer || !entry->path || entry->path[0] == '\0') {
+    if (!w || !out_entry_writer || !_archive_entry_create_validate(entry)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (w->sticky_error != OBI_STATUS_OK) {
@@ -872,8 +904,9 @@ static obi_status _archive_open_reader(void* ctx,
     if (!out_reader || !src.api || !src.api->read) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status params_st = _archive_open_params_validate(params);
+    if (params_st != OBI_STATUS_OK) {
+        return params_st;
     }
     if (params && !_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;
@@ -938,8 +971,9 @@ static obi_status _archive_open_writer(void* ctx,
     if (!out_writer || !dst.api || !dst.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status params_st = _archive_open_params_validate(params);
+    if (params_st != OBI_STATUS_OK) {
+        return params_st;
     }
     if (params && !_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;

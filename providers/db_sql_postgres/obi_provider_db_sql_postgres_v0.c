@@ -21,6 +21,8 @@
 #endif
 
 #define OBI_DB_POSTGRES_MAX_BINDS 64u
+#define OBI_DB_SQL_POSTGRES_OPEN_KNOWN_FLAGS \
+    (OBI_SQL_OPEN_READ_ONLY | OBI_SQL_OPEN_CREATE)
 
 typedef struct obi_db_sql_postgres_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
@@ -745,6 +747,9 @@ static obi_status _sql_open(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((params->flags & ~OBI_DB_SQL_POSTGRES_OPEN_KNOWN_FLAGS) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
 

@@ -273,6 +273,103 @@ static bool _offset_minutes_is_valid(int32_t offset_minutes) {
     return offset_minutes >= -1439 && offset_minutes <= 1439;
 }
 
+#if defined(OBI_TIME_PROVIDER_UNIX_NS_TO_CIVIL_EXT) && defined(OBI_TIME_PROVIDER_CIVIL_TO_UNIX_NS_EXT)
+typedef obi_status (*_time_unix_ns_to_civil_ext_fn)(void* ctx,
+                                                     int64_t unix_ns,
+                                                     const obi_time_zone_spec_v0* zone,
+                                                     obi_time_civil_v0* out_civil,
+                                                     int32_t* out_offset_minutes);
+
+static bool _civil_exact_equal(const obi_time_civil_v0* a, const obi_time_civil_v0* b) {
+    if (!a || !b) {
+        return false;
+    }
+    return a->year == b->year &&
+           a->month == b->month &&
+           a->day == b->day &&
+           a->hour == b->hour &&
+           a->minute == b->minute &&
+           a->second == b->second &&
+           a->nanosecond == b->nanosecond;
+}
+
+static obi_status _civil_mapping_window_with_ext(void* ctx,
+                                                 const obi_time_civil_v0* civil,
+                                                 const obi_time_zone_spec_v0* zone,
+                                                 int64_t base_unix_ns,
+                                                 int32_t base_offset_minutes,
+                                                 _time_unix_ns_to_civil_ext_fn unix_ns_to_civil_ext,
+                                                 int64_t* out_earliest_unix_ns,
+                                                 int32_t* out_earliest_offset_minutes,
+                                                 int64_t* out_latest_unix_ns,
+                                                 int32_t* out_latest_offset_minutes,
+                                                 bool* out_ambiguous) {
+    if (!civil || !zone || !unix_ns_to_civil_ext ||
+        !out_earliest_unix_ns || !out_earliest_offset_minutes ||
+        !out_latest_unix_ns || !out_latest_offset_minutes ||
+        !out_ambiguous) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    *out_earliest_unix_ns = base_unix_ns;
+    *out_earliest_offset_minutes = base_offset_minutes;
+    *out_latest_unix_ns = base_unix_ns;
+    *out_latest_offset_minutes = base_offset_minutes;
+    *out_ambiguous = false;
+
+    int64_t scan_step_sec = 0;
+    int64_t scan_step_ns = 0;
+    if (_mul_overflow_i64(15ll, 60ll, &scan_step_sec) ||
+        _mul_overflow_i64(scan_step_sec, OBI_NS_PER_SEC, &scan_step_ns)) {
+        return OBI_STATUS_ERROR;
+    }
+
+    for (int dir = -1; dir <= 1; dir += 2) {
+        for (int step = 1; step <= 16; step++) {
+            int64_t delta_ns = 0;
+            int64_t candidate_unix_ns = 0;
+            if (_mul_overflow_i64((int64_t)step, scan_step_ns, &delta_ns)) {
+                break;
+            }
+
+            if (dir < 0) {
+                if (_sub_overflow_i64(base_unix_ns, delta_ns, &candidate_unix_ns)) {
+                    break;
+                }
+            } else {
+                if (_add_overflow_i64(base_unix_ns, delta_ns, &candidate_unix_ns)) {
+                    break;
+                }
+            }
+
+            obi_time_civil_v0 probe_civil;
+            memset(&probe_civil, 0, sizeof(probe_civil));
+            int32_t probe_offset_minutes = 0;
+            const obi_status st = unix_ns_to_civil_ext(ctx,
+                                                       candidate_unix_ns,
+                                                       zone,
+                                                       &probe_civil,
+                                                       &probe_offset_minutes);
+            if (st != OBI_STATUS_OK || !_civil_exact_equal(civil, &probe_civil)) {
+                continue;
+            }
+
+            *out_ambiguous = true;
+            if (candidate_unix_ns < *out_earliest_unix_ns) {
+                *out_earliest_unix_ns = candidate_unix_ns;
+                *out_earliest_offset_minutes = probe_offset_minutes;
+            }
+            if (candidate_unix_ns > *out_latest_unix_ns) {
+                *out_latest_unix_ns = candidate_unix_ns;
+                *out_latest_offset_minutes = probe_offset_minutes;
+            }
+        }
+    }
+
+    return OBI_STATUS_OK;
+}
+#endif
+
 static obi_status _resolve_zone_offset(const obi_time_zone_spec_v0* zone, int32_t* out_offset_minutes) {
     if (!zone || !out_offset_minutes) {
         return OBI_STATUS_BAD_ARG;

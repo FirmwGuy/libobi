@@ -960,6 +960,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
         return OBI_STATUS_UNSUPPORTED;
     }
 
+    /* libsodium global init is idempotent and intentionally process-global. */
     if (sodium_init() < 0) {
         return OBI_STATUS_ERROR;
     }

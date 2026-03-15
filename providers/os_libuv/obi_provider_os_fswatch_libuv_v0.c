@@ -362,6 +362,7 @@ static obi_status _fs_watch_remove_watch(void* ctx, uint64_t watch_id) {
     w->watch_count--;
 
     if (item->handle_open) {
+        item->owner = NULL;
         (void)uv_fs_event_stop(&item->handle);
         uv_close((uv_handle_t*)&item->handle, _watch_close_cb);
         _drain_main_loop(w);
@@ -424,6 +425,7 @@ static void _fs_watch_destroy(void* ctx) {
             continue;
         }
         if (item->handle_open) {
+            item->owner = NULL;
             (void)uv_fs_event_stop(&item->handle);
             uv_close((uv_handle_t*)&item->handle, _watch_close_cb);
         } else {
@@ -436,8 +438,6 @@ static void _fs_watch_destroy(void* ctx) {
     w->watches = NULL;
     w->watch_cap = 0u;
 
-    _os_fswatch_clear_events(&w->event_head, &w->event_tail, &w->overflowed);
-
     if (w->loop) {
         while (uv_loop_close(w->loop) == UV_EBUSY) {
             (void)uv_run(w->loop, UV_RUN_NOWAIT);
@@ -445,6 +445,8 @@ static void _fs_watch_destroy(void* ctx) {
         free(w->loop);
         w->loop = NULL;
     }
+
+    _os_fswatch_clear_events(&w->event_head, &w->event_tail, &w->overflowed);
 
     free(w);
 }
@@ -473,6 +475,12 @@ static obi_status _os_fs_watch_open_watcher(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params && params->options_json.size > 0u && !params->options_json.data) {
         return OBI_STATUS_BAD_ARG;
     }
 

@@ -31,6 +31,7 @@ typedef struct obi_os_env_glib_ctx_v0 {
 
 typedef struct obi_env_iter_glib_ctx_v0 {
     gchar** names;
+    char* value_buf;
     size_t index;
 } obi_env_iter_glib_ctx_v0;
 
@@ -79,9 +80,9 @@ static obi_status _env_setenv_utf8(void* ctx, const char* name, const char* valu
     (void)flags;
     return OBI_STATUS_UNSUPPORTED;
 #else
-    gboolean overwrite = ((flags & OBI_ENV_SET_NO_OVERWRITE) == 0u) ? TRUE : FALSE;
-    if (!g_setenv(name, value, overwrite)) {
-        return OBI_STATUS_ERROR;
+    int overwrite = (flags & OBI_ENV_SET_NO_OVERWRITE) ? 0 : 1;
+    if (setenv(name, value, overwrite) != 0) {
+        return _status_from_errno(errno);
     }
     return OBI_STATUS_OK;
 #endif
@@ -96,7 +97,9 @@ static obi_status _env_unsetenv(void* ctx, const char* name) {
 #if defined(_WIN32)
     return OBI_STATUS_UNSUPPORTED;
 #else
-    g_unsetenv(name);
+    if (unsetenv(name) != 0) {
+        return _status_from_errno(errno);
+    }
     return OBI_STATUS_OK;
 #endif
 }
@@ -115,7 +118,7 @@ static obi_status _env_get_cwd_utf8(void* ctx, char* out_path, size_t out_cap, s
 #else
     char* cwd = g_get_current_dir();
     if (!cwd) {
-        return OBI_STATUS_UNAVAILABLE;
+        return _status_from_errno(errno);
     }
 
     obi_status st = _write_utf8_out(cwd, out_path, out_cap, out_size);
@@ -159,11 +162,11 @@ static obi_status _env_known_dir_utf8(void* ctx,
     *out_found = false;
     return OBI_STATUS_UNSUPPORTED;
 #else
-    const char* home = g_get_home_dir();
-    const char* tmp = g_get_tmp_dir();
-    const char* user_config = g_get_user_config_dir();
-    const char* user_data = g_get_user_data_dir();
-    const char* user_cache = g_get_user_cache_dir();
+    const char* home = g_getenv("HOME");
+    const char* tmp = g_getenv("TMPDIR");
+    if (!tmp || tmp[0] == '\0') {
+        tmp = "/tmp";
+    }
 
     switch (kind) {
         case OBI_ENV_KNOWN_DIR_HOME:
@@ -179,26 +182,32 @@ static obi_status _env_known_dir_utf8(void* ctx,
             *out_found = true;
             return _write_utf8_out(tmp, out_path, out_cap, out_size);
 
-        case OBI_ENV_KNOWN_DIR_USER_CONFIG:
-            if (user_config && user_config[0] != '\0') {
+        case OBI_ENV_KNOWN_DIR_USER_CONFIG: {
+            const char* x = g_getenv("XDG_CONFIG_HOME");
+            if (x && x[0] != '\0') {
                 *out_found = true;
-                return _write_utf8_out(user_config, out_path, out_cap, out_size);
+                return _write_utf8_out(x, out_path, out_cap, out_size);
             }
             return _known_dir_join_home(home, "/.config", out_path, out_cap, out_size, out_found);
+        }
 
-        case OBI_ENV_KNOWN_DIR_USER_DATA:
-            if (user_data && user_data[0] != '\0') {
+        case OBI_ENV_KNOWN_DIR_USER_DATA: {
+            const char* x = g_getenv("XDG_DATA_HOME");
+            if (x && x[0] != '\0') {
                 *out_found = true;
-                return _write_utf8_out(user_data, out_path, out_cap, out_size);
+                return _write_utf8_out(x, out_path, out_cap, out_size);
             }
             return _known_dir_join_home(home, "/.local/share", out_path, out_cap, out_size, out_found);
+        }
 
-        case OBI_ENV_KNOWN_DIR_USER_CACHE:
-            if (user_cache && user_cache[0] != '\0') {
+        case OBI_ENV_KNOWN_DIR_USER_CACHE: {
+            const char* x = g_getenv("XDG_CACHE_HOME");
+            if (x && x[0] != '\0') {
                 *out_found = true;
-                return _write_utf8_out(user_cache, out_path, out_cap, out_size);
+                return _write_utf8_out(x, out_path, out_cap, out_size);
             }
             return _known_dir_join_home(home, "/.cache", out_path, out_cap, out_size, out_found);
+        }
 
         case OBI_ENV_KNOWN_DIR_SYSTEM_CONFIG:
             *out_found = true;
@@ -231,22 +240,22 @@ static obi_status _env_iter_next(void* ctx,
     return OBI_STATUS_UNSUPPORTED;
 #else
     obi_env_iter_glib_ctx_v0* it = (obi_env_iter_glib_ctx_v0*)ctx;
+
+    g_free(it->value_buf);
+    it->value_buf = NULL;
+
+    *out_has_item = false;
+    out_name->data = NULL;
+    out_name->size = 0u;
+    out_value->data = NULL;
+    out_value->size = 0u;
+
     if (!it->names) {
-        out_name->data = NULL;
-        out_name->size = 0u;
-        out_value->data = NULL;
-        out_value->size = 0u;
-        *out_has_item = false;
         return OBI_STATUS_OK;
     }
 
     const char* name = it->names[it->index];
     if (!name) {
-        out_name->data = NULL;
-        out_name->size = 0u;
-        out_value->data = NULL;
-        out_value->size = 0u;
-        *out_has_item = false;
         return OBI_STATUS_OK;
     }
     it->index++;
@@ -255,11 +264,15 @@ static obi_status _env_iter_next(void* ctx,
     if (!value) {
         value = "";
     }
+    it->value_buf = g_strdup(value);
+    if (!it->value_buf) {
+        return OBI_STATUS_OUT_OF_MEMORY;
+    }
 
     out_name->data = name;
     out_name->size = strlen(name);
-    out_value->data = value;
-    out_value->size = strlen(value);
+    out_value->data = it->value_buf;
+    out_value->size = strlen(it->value_buf);
     *out_has_item = true;
     return OBI_STATUS_OK;
 #endif
@@ -274,6 +287,8 @@ static void _env_iter_destroy(void* ctx) {
         g_strfreev(it->names);
         it->names = NULL;
     }
+    g_free(it->value_buf);
+    it->value_buf = NULL;
     free(it);
 }
 

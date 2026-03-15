@@ -75,6 +75,9 @@ static int _dynbuf_append(obi_dynbuf_v0* b, const void* src, size_t n) {
     if (n == 0u) {
         return 1;
     }
+    if (n > (SIZE_MAX - b->size)) {
+        return 0;
+    }
     if (!_dynbuf_reserve(b, b->size + n)) {
         return 0;
     }
@@ -88,7 +91,7 @@ static int _dynbuf_append_ch(obi_dynbuf_v0* b, char ch) {
 }
 
 static char* _dup_n(const char* s, size_t n) {
-    if (!s && n > 0u) {
+    if ((!s && n > 0u) || n == SIZE_MAX) {
         return NULL;
     }
 
@@ -2195,7 +2198,7 @@ static void _uri_lower_ascii_append(obi_dynbuf_v0* out, const char* s, size_t n)
 }
 
 static obi_status _uri_parse_parts(obi_utf8_view_v0 uri, char** out_owned, obi_uri_parts_v0* out_parts) {
-    if (!out_owned || !out_parts || (!uri.data && uri.size > 0u)) {
+    if (!out_owned || !out_parts || (!uri.data && uri.size > 0u) || uri.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -2400,7 +2403,7 @@ static obi_status _uri_percent_decode_alloc(const char* src,
 
 static obi_status _uri_parse_utf8(void* ctx, obi_utf8_view_v0 uri, obi_uri_info_v0* out_info) {
     (void)ctx;
-    if (!out_info || (!uri.data && uri.size > 0u)) {
+    if (!out_info || (!uri.data && uri.size > 0u) || uri.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -2432,7 +2435,7 @@ static obi_status _uri_normalize_utf8(void* ctx,
                                       obi_uri_text_v0* out_text) {
     (void)ctx;
     (void)flags;
-    if (!out_text || (!uri.data && uri.size > 0u)) {
+    if (!out_text || (!uri.data && uri.size > 0u) || uri.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -2495,7 +2498,9 @@ static obi_status _uri_resolve_utf8(void* ctx,
     (void)flags;
     if (!out_text ||
         (!base_uri.data && base_uri.size > 0u) ||
-        (!ref_uri.data && ref_uri.size > 0u)) {
+        (!ref_uri.data && ref_uri.size > 0u) ||
+        base_uri.size == SIZE_MAX ||
+        ref_uri.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -2590,7 +2595,7 @@ static obi_status _uri_query_items_utf8(void* ctx,
                                         uint32_t flags,
                                         obi_uri_query_items_v0* out_items) {
     (void)ctx;
-    if (!out_items || (!query.data && query.size > 0u)) {
+    if (!out_items || (!query.data && query.size > 0u) || query.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
     memset(out_items, 0, sizeof(*out_items));
@@ -2703,7 +2708,7 @@ static obi_status _uri_percent_encode_utf8(void* ctx,
                                            uint32_t flags,
                                            obi_uri_text_v0* out_text) {
     (void)ctx;
-    if (!out_text || (!text.data && text.size > 0u)) {
+    if (!out_text || (!text.data && text.size > 0u) || text.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!_uri_utf8_valid((const uint8_t*)text.data, text.size)) {
@@ -2758,7 +2763,7 @@ static obi_status _uri_percent_decode_utf8(void* ctx,
                                            uint32_t flags,
                                            obi_uri_text_v0* out_text) {
     (void)ctx;
-    if (!out_text || (!text.data && text.size > 0u)) {
+    if (!out_text || (!text.data && text.size > 0u) || text.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 

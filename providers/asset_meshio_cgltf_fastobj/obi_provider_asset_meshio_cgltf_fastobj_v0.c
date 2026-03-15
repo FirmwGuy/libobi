@@ -177,6 +177,45 @@ static void _mesh_fill_default_triangle(obi_mesh_asset_native_ctx_v0* m, const c
     m->indices[2] = 2u;
 }
 
+static obi_status _validate_mesh_open_params(const obi_mesh_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_scene_open_params(const obi_scene_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static int _scene_codec_supported(const char* codec_id) {
+    if (!codec_id) {
+        return 0;
+    }
+    return strcmp(codec_id, "gltf") == 0 || strcmp(codec_id, "glb") == 0;
+}
+
 static void* _fast_obj_mem_open(const char* path, void* user_data) {
     fast_obj_mem_source_v0* src = (fast_obj_mem_source_v0*)user_data;
     if (!path || !src || !src->path || strcmp(path, src->path) != 0) {
@@ -484,8 +523,11 @@ static obi_status _mesh_open_common(const uint8_t* bytes,
     if (!out_asset) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    {
+        obi_status st = _validate_mesh_open_params(params);
+        if (st != OBI_STATUS_OK) {
+            return st;
+        }
     }
 
     obi_mesh_asset_native_ctx_v0* m =
@@ -645,8 +687,11 @@ static obi_status _scene_open_common(const uint8_t* bytes,
     if (!out_asset || (!bytes && size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    {
+        obi_status st = _validate_scene_open_params(params);
+        if (st != OBI_STATUS_OK) {
+            return st;
+        }
     }
 
     obi_scene_asset_native_ctx_v0* s =
@@ -746,9 +791,17 @@ static obi_status _scene_export_to_writer(void* ctx,
                                           obi_writer_v0 out_bytes,
                                           uint64_t* out_bytes_written) {
     (void)ctx;
-    (void)params;
     if (!codec_id || !asset || !asset->ctx || !asset->api || !out_bytes.api || !out_bytes.api->write) {
         return OBI_STATUS_BAD_ARG;
+    }
+    if (!_scene_codec_supported(codec_id)) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    {
+        obi_status st = _validate_scene_open_params(params);
+        if (st != OBI_STATUS_OK) {
+            return st;
+        }
     }
 
     obi_scene_asset_native_ctx_v0* s = (obi_scene_asset_native_ctx_v0*)asset->ctx;

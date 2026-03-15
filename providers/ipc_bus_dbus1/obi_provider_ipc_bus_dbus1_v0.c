@@ -85,6 +85,10 @@ typedef struct obi_ipc_bus_dbus1_ctx_v0 {
 } obi_ipc_bus_dbus1_ctx_v0;
 
 static char* _dup_range(const char* s, size_t n) {
+    if ((!s && n > 0u) || n == SIZE_MAX) {
+        return NULL;
+    }
+
     char* out = (char*)malloc(n + 1u);
     if (!out) {
         return NULL;

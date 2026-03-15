@@ -58,6 +58,32 @@ static int _ascii_eq_nocase(const char* a, const char* b) {
     return (*a == '\0' && *b == '\0');
 }
 
+static obi_status _validate_decode_params(const obi_image_decode_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_encode_params(const obi_image_encode_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static obi_status _fill_out_image(obi_image_v0* out_image,
                                   uint32_t width,
                                   uint32_t height,
@@ -321,9 +347,12 @@ static obi_status _decode_from_bytes(void* ctx,
                                      const obi_image_decode_params_v0* params,
                                      obi_image_v0* out_image) {
     (void)ctx;
-    (void)params;
     if (!out_image || !bytes.data || bytes.size == 0u) {
         return OBI_STATUS_BAD_ARG;
+    }
+    obi_status st = _validate_decode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     memset(out_image, 0, sizeof(*out_image));
@@ -343,7 +372,7 @@ static obi_status _decode_from_bytes(void* ctx,
         return OBI_STATUS_UNSUPPORTED;
     }
 
-    obi_status st = _decode_from_pixbuf(pixbuf, out_image);
+    st = _decode_from_pixbuf(pixbuf, out_image);
     g_object_unref(pixbuf);
     return st;
 }
@@ -356,10 +385,14 @@ static obi_status _decode_from_reader(void* ctx,
     if (!out_image) {
         return OBI_STATUS_BAD_ARG;
     }
+    obi_status st = _validate_decode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
 
     uint8_t* bytes = NULL;
     size_t size = 0u;
-    obi_status st = _read_reader_all(reader, &bytes, &size);
+    st = _read_reader_all(reader, &bytes, &size);
     if (st != OBI_STATUS_OK) {
         return st;
     }
@@ -393,6 +426,10 @@ static obi_status _encode_to_writer(void* ctx,
     if (!codec_id || !image || !out_bytes_written) {
         return OBI_STATUS_BAD_ARG;
     }
+    obi_status st = _validate_encode_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
+    }
     *out_bytes_written = 0u;
 
     const char* gdk_type = _codec_to_gdk_type(codec_id);
@@ -402,7 +439,7 @@ static obi_status _encode_to_writer(void* ctx,
 
     uint8_t* rgba = NULL;
     size_t rgba_size = 0u;
-    obi_status st = _to_rgba8_buffer(image, &rgba, &rgba_size);
+    st = _to_rgba8_buffer(image, &rgba, &rgba_size);
     if (st != OBI_STATUS_OK) {
         return st;
     }

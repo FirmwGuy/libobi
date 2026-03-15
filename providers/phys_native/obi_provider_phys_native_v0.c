@@ -65,6 +65,47 @@ extern int obi_phys_bullet_probe_version(void);
 #  define OBI_EXPORT __attribute__((visibility("default")))
 #endif
 
+#ifndef OBI_PHYS_NATIVE_ENABLE_WORLD2D
+#  define OBI_PHYS_NATIVE_ENABLE_WORLD2D 1
+#endif
+
+#ifndef OBI_PHYS_NATIVE_ENABLE_WORLD3D
+#  define OBI_PHYS_NATIVE_ENABLE_WORLD3D 1
+#endif
+
+#define OBI_PHYS_DEBUG_FLAGS_MASK \
+    (OBI_PHYS_DEBUG_FLAG_SHAPES | OBI_PHYS_DEBUG_FLAG_AABBS | \
+     OBI_PHYS_DEBUG_FLAG_CONTACTS | OBI_PHYS_DEBUG_FLAG_JOINTS)
+
+#if OBI_PHYS_NATIVE_ENABLE_WORLD2D
+#  define OBI_PHYS_NATIVE_DEBUG_CAP_WORLD2D OBI_PHYS_DEBUG_CAP_WORLD2D
+#else
+#  define OBI_PHYS_NATIVE_DEBUG_CAP_WORLD2D 0u
+#endif
+
+#if OBI_PHYS_NATIVE_ENABLE_WORLD3D
+#  define OBI_PHYS_NATIVE_DEBUG_CAP_WORLD3D OBI_PHYS_DEBUG_CAP_WORLD3D
+#else
+#  define OBI_PHYS_NATIVE_DEBUG_CAP_WORLD3D 0u
+#endif
+
+#define OBI_PHYS_NATIVE_DEBUG_CAPS \
+    (OBI_PHYS_NATIVE_DEBUG_CAP_WORLD2D | OBI_PHYS_NATIVE_DEBUG_CAP_WORLD3D | \
+     OBI_PHYS_DEBUG_CAP_LINES | OBI_PHYS_DEBUG_CAP_TRIANGLES)
+
+#if OBI_PHYS_NATIVE_ENABLE_WORLD2D && OBI_PHYS_NATIVE_ENABLE_WORLD3D
+#  define OBI_PHYS_NATIVE_PROFILES_JSON \
+      "\"obi.profile:phys.world2d-0\",\"obi.profile:phys.world3d-0\",\"obi.profile:phys.debug_draw-0\""
+#elif OBI_PHYS_NATIVE_ENABLE_WORLD2D
+#  define OBI_PHYS_NATIVE_PROFILES_JSON \
+      "\"obi.profile:phys.world2d-0\",\"obi.profile:phys.debug_draw-0\""
+#elif OBI_PHYS_NATIVE_ENABLE_WORLD3D
+#  define OBI_PHYS_NATIVE_PROFILES_JSON \
+      "\"obi.profile:phys.world3d-0\",\"obi.profile:phys.debug_draw-0\""
+#else
+#  define OBI_PHYS_NATIVE_PROFILES_JSON "\"obi.profile:phys.debug_draw-0\""
+#endif
+
 #define OBI_PHYS_NATIVE_MAX_BODIES_2D      128u
 #define OBI_PHYS_NATIVE_MAX_COLLIDERS_2D   256u
 #define OBI_PHYS_NATIVE_MAX_CONTACTS_2D     64u
@@ -155,6 +196,31 @@ typedef struct obi_phys3d_world_native_ctx_v0 {
 static const obi_phys2d_world_api_v0 OBI_PHYS_NATIVE_WORLD2D_API_V0;
 static const obi_phys3d_world_api_v0 OBI_PHYS_NATIVE_WORLD3D_API_V0;
 
+static bool _phys2d_body_type_valid(obi_phys2d_body_type_v0 t) {
+    return t == OBI_PHYS2D_BODY_STATIC ||
+           t == OBI_PHYS2D_BODY_DYNAMIC ||
+           t == OBI_PHYS2D_BODY_KINEMATIC;
+}
+
+static bool _phys3d_body_type_valid(obi_phys3d_body_type_v0 t) {
+    return t == OBI_PHYS3D_BODY_STATIC ||
+           t == OBI_PHYS3D_BODY_DYNAMIC ||
+           t == OBI_PHYS3D_BODY_KINEMATIC;
+}
+
+static bool _phys_debug_params_valid(const obi_phys_debug_draw_params_v0* params) {
+    if (!params) {
+        return true;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return false;
+    }
+    if ((params->flags & ~OBI_PHYS_DEBUG_FLAGS_MASK) != 0u) {
+        return false;
+    }
+    return true;
+}
+
 /* ---------------- phys.world2d ---------------- */
 
 static obi_phys2d_body_slot_v0* _phys2d_body_get(obi_phys2d_world_native_ctx_v0* w, obi_phys2d_body_id_v0 id) {
@@ -235,6 +301,9 @@ static obi_status _phys2d_body_create(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (def->struct_size != 0u && def->struct_size < sizeof(*def)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (def->flags != 0u || !_phys2d_body_type_valid(def->type)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -352,6 +421,9 @@ static obi_status _phys2d_collider_create_circle(void* ctx,
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (def->common.flags != 0u || def->radius <= 0.0f) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_2D; i++) {
         if (!w->colliders[i].used) {
@@ -382,6 +454,11 @@ static obi_status _phys2d_collider_create_box(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (def->common.flags != 0u ||
+        def->half_extents.x <= 0.0f ||
+        def->half_extents.y <= 0.0f) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -501,6 +578,9 @@ static obi_status _phys2d_world_create(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_phys2d_world_native_ctx_v0* w =
         (obi_phys2d_world_native_ctx_v0*)calloc(1u, sizeof(*w));
@@ -606,6 +686,9 @@ static obi_status _phys3d_body_create(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (def->struct_size != 0u && def->struct_size < sizeof(*def)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (def->flags != 0u || !_phys3d_body_type_valid(def->type)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -717,6 +800,9 @@ static obi_status _phys3d_collider_create_sphere(void* ctx,
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (def->common.flags != 0u || def->radius <= 0.0f) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_3D; i++) {
         if (!w->colliders[i].used) {
@@ -749,6 +835,12 @@ static obi_status _phys3d_collider_create_box(void* ctx,
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (def->common.flags != 0u ||
+        def->half_extents.x <= 0.0f ||
+        def->half_extents.y <= 0.0f ||
+        def->half_extents.z <= 0.0f) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_3D; i++) {
         if (!w->colliders[i].used) {
@@ -779,6 +871,9 @@ static obi_status _phys3d_collider_create_capsule(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (def->common.struct_size != 0u && def->common.struct_size < sizeof(def->common)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (def->common.flags != 0u || def->radius <= 0.0f || def->half_height < 0.0f) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -900,6 +995,9 @@ static obi_status _phys3d_world_create(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_phys3d_world_native_ctx_v0* w =
         (obi_phys3d_world_native_ctx_v0*)calloc(1u, sizeof(*w));
@@ -937,8 +1035,18 @@ static obi_status _phys_debug_collect_world2d(void* ctx,
                                               size_t tri_cap,
                                               size_t* out_tri_count) {
     (void)ctx;
-    (void)params;
     if (!world || !world->api || !out_line_count || !out_tri_count) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((OBI_PHYS_NATIVE_DEBUG_CAPS & OBI_PHYS_DEBUG_CAP_WORLD2D) == 0u) {
+        *out_line_count = 0u;
+        *out_tri_count = 0u;
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    if (!_phys_debug_params_valid(params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (world->api != &OBI_PHYS_NATIVE_WORLD2D_API_V0 || !world->ctx) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -949,30 +1057,28 @@ static obi_status _phys_debug_collect_world2d(void* ctx,
     memset(&line, 0, sizeof(line));
     memset(&tri, 0, sizeof(tri));
 
-    if (world->api == &OBI_PHYS_NATIVE_WORLD2D_API_V0 && world->ctx) {
-        const obi_phys2d_world_native_ctx_v0* w = (const obi_phys2d_world_native_ctx_v0*)world->ctx;
-        for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_2D; i++) {
-            const obi_phys2d_collider_slot_v0* c = &w->colliders[i];
-            if (c->used) {
-                const obi_phys2d_body_slot_v0* b =
-                    _phys2d_body_get((obi_phys2d_world_native_ctx_v0*)w, c->body);
-                obi_vec2f_v0 center = c->center;
-                if (b) {
-                    center.x += b->xf.position.x;
-                    center.y += b->xf.position.y;
-                }
-                line.a = (obi_vec2f_v0){ center.x - 0.5f, center.y };
-                line.b = (obi_vec2f_v0){ center.x + 0.5f, center.y };
-                line.color = (obi_color_rgba8_v0){ 0u, 255u, 0u, 255u };
-
-                tri.p0 = (obi_vec2f_v0){ center.x, center.y + 0.5f };
-                tri.p1 = (obi_vec2f_v0){ center.x - 0.5f, center.y - 0.5f };
-                tri.p2 = (obi_vec2f_v0){ center.x + 0.5f, center.y - 0.5f };
-                tri.color = (obi_color_rgba8_v0){ 0u, 180u, 255u, 120u };
-                need_lines = 1u;
-                need_tris = 1u;
-                break;
+    const obi_phys2d_world_native_ctx_v0* w = (const obi_phys2d_world_native_ctx_v0*)world->ctx;
+    for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_2D; i++) {
+        const obi_phys2d_collider_slot_v0* c = &w->colliders[i];
+        if (c->used) {
+            const obi_phys2d_body_slot_v0* b =
+                _phys2d_body_get((obi_phys2d_world_native_ctx_v0*)w, c->body);
+            obi_vec2f_v0 center = c->center;
+            if (b) {
+                center.x += b->xf.position.x;
+                center.y += b->xf.position.y;
             }
+            line.a = (obi_vec2f_v0){ center.x - 0.5f, center.y };
+            line.b = (obi_vec2f_v0){ center.x + 0.5f, center.y };
+            line.color = (obi_color_rgba8_v0){ 0u, 255u, 0u, 255u };
+
+            tri.p0 = (obi_vec2f_v0){ center.x, center.y + 0.5f };
+            tri.p1 = (obi_vec2f_v0){ center.x - 0.5f, center.y - 0.5f };
+            tri.p2 = (obi_vec2f_v0){ center.x + 0.5f, center.y - 0.5f };
+            tri.color = (obi_color_rgba8_v0){ 0u, 180u, 255u, 120u };
+            need_lines = 1u;
+            need_tris = 1u;
+            break;
         }
     }
 
@@ -1001,8 +1107,18 @@ static obi_status _phys_debug_collect_world3d(void* ctx,
                                               size_t tri_cap,
                                               size_t* out_tri_count) {
     (void)ctx;
-    (void)params;
     if (!world || !world->api || !out_line_count || !out_tri_count) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((OBI_PHYS_NATIVE_DEBUG_CAPS & OBI_PHYS_DEBUG_CAP_WORLD3D) == 0u) {
+        *out_line_count = 0u;
+        *out_tri_count = 0u;
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    if (!_phys_debug_params_valid(params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (world->api != &OBI_PHYS_NATIVE_WORLD3D_API_V0 || !world->ctx) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -1013,34 +1129,32 @@ static obi_status _phys_debug_collect_world3d(void* ctx,
     memset(&line, 0, sizeof(line));
     memset(&tri, 0, sizeof(tri));
 
-    if (world->api == &OBI_PHYS_NATIVE_WORLD3D_API_V0 && world->ctx) {
-        const obi_phys3d_world_native_ctx_v0* w = (const obi_phys3d_world_native_ctx_v0*)world->ctx;
-        for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_3D; i++) {
-            const obi_phys3d_collider_slot_v0* c = &w->colliders[i];
-            if (c->used) {
-                const obi_phys3d_body_slot_v0* b =
-                    _phys3d_body_get((obi_phys3d_world_native_ctx_v0*)w, c->body);
-                obi_vec3f_v0 center = c->local_pos;
-                if (b) {
-                    center.x += b->xf.position.x;
-                    center.y += b->xf.position.y;
-                    center.z += b->xf.position.z;
-                }
-
-                line.a = (obi_vec3f_v0){ center.x - 0.5f, center.y, center.z };
-                line.b = (obi_vec3f_v0){ center.x + 0.5f, center.y, center.z };
-                line.color = (obi_color_rgba8_v0){ 255u, 200u, 0u, 255u };
-                line.reserved = 0u;
-
-                tri.p0 = (obi_vec3f_v0){ center.x, center.y + 0.5f, center.z };
-                tri.p1 = (obi_vec3f_v0){ center.x - 0.5f, center.y - 0.5f, center.z };
-                tri.p2 = (obi_vec3f_v0){ center.x + 0.5f, center.y - 0.5f, center.z };
-                tri.color = (obi_color_rgba8_v0){ 255u, 120u, 0u, 120u };
-                tri.reserved = 0u;
-                need_lines = 1u;
-                need_tris = 1u;
-                break;
+    const obi_phys3d_world_native_ctx_v0* w = (const obi_phys3d_world_native_ctx_v0*)world->ctx;
+    for (size_t i = 0u; i < OBI_PHYS_NATIVE_MAX_COLLIDERS_3D; i++) {
+        const obi_phys3d_collider_slot_v0* c = &w->colliders[i];
+        if (c->used) {
+            const obi_phys3d_body_slot_v0* b =
+                _phys3d_body_get((obi_phys3d_world_native_ctx_v0*)w, c->body);
+            obi_vec3f_v0 center = c->local_pos;
+            if (b) {
+                center.x += b->xf.position.x;
+                center.y += b->xf.position.y;
+                center.z += b->xf.position.z;
             }
+
+            line.a = (obi_vec3f_v0){ center.x - 0.5f, center.y, center.z };
+            line.b = (obi_vec3f_v0){ center.x + 0.5f, center.y, center.z };
+            line.color = (obi_color_rgba8_v0){ 255u, 200u, 0u, 255u };
+            line.reserved = 0u;
+
+            tri.p0 = (obi_vec3f_v0){ center.x, center.y + 0.5f, center.z };
+            tri.p1 = (obi_vec3f_v0){ center.x - 0.5f, center.y - 0.5f, center.z };
+            tri.p2 = (obi_vec3f_v0){ center.x + 0.5f, center.y - 0.5f, center.z };
+            tri.color = (obi_color_rgba8_v0){ 255u, 120u, 0u, 120u };
+            tri.reserved = 0u;
+            need_lines = 1u;
+            need_tris = 1u;
+            break;
         }
     }
 
@@ -1064,10 +1178,7 @@ static const obi_phys_debug_draw_api_v0 OBI_PHYS_NATIVE_DEBUG_DRAW_API_V0 = {
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_phys_debug_draw_api_v0),
     .reserved = 0u,
-    .caps = OBI_PHYS_DEBUG_CAP_WORLD2D |
-            OBI_PHYS_DEBUG_CAP_WORLD3D |
-            OBI_PHYS_DEBUG_CAP_LINES |
-            OBI_PHYS_DEBUG_CAP_TRIANGLES,
+    .caps = OBI_PHYS_NATIVE_DEBUG_CAPS,
     .collect_world2d = _phys_debug_collect_world2d,
     .collect_world3d = _phys_debug_collect_world3d,
 };
@@ -1096,6 +1207,7 @@ static obi_status _get_profile(void* ctx,
         return OBI_STATUS_UNSUPPORTED;
     }
 
+#if OBI_PHYS_NATIVE_ENABLE_WORLD2D
     if (strcmp(profile_id, OBI_PROFILE_PHYS_WORLD2D_V0) == 0) {
         if (out_profile_size < sizeof(obi_phys_world2d_v0)) {
             return OBI_STATUS_BUFFER_TOO_SMALL;
@@ -1105,7 +1217,9 @@ static obi_status _get_profile(void* ctx,
         p->ctx = ctx;
         return OBI_STATUS_OK;
     }
+#endif
 
+#if OBI_PHYS_NATIVE_ENABLE_WORLD3D
     if (strcmp(profile_id, OBI_PROFILE_PHYS_WORLD3D_V0) == 0) {
         if (out_profile_size < sizeof(obi_phys_world3d_v0)) {
             return OBI_STATUS_BUFFER_TOO_SMALL;
@@ -1115,6 +1229,7 @@ static obi_status _get_profile(void* ctx,
         p->ctx = ctx;
         return OBI_STATUS_OK;
     }
+#endif
 
     if (strcmp(profile_id, OBI_PROFILE_PHYS_DEBUG_DRAW_V0) == 0) {
         if (out_profile_size < sizeof(obi_phys_debug_draw_v0)) {
@@ -1132,7 +1247,7 @@ static obi_status _get_profile(void* ctx,
 static const char* _describe_json(void* ctx) {
     (void)ctx;
     return "{\"provider_id\":\"" OBI_PHYS_PROVIDER_ID "\",\"provider_version\":\"" OBI_PHYS_PROVIDER_VERSION "\","
-           "\"profiles\":[\"obi.profile:phys.world2d-0\",\"obi.profile:phys.world3d-0\",\"obi.profile:phys.debug_draw-0\"]," \
+           "\"profiles\":[" OBI_PHYS_NATIVE_PROFILES_JSON "]," \
            "\"license\":{\"spdx_expression\":\"" OBI_PHYS_PROVIDER_SPDX "\",\"class\":\"" OBI_PHYS_PROVIDER_LICENSE_CLASS "\"},\"behavior\":{\"diagnostics\":\"host\",\"writes_stdout\":false,\"writes_stderr\":false,\"may_exit_process\":false}," \
            "\"deps\":" OBI_PHYS_PROVIDER_DEPS_JSON "}";
 }

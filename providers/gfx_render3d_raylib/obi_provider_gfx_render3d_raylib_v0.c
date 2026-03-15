@@ -69,6 +69,28 @@ typedef struct obi_render3d_raylib_ctx_v0 {
     obi_gfx3d_material_id_v0 next_material_id;
 } obi_render3d_raylib_ctx_v0;
 
+static int _rgba8_row_bytes(uint32_t width, uint32_t* out_row_bytes) {
+    if (!out_row_bytes || width == 0u || width > (UINT32_MAX / 4u)) {
+        return 0;
+    }
+
+    *out_row_bytes = width * 4u;
+    return 1;
+}
+
+static int _rgba8_total_bytes(uint32_t width, uint32_t height, size_t* out_total_bytes) {
+    uint32_t row_bytes = 0u;
+    if (!out_total_bytes || height == 0u || !_rgba8_row_bytes(width, &row_bytes)) {
+        return 0;
+    }
+    if ((size_t)height > (SIZE_MAX / (size_t)row_bytes)) {
+        return 0;
+    }
+
+    *out_total_bytes = (size_t)height * (size_t)row_bytes;
+    return 1;
+}
+
 static int _grow_slots(void** slots, size_t* cap, size_t elem_size) {
     size_t new_cap = (*cap == 0u) ? 8u : (*cap * 2u);
     if (new_cap < *cap) {
@@ -191,26 +213,46 @@ static obi_status _mesh_create(void* ctx, const obi_gfx3d_mesh_desc_v0* desc, ob
     if (desc->indices && desc->index_count == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!desc->indices && desc->index_count > 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    size_t positions_bytes = (size_t)desc->vertex_count * sizeof(desc->positions[0]);
+    if (desc->vertex_count > 0u &&
+        (positions_bytes / sizeof(desc->positions[0])) != (size_t)desc->vertex_count) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    size_t indices_bytes = 0u;
+    if (desc->index_count > 0u) {
+        indices_bytes = (size_t)desc->index_count * sizeof(desc->indices[0]);
+        if ((indices_bytes / sizeof(desc->indices[0])) != (size_t)desc->index_count) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
+
+    if (positions_bytes == 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     if (p->mesh_count == p->mesh_cap &&
         !_grow_slots((void**)&p->meshes, &p->mesh_cap, sizeof(p->meshes[0]))) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    obi_vec3f_v0* positions = (obi_vec3f_v0*)malloc((size_t)desc->vertex_count * sizeof(desc->positions[0]));
+    obi_vec3f_v0* positions = (obi_vec3f_v0*)malloc(positions_bytes);
     if (!positions) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
-    memcpy(positions, desc->positions, (size_t)desc->vertex_count * sizeof(desc->positions[0]));
+    memcpy(positions, desc->positions, positions_bytes);
 
     uint32_t* indices = NULL;
     if (desc->indices && desc->index_count > 0u) {
-        indices = (uint32_t*)malloc((size_t)desc->index_count * sizeof(desc->indices[0]));
+        indices = (uint32_t*)malloc(indices_bytes);
         if (!indices) {
             free(positions);
             return OBI_STATUS_OUT_OF_MEMORY;
         }
-        memcpy(indices, desc->indices, (size_t)desc->index_count * sizeof(desc->indices[0]));
+        memcpy(indices, desc->indices, indices_bytes);
     }
 
     float radius_sq = 0.0f;
@@ -271,12 +313,27 @@ static obi_status _texture_create_rgba8(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
 
+    uint32_t row_bytes = 0u;
+    size_t tex_size = 0u;
+    if (!_rgba8_row_bytes(desc->width, &row_bytes) ||
+        !_rgba8_total_bytes(desc->width, desc->height, &tex_size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->pixels) {
+        uint32_t stride = (desc->stride_bytes == 0u) ? row_bytes : desc->stride_bytes;
+        if (stride < row_bytes) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if ((size_t)desc->height > (SIZE_MAX / (size_t)stride)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
+
     if (p->texture_count == p->texture_cap &&
         !_grow_slots((void**)&p->textures, &p->texture_cap, sizeof(p->textures[0]))) {
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    size_t tex_size = (size_t)desc->width * (size_t)desc->height * 4u;
     uint8_t* rgba = (uint8_t*)malloc(tex_size);
     if (!rgba) {
         return OBI_STATUS_OUT_OF_MEMORY;
@@ -285,11 +342,11 @@ static obi_status _texture_create_rgba8(void* ctx,
     if (!desc->pixels) {
         memset(rgba, 0, tex_size);
     } else {
-        uint32_t stride = desc->stride_bytes ? desc->stride_bytes : (desc->width * 4u);
+        uint32_t stride = desc->stride_bytes ? desc->stride_bytes : row_bytes;
         for (uint32_t y = 0u; y < desc->height; y++) {
             const uint8_t* src = (const uint8_t*)desc->pixels + ((size_t)y * stride);
-            uint8_t* dst = rgba + ((size_t)y * (size_t)desc->width * 4u);
-            memcpy(dst, src, (size_t)desc->width * 4u);
+            uint8_t* dst = rgba + ((size_t)y * (size_t)row_bytes);
+            memcpy(dst, src, (size_t)row_bytes);
         }
     }
 

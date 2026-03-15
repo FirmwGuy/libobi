@@ -123,6 +123,10 @@ static char* _dup_view(obi_utf8_view_v0 view) {
     return _dup_range(view.data, view.size);
 }
 
+static int _is_valid_utf8_view(obi_utf8_view_v0 view) {
+    return !(view.size > 0u && !view.data);
+}
+
 static void _free_cstrv(char** argv, size_t argc) {
     if (!argv) {
         return;
@@ -287,8 +291,14 @@ static obi_status _spawn_process(void* ctx,
                                  obi_writer_v0* out_stdin,
                                  obi_reader_v0* out_stdout,
                                  obi_reader_v0* out_stderr) {
+    const uint32_t known_flags = OBI_PROCESS_SPAWN_STDIN_PIPE |
+                                 OBI_PROCESS_SPAWN_STDOUT_PIPE |
+                                 OBI_PROCESS_SPAWN_STDERR_PIPE |
+                                 OBI_PROCESS_SPAWN_STDERR_TO_STDOUT |
+                                 OBI_PROCESS_SPAWN_CLEAR_ENV;
+
     obi_os_process_libuv_ctx_v0* p = (obi_os_process_libuv_ctx_v0*)ctx;
-    if (!p || !p->loop || !params || !out_process || !out_stdin || !out_stdout || !out_stderr) {
+    if (!p || !p->loop || !params || !out_process) {
         return OBI_STATUS_BAD_ARG;
     }
     if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
@@ -297,11 +307,33 @@ static obi_status _spawn_process(void* ctx,
     if (!params->program.data || params->program.size == 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_is_valid_utf8_view(params->program) ||
+        !_is_valid_utf8_view(params->working_dir) ||
+        !_is_valid_utf8_view(params->options_json)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->argc > 0u && !params->argv) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    for (size_t i = 0u; i < params->argc; i++) {
+        if (!_is_valid_utf8_view(params->argv[i])) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
+    if ((params->flags & ~known_flags) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     memset(out_process, 0, sizeof(*out_process));
-    memset(out_stdin, 0, sizeof(*out_stdin));
-    memset(out_stdout, 0, sizeof(*out_stdout));
-    memset(out_stderr, 0, sizeof(*out_stderr));
+    if (out_stdin) {
+        memset(out_stdin, 0, sizeof(*out_stdin));
+    }
+    if (out_stdout) {
+        memset(out_stdout, 0, sizeof(*out_stdout));
+    }
+    if (out_stderr) {
+        memset(out_stderr, 0, sizeof(*out_stderr));
+    }
 
     if (_flags_have_stdio_pipes(params->flags)) {
         return OBI_STATUS_UNSUPPORTED;
@@ -548,6 +580,8 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
     memset(ctx->loop, 0, sizeof(*ctx->loop));
 
     if (uv_loop_init(ctx->loop) != 0) {
+        free(ctx->loop);
+        ctx->loop = NULL;
         _destroy(ctx);
         return OBI_STATUS_ERROR;
     }

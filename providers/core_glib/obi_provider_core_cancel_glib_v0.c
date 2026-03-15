@@ -22,10 +22,17 @@ typedef struct obi_core_cancel_glib_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
 } obi_core_cancel_glib_ctx_v0;
 
+typedef struct obi_cancel_reason_node_glib_v0 {
+    char* text;
+    struct obi_cancel_reason_node_glib_v0* next;
+} obi_cancel_reason_node_glib_v0;
+
 typedef struct obi_cancel_shared_glib_v0 {
     gint ref_count;
     GCancellable* cancellable;
+    GMutex reason_lock;
     char* reason_utf8;
+    obi_cancel_reason_node_glib_v0* reason_history;
 } obi_cancel_shared_glib_v0;
 
 typedef struct obi_cancel_source_glib_v0 {
@@ -37,7 +44,7 @@ typedef struct obi_cancel_token_glib_v0 {
 } obi_cancel_token_glib_v0;
 
 static char* _dup_utf8_view(obi_utf8_view_v0 view) {
-    if (!view.data && view.size > 0u) {
+    if ((!view.data && view.size > 0u) || view.size == SIZE_MAX) {
         return NULL;
     }
 
@@ -64,8 +71,15 @@ static void _cancel_shared_release(obi_cancel_shared_glib_v0* shared) {
         return;
     }
     if (g_atomic_int_add(&shared->ref_count, -1) == 1) {
+        obi_cancel_reason_node_glib_v0* node = shared->reason_history;
+        while (node) {
+            obi_cancel_reason_node_glib_v0* next = node->next;
+            free(node->text);
+            free(node);
+            node = next;
+        }
+        g_mutex_clear(&shared->reason_lock);
         g_clear_object(&shared->cancellable);
-        free(shared->reason_utf8);
         free(shared);
     }
 }
@@ -84,12 +98,18 @@ static obi_status _token_reason_utf8(void* ctx, obi_utf8_view_v0* out_reason) {
         return OBI_STATUS_BAD_ARG;
     }
 
-    const char* reason = token->shared->reason_utf8;
+    const char* reason = NULL;
+    size_t reason_size = 0u;
+    g_mutex_lock(&token->shared->reason_lock);
+    reason = token->shared->reason_utf8;
     if (!reason) {
         reason = "";
     }
+    reason_size = strlen(reason);
+    g_mutex_unlock(&token->shared->reason_lock);
+
     out_reason->data = reason;
-    out_reason->size = strlen(reason);
+    out_reason->size = reason_size;
     return OBI_STATUS_OK;
 }
 
@@ -134,22 +154,35 @@ static obi_status _cancel_source_token(void* ctx, obi_cancel_token_v0* out_token
 
 static obi_status _cancel_source_cancel(void* ctx, obi_utf8_view_v0 reason) {
     obi_cancel_source_glib_v0* src = (obi_cancel_source_glib_v0*)ctx;
-    if (!src || !src->shared || !src->shared->cancellable || (!reason.data && reason.size > 0u)) {
+    if (!src || !src->shared || !src->shared->cancellable ||
+        (!reason.data && reason.size > 0u) || reason.size == SIZE_MAX) {
         return OBI_STATUS_BAD_ARG;
     }
 
-    char* copy = _dup_utf8_view(reason);
-    if (!copy) {
-        if (reason.size == 0u) {
-            copy = _dup_utf8_view((obi_utf8_view_v0){ "", 0u });
-        }
+    char* copy = NULL;
+    obi_cancel_reason_node_glib_v0* node = NULL;
+    if (reason.size > 0u) {
+        copy = _dup_utf8_view(reason);
         if (!copy) {
             return OBI_STATUS_OUT_OF_MEMORY;
         }
+
+        node = (obi_cancel_reason_node_glib_v0*)calloc(1u, sizeof(*node));
+        if (!node) {
+            free(copy);
+            return OBI_STATUS_OUT_OF_MEMORY;
+        }
+        node->text = copy;
     }
 
-    free(src->shared->reason_utf8);
+    g_mutex_lock(&src->shared->reason_lock);
+    if (node) {
+        node->next = src->shared->reason_history;
+        src->shared->reason_history = node;
+    }
     src->shared->reason_utf8 = copy;
+    g_mutex_unlock(&src->shared->reason_lock);
+
     g_cancellable_cancel(src->shared->cancellable);
     return OBI_STATUS_OK;
 }
@@ -161,8 +194,9 @@ static obi_status _cancel_source_reset(void* ctx) {
     }
 
     g_cancellable_reset(src->shared->cancellable);
-    free(src->shared->reason_utf8);
+    g_mutex_lock(&src->shared->reason_lock);
     src->shared->reason_utf8 = NULL;
+    g_mutex_unlock(&src->shared->reason_lock);
     return OBI_STATUS_OK;
 }
 
@@ -197,6 +231,14 @@ static obi_status _cancel_create_source(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params) {
+        if (params->flags != 0u) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (params->options_json.size > 0u && !params->options_json.data) {
+            return OBI_STATUS_BAD_ARG;
+        }
+    }
 
     obi_cancel_shared_glib_v0* shared =
         (obi_cancel_shared_glib_v0*)calloc(1u, sizeof(*shared));
@@ -210,6 +252,8 @@ static obi_status _cancel_create_source(void* ctx,
         free(shared);
         return OBI_STATUS_OUT_OF_MEMORY;
     }
+    g_mutex_init(&shared->reason_lock);
+    shared->reason_history = NULL;
 
     obi_cancel_source_glib_v0* src =
         (obi_cancel_source_glib_v0*)calloc(1u, sizeof(*src));

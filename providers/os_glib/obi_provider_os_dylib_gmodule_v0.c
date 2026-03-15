@@ -91,6 +91,9 @@ static obi_status _os_dylib_open(void* ctx,
     if ((flags & ~(OBI_DYLIB_OPEN_NOW | OBI_DYLIB_OPEN_GLOBAL)) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
 #if defined(_WIN32)
     (void)path;
@@ -99,6 +102,9 @@ static obi_status _os_dylib_open(void* ctx,
 #else
     if (!g_module_supported()) {
         return OBI_STATUS_UNSUPPORTED;
+    }
+    if (path && path[0] == '\0') {
+        return OBI_STATUS_BAD_ARG;
     }
 
     GModuleFlags gflags = 0;

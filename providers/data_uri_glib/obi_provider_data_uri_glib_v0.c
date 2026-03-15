@@ -41,6 +41,10 @@ typedef struct obi_uri_query_items_hold_v0 {
     size_t strings_count;
 } obi_uri_query_items_hold_v0;
 
+static bool _size_fits_glib_ssize(size_t size) {
+    return size <= (size_t)G_MAXSSIZE;
+}
+
 static int _uri_is_unreserved(unsigned char ch) {
     if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
         return 1;
@@ -83,6 +87,9 @@ static obi_status _dup_view_utf8(obi_utf8_view_v0 view, char** out_text) {
     if (!out_text || (!view.data && view.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_size_fits_glib_ssize(view.size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (view.size > 0u && memchr(view.data, '\0', view.size) != NULL) {
         return OBI_STATUS_BAD_ARG;
     }
@@ -101,6 +108,9 @@ static obi_status _dup_view_utf8(obi_utf8_view_v0 view, char** out_text) {
 
 static obi_status _dup_view_raw(obi_utf8_view_v0 view, char** out_text) {
     if (!out_text || (!view.data && view.size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_size_fits_glib_ssize(view.size)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (view.size > 0u && memchr(view.data, '\0', view.size) != NULL) {
@@ -354,6 +364,9 @@ static obi_status _uri_percent_decode_alloc(const char* src,
     if ((!src && src_size > 0u) || !out_text || !out_size) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_size_fits_glib_ssize(src_size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     *out_text = NULL;
     *out_size = 0u;
@@ -394,9 +407,16 @@ static obi_status _uri_query_items_utf8(void* ctx,
     if (!out_items || (!query.data && query.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_size_fits_glib_ssize(query.size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
     memset(out_items, 0, sizeof(*out_items));
 
     size_t off = 0u;
+    if (query.size > 0u && query.data[0] == '?' &&
+        (flags & OBI_URI_QUERY_ALLOW_LEADING_QMARK) == 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if ((flags & OBI_URI_QUERY_ALLOW_LEADING_QMARK) != 0u &&
         query.size > 0u && query.data[0] == '?') {
         off = 1u;
@@ -414,6 +434,13 @@ static obi_status _uri_query_items_utf8(void* ctx,
     if (count == 0u) {
         return OBI_STATUS_OK;
     }
+    if (count > (SIZE_MAX / sizeof(obi_uri_query_item_v0)) || count > (SIZE_MAX / 2u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    size_t strings_count = count * 2u;
+    if (strings_count > (SIZE_MAX / sizeof(char*))) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     obi_uri_query_items_hold_v0* hold =
         (obi_uri_query_items_hold_v0*)calloc(1u, sizeof(*hold));
@@ -422,8 +449,8 @@ static obi_status _uri_query_items_utf8(void* ctx,
     }
 
     hold->items = (obi_uri_query_item_v0*)calloc(count, sizeof(*hold->items));
-    hold->strings = (char**)calloc(count * 2u, sizeof(*hold->strings));
-    hold->strings_count = count * 2u;
+    hold->strings = (char**)calloc(strings_count, sizeof(*hold->strings));
+    hold->strings_count = strings_count;
     if (!hold->items || !hold->strings) {
         _uri_query_items_release(hold, NULL);
         return OBI_STATUS_OUT_OF_MEMORY;
@@ -505,6 +532,9 @@ static obi_status _uri_percent_encode_utf8(void* ctx,
                                            obi_uri_text_v0* out_text) {
     (void)ctx;
     if (!out_text || (!text.data && text.size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_size_fits_glib_ssize(text.size) || text.size > (SIZE_MAX / 3u)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (!g_utf8_validate(text.data ? text.data : "", (gssize)text.size, NULL)) {

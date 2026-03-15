@@ -9,8 +9,10 @@
 #define SOKOL_DUMMY_BACKEND
 #include <sokol_gfx.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -67,40 +69,97 @@ typedef struct obi_render3d_sokol_ctx_v0 {
     obi_gfx3d_material_id_v0 next_material_id;
 } obi_render3d_sokol_ctx_v0;
 
-/* sokol_gfx is process-global inside this provider module. Keep a local refcount so
- * multiple runtimes in one process can acquire/release it without asserting in sg_setup().
+/* sokol_gfx is process-global inside this provider module. Keep a refcount protected
+ * by a local spin lock so multiple runtimes/threads can safely acquire/release it.
  */
-static size_t OBI_RENDER3D_SOKOL_SG_REFCOUNT = 0u;
+static atomic_flag g_sokol_sg_spin = ATOMIC_FLAG_INIT;
+static atomic_uint g_sokol_sg_refcount = 0u;
+
+static void _sokol_sg_spin_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&g_sokol_sg_spin, memory_order_acquire)) {
+    }
+}
+
+static void _sokol_sg_spin_unlock(void) {
+    atomic_flag_clear_explicit(&g_sokol_sg_spin, memory_order_release);
+}
 
 static int _sokol_sg_acquire(void) {
-    if (OBI_RENDER3D_SOKOL_SG_REFCOUNT == 0u) {
+    int ok = 1;
+
+    _sokol_sg_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_sokol_sg_refcount, memory_order_relaxed);
+    if (refs == 0u) {
         sg_desc sg_desc_cfg;
         memset(&sg_desc_cfg, 0, sizeof(sg_desc_cfg));
         sg_setup(&sg_desc_cfg);
         if (!sg_isvalid()) {
-            return 0;
+            ok = 0;
         }
     } else if (!sg_isvalid()) {
-        return 0;
+        ok = 0;
     }
+    if (refs == UINT_MAX) {
+        ok = 0;
+    }
+    if (ok) {
+        atomic_store_explicit(&g_sokol_sg_refcount, refs + 1u, memory_order_relaxed);
+    }
+    _sokol_sg_spin_unlock();
 
-    OBI_RENDER3D_SOKOL_SG_REFCOUNT++;
-    return 1;
+    return ok;
 }
 
 static void _sokol_sg_release(void) {
-    if (OBI_RENDER3D_SOKOL_SG_REFCOUNT == 0u) {
-        return;
+    _sokol_sg_spin_lock();
+    unsigned int refs = atomic_load_explicit(&g_sokol_sg_refcount, memory_order_relaxed);
+    if (refs > 0u) {
+        refs--;
+        atomic_store_explicit(&g_sokol_sg_refcount, refs, memory_order_relaxed);
+        if (refs == 0u && sg_isvalid()) {
+            sg_shutdown();
+        }
     }
-    OBI_RENDER3D_SOKOL_SG_REFCOUNT--;
-    if (OBI_RENDER3D_SOKOL_SG_REFCOUNT == 0u && sg_isvalid()) {
-        sg_shutdown();
+    _sokol_sg_spin_unlock();
+}
+
+static int _rgba8_row_bytes(uint32_t width, uint32_t* out_row_bytes) {
+    if (!out_row_bytes || width == 0u || width > (UINT32_MAX / 4u)) {
+        return 0;
     }
+    *out_row_bytes = width * 4u;
+    return 1;
+}
+
+static int _rgba8_stride_and_total_bytes(uint32_t width,
+                                         uint32_t height,
+                                         uint32_t stride_bytes,
+                                         uint32_t* out_stride,
+                                         size_t* out_total_bytes) {
+    uint32_t row_bytes = 0u;
+    if (!out_stride || !out_total_bytes || height == 0u || !_rgba8_row_bytes(width, &row_bytes)) {
+        return 0;
+    }
+
+    uint32_t stride = (stride_bytes == 0u) ? row_bytes : stride_bytes;
+    if (stride < row_bytes) {
+        return 0;
+    }
+    if ((size_t)height > (SIZE_MAX / (size_t)stride)) {
+        return 0;
+    }
+
+    *out_stride = stride;
+    *out_total_bytes = (size_t)stride * (size_t)height;
+    return 1;
 }
 
 static int _grow_slots(void** slots, size_t* cap, size_t elem_size) {
     size_t new_cap = (*cap == 0u) ? 8u : (*cap * 2u);
     if (new_cap < *cap) {
+        return 0;
+    }
+    if (elem_size != 0u && new_cap > (SIZE_MAX / elem_size)) {
         return 0;
     }
     void* mem = realloc(*slots, new_cap * elem_size);
@@ -195,8 +254,30 @@ static obi_status _mesh_create(void* ctx, const obi_gfx3d_mesh_desc_v0* desc, ob
     if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (desc->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (desc->indices && desc->index_count == 0u) {
         return OBI_STATUS_BAD_ARG;
+    }
+    if (!desc->indices && desc->index_count > 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    size_t vertex_bytes = (size_t)desc->vertex_count * sizeof(desc->positions[0]);
+    if (desc->vertex_count > 0u &&
+        (vertex_bytes / sizeof(desc->positions[0])) != (size_t)desc->vertex_count) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (vertex_bytes == 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    size_t index_bytes = 0u;
+    if (desc->index_count > 0u) {
+        index_bytes = (size_t)desc->index_count * sizeof(desc->indices[0]);
+        if ((index_bytes / sizeof(desc->indices[0])) != (size_t)desc->index_count) {
+            return OBI_STATUS_BAD_ARG;
+        }
     }
 
     if (p->mesh_count == p->mesh_cap &&
@@ -206,7 +287,7 @@ static obi_status _mesh_create(void* ctx, const obi_gfx3d_mesh_desc_v0* desc, ob
 
     sg_buffer_desc vb_desc;
     memset(&vb_desc, 0, sizeof(vb_desc));
-    vb_desc.size = (size_t)desc->vertex_count * sizeof(desc->positions[0]);
+    vb_desc.size = vertex_bytes;
     vb_desc.data.ptr = desc->positions;
     vb_desc.data.size = vb_desc.size;
     sg_buffer vb = sg_make_buffer(&vb_desc);
@@ -221,7 +302,7 @@ static obi_status _mesh_create(void* ctx, const obi_gfx3d_mesh_desc_v0* desc, ob
         memset(&ib_desc, 0, sizeof(ib_desc));
         ib_desc.usage.index_buffer = true;
         ib_desc.usage.vertex_buffer = false;
-        ib_desc.size = (size_t)desc->index_count * sizeof(desc->indices[0]);
+        ib_desc.size = index_bytes;
         ib_desc.data.ptr = desc->indices;
         ib_desc.data.size = ib_desc.size;
         ib = sg_make_buffer(&ib_desc);
@@ -281,6 +362,15 @@ static obi_status _texture_create_rgba8(void* ctx,
     if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (desc->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->width > (uint32_t)INT_MAX || desc->height > (uint32_t)INT_MAX) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!desc->pixels && desc->stride_bytes != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     if (p->texture_count == p->texture_cap &&
         !_grow_slots((void**)&p->textures, &p->texture_cap, sizeof(p->textures[0]))) {
@@ -293,9 +383,18 @@ static obi_status _texture_create_rgba8(void* ctx,
     img_desc.height = (int)desc->height;
     img_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
     if (desc->pixels) {
-        uint32_t stride = desc->stride_bytes ? desc->stride_bytes : (desc->width * 4u);
+        uint32_t stride = 0u;
+        size_t total_bytes = 0u;
+        if (!_rgba8_stride_and_total_bytes(desc->width,
+                                           desc->height,
+                                           desc->stride_bytes,
+                                           &stride,
+                                           &total_bytes)) {
+            return OBI_STATUS_BAD_ARG;
+        }
+        (void)stride;
         img_desc.data.mip_levels[0].ptr = desc->pixels;
-        img_desc.data.mip_levels[0].size = (size_t)stride * (size_t)desc->height;
+        img_desc.data.mip_levels[0].size = total_bytes;
     }
     sg_image image = sg_make_image(&img_desc);
     if (image.id == SG_INVALID_ID) {
@@ -346,6 +445,9 @@ static obi_status _material_create(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (desc->struct_size != 0u && desc->struct_size < sizeof(*desc)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (desc->flags != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
     if (desc->base_color_tex != 0u && !_find_texture(p, desc->base_color_tex)) {

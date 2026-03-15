@@ -7,6 +7,7 @@
 
 #include <sqlite3.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,12 @@ typedef struct obi_kv_cursor_sqlite_ctx_v0 {
     sqlite3_stmt* stmt;
     int has_item;
 } obi_kv_cursor_sqlite_ctx_v0;
+
+#define OBI_DB_KV_SQLITE_OPEN_KNOWN_FLAGS \
+    (OBI_KV_DB_OPEN_READ_ONLY | OBI_KV_DB_OPEN_CREATE)
+
+#define OBI_DB_KV_SQLITE_TXN_KNOWN_FLAGS \
+    (OBI_KV_TXN_READ_ONLY)
 
 static obi_status _sqlite_to_status(int rc) {
     switch (rc) {
@@ -95,6 +102,10 @@ static obi_status _copy_out(const void* src,
     return OBI_STATUS_OK;
 }
 
+static int _sqlite_blob_size_fits(size_t size) {
+    return size <= (size_t)INT_MAX;
+}
+
 static obi_status _kv_txn_get(void* ctx,
                               obi_bytes_view_v0 key,
                               void* out_value,
@@ -103,6 +114,9 @@ static obi_status _kv_txn_get(void* ctx,
                               bool* out_found) {
     obi_kv_txn_sqlite_ctx_v0* txn = (obi_kv_txn_sqlite_ctx_v0*)ctx;
     if (!txn || !txn->db || txn->closed || !out_size || !out_found || (!key.data && key.size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_sqlite_blob_size_fits(key.size)) {
         return OBI_STATUS_BAD_ARG;
     }
 
@@ -151,6 +165,9 @@ static obi_status _kv_txn_put(void* ctx, obi_bytes_view_v0 key, obi_bytes_view_v
     if (!txn || !txn->db || txn->closed || (!key.data && key.size > 0u) || (!value.data && value.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (!_sqlite_blob_size_fits(key.size) || !_sqlite_blob_size_fits(value.size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (txn->read_only) {
         return OBI_STATUS_PERMISSION_DENIED;
     }
@@ -188,6 +205,9 @@ static obi_status _kv_txn_put(void* ctx, obi_bytes_view_v0 key, obi_bytes_view_v
 static obi_status _kv_txn_del(void* ctx, obi_bytes_view_v0 key, bool* out_deleted) {
     obi_kv_txn_sqlite_ctx_v0* txn = (obi_kv_txn_sqlite_ctx_v0*)ctx;
     if (!txn || !txn->db || txn->closed || !out_deleted || (!key.data && key.size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (!_sqlite_blob_size_fits(key.size)) {
         return OBI_STATUS_BAD_ARG;
     }
     if (txn->read_only) {
@@ -246,6 +266,11 @@ static obi_status _cursor_reset_with_sql(obi_kv_cursor_sqlite_ctx_v0* c,
 
     if (bind_seek) {
         if (!seek_key.data && seek_key.size > 0u) {
+            sqlite3_finalize(c->stmt);
+            c->stmt = NULL;
+            return OBI_STATUS_BAD_ARG;
+        }
+        if (!_sqlite_blob_size_fits(seek_key.size)) {
             sqlite3_finalize(c->stmt);
             c->stmt = NULL;
             return OBI_STATUS_BAD_ARG;
@@ -464,6 +489,9 @@ static obi_status _kv_db_begin_txn(void* ctx,
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (params && (params->flags & ~OBI_DB_KV_SQLITE_TXN_KNOWN_FLAGS) != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     int read_only = db->read_only || (params && ((params->flags & OBI_KV_TXN_READ_ONLY) != 0u));
     obi_status st = _exec_sql(db->db, read_only ? "BEGIN" : "BEGIN IMMEDIATE");
@@ -520,6 +548,9 @@ static obi_status _kv_open(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
     if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if ((params->flags & ~OBI_DB_KV_SQLITE_OPEN_KNOWN_FLAGS) != 0u) {
         return OBI_STATUS_BAD_ARG;
     }
 

@@ -367,6 +367,12 @@ static obi_status _aead_ctx_seal(void* ctx,
     if (nonce.size != c->nonce_size) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (c->tag_size == 0u || c->tag_size > 16u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (plaintext.size > (SIZE_MAX - c->tag_size)) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     size_t required = plaintext.size + c->tag_size;
     *out_size = required;
@@ -397,6 +403,9 @@ static obi_status _aead_ctx_open(void* ctx,
     obi_aead_ctx_native_v0* c = (obi_aead_ctx_native_v0*)ctx;
     if (!c || !out_size || !out_ok || (!nonce.data && nonce.size > 0u) ||
         (!aad.data && aad.size > 0u) || (!ciphertext.data && ciphertext.size > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (c->tag_size == 0u || c->tag_size > 16u) {
         return OBI_STATUS_BAD_ARG;
     }
     if (nonce.size != c->nonce_size || ciphertext.size < c->tag_size) {

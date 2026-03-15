@@ -7,6 +7,7 @@
 
 #include <gio/gio.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -85,12 +86,18 @@ static obi_status _fill_info_from_probe(const uint8_t* bytes,
     if (!out_info || (!bytes && size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
+    if (size > (size_t)G_MAXSSIZE) {
+        return OBI_STATUS_BAD_ARG;
+    }
     if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
         return OBI_STATUS_BAD_ARG;
     }
 
+    static const uint8_t k_empty = 0u;
+    const uint8_t* probe = bytes ? bytes : &k_empty;
+
     gboolean uncertain = FALSE;
-    gchar* guessed_type = g_content_type_guess(NULL, (const guchar*)bytes, (gsize)size, &uncertain);
+    gchar* guessed_type = g_content_type_guess(NULL, (const guchar*)probe, (gsize)size, &uncertain);
     if (!guessed_type) {
         return OBI_STATUS_ERROR;
     }
@@ -100,7 +107,7 @@ static obi_status _fill_info_from_probe(const uint8_t* bytes,
     const char* mime = guessed_mime ? guessed_mime : guessed_type;
     const char* desc = guessed_desc ? guessed_desc : mime;
     const char* format_id = _format_id_from_mime(mime);
-    const int is_utf8 = g_utf8_validate((const gchar*)bytes, (gssize)size, NULL) ? 1 : 0;
+    const int is_utf8 = g_utf8_validate((const gchar*)probe, (gssize)size, NULL) ? 1 : 0;
 
     const char* summary_json =
         (params && params->want_summary_json) ? "{\"backend\":\"gio\",\"probe\":\"content_type_guess\"}" : "";
@@ -176,6 +183,9 @@ static obi_status _inspect_from_reader(void* ctx,
     if (params && params->max_probe_bytes > 0u) {
         cap = params->max_probe_bytes;
     }
+    if (cap > (size_t)G_MAXSSIZE) {
+        return OBI_STATUS_BAD_ARG;
+    }
 
     uint8_t* buf = (uint8_t*)malloc(cap);
     if (!buf) {
@@ -203,7 +213,11 @@ static obi_status _inspect_from_reader(void* ctx,
     }
 
     if (can_seek) {
-        (void)reader.api->seek(reader.ctx, (int64_t)pos0, SEEK_SET, NULL);
+        obi_status rewind_st = reader.api->seek(reader.ctx, (int64_t)pos0, SEEK_SET, NULL);
+        if (rewind_st != OBI_STATUS_OK) {
+            free(buf);
+            return rewind_st;
+        }
     }
 
     obi_status st = _fill_info_from_probe(buf, total, params, out_info);

@@ -16,6 +16,7 @@
 #include <hb.h>
 
 #include <ctype.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -51,6 +52,33 @@ typedef struct obi_text_stack_ctx_v0 {
     size_t face_cap;
     obi_text_face_id_v0 next_face_id;
 } obi_text_stack_ctx_v0;
+
+static atomic_uint g_fontconfig_refcount = 0u;
+
+static obi_status _fontconfig_global_acquire(void) {
+    if (!FcInit()) {
+        return OBI_STATUS_UNAVAILABLE;
+    }
+
+    (void)atomic_fetch_add_explicit(&g_fontconfig_refcount, 1u, memory_order_relaxed);
+    return OBI_STATUS_OK;
+}
+
+static void _fontconfig_global_release(void) {
+    unsigned int prev = atomic_load_explicit(&g_fontconfig_refcount, memory_order_acquire);
+    while (prev != 0u) {
+        if (atomic_compare_exchange_weak_explicit(&g_fontconfig_refcount,
+                                                  &prev,
+                                                  prev - 1u,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+            if (prev == 1u) {
+                FcFini();
+            }
+            return;
+        }
+    }
+}
 
 static char* _dup_str(const char* s) {
     if (!s) {
@@ -307,16 +335,12 @@ static obi_status _parse_hb_features(const char* src,
 static obi_status _fontdb_match_face(void* ctx,
                                      const obi_font_match_req_v0* req,
                                      obi_font_source_v0* out_source) {
-    (void)ctx;
-    if (!req || !out_source) {
+    obi_text_stack_ctx_v0* p = (obi_text_stack_ctx_v0*)ctx;
+    if (!p || !req || !out_source) {
         return OBI_STATUS_BAD_ARG;
     }
 
     memset(out_source, 0, sizeof(*out_source));
-
-    if (!FcInit()) {
-        return OBI_STATUS_UNAVAILABLE;
-    }
 
     FcPattern* pat = FcPatternCreate();
     if (!pat) {
@@ -1148,7 +1172,7 @@ static const char* _describe_json(void* ctx) {
            "\"profiles\":[\"obi.profile:text.font_db-0\",\"obi.profile:text.raster_cache-0\",\"obi.profile:text.shape-0\",\"obi.profile:text.segmenter-0\"],"
            "\"license\":{\"spdx_expression\":\"MPL-2.0\",\"class\":\"weak_copyleft\"},"
            "\"behavior\":{\"diagnostics\":\"host\",\"writes_stdout\":false,\"writes_stderr\":false,\"may_exit_process\":false},"
-           "\"deps\":[]}";
+           "\"deps\":[{\"name\":\"fontconfig\"},{\"name\":\"freetype\"},{\"name\":\"fribidi\"},{\"name\":\"harfbuzz\"}]}";
 }
 
 static obi_status _describe_legal_metadata(void* ctx,
@@ -1249,6 +1273,7 @@ static void _destroy(void* ctx) {
     if (p->ft) {
         FT_Done_FreeType(p->ft);
     }
+    _fontconfig_global_release();
 
     if (p->host && p->host->free) {
         p->host->free(p->host->ctx, p);
@@ -1279,19 +1304,21 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
     if (host->abi_major != OBI_CORE_ABI_MAJOR || host->abi_minor != OBI_CORE_ABI_MINOR) {
         return OBI_STATUS_UNSUPPORTED;
     }
-
-    if (!FcInit()) {
-        return OBI_STATUS_UNAVAILABLE;
+    obi_status st = _fontconfig_global_acquire();
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     FT_Library ft = NULL;
     if (FT_Init_FreeType(&ft) != 0 || !ft) {
+        _fontconfig_global_release();
         return OBI_STATUS_UNAVAILABLE;
     }
 
     hb_buffer_t* hb = hb_buffer_create();
     if (!hb) {
         FT_Done_FreeType(ft);
+        _fontconfig_global_release();
         return OBI_STATUS_UNAVAILABLE;
     }
     hb_buffer_destroy(hb);
@@ -1306,6 +1333,7 @@ static obi_status _create(const obi_host_v0* host, obi_provider_v0* out_provider
     }
     if (!ctx) {
         FT_Done_FreeType(ft);
+        _fontconfig_global_release();
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 

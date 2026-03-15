@@ -32,6 +32,19 @@ typedef struct obi_doc_inspect_hold_v0 {
     char* metadata_json;
 } obi_doc_inspect_hold_v0;
 
+static obi_status _validate_inspect_params(const obi_doc_inspect_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 static char* _dup_str(const char* s) {
     if (!s) {
         return NULL;
@@ -89,8 +102,9 @@ static obi_status _fill_info(obi_doc_inspect_magic_ctx_v0* p,
     if (!p || !out_info || (!bytes && size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_inspect_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     static const uint8_t k_empty = 0u;
@@ -165,8 +179,9 @@ static obi_status _inspect_from_reader(void* ctx,
     if (!ctx || !reader.api || !reader.api->read || !out_info) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_inspect_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     size_t cap = 4096u;
@@ -203,11 +218,11 @@ static obi_status _inspect_from_reader(void* ctx,
         (void)reader.api->seek(reader.ctx, (int64_t)pos0, SEEK_SET, NULL);
     }
 
-    obi_status st = _fill_info((obi_doc_inspect_magic_ctx_v0*)ctx,
-                               buf,
-                               total,
-                               params,
-                               out_info);
+    st = _fill_info((obi_doc_inspect_magic_ctx_v0*)ctx,
+                    buf,
+                    total,
+                    params,
+                    out_info);
     free(buf);
     return st;
 }

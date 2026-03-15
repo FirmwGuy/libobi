@@ -173,6 +173,89 @@ static obi_status _read_reader_all(obi_reader_v0 reader, uint8_t** out_data, siz
     return OBI_STATUS_OK;
 }
 
+static obi_status _validate_md_parse_params(const obi_md_parse_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_md_events_parse_params(const obi_md_events_parse_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_markup_open_params(const obi_markup_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_paged_open_params(const obi_paged_open_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u && !params->options_json.data) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->options_json.size > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _validate_paged_render_params(const obi_paged_render_params_v0* params) {
+    if (!params) {
+        return OBI_STATUS_OK;
+    }
+    if (params->struct_size != 0u && params->struct_size < sizeof(*params)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (params->flags != 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    return OBI_STATUS_OK;
+}
+
 /* ---------------- doc.text_decode ---------------- */
 
 typedef struct obi_doc_decode_info_hold_v0 {
@@ -350,8 +433,9 @@ static obi_status _md_parse_to_json_writer(void* ctx,
     if ((!markdown.data && markdown.size > 0u) || !out_json.api || !out_json.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_md_parse_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     char buf[128];
@@ -363,7 +447,7 @@ static obi_status _md_parse_to_json_writer(void* ctx,
         return OBI_STATUS_ERROR;
     }
 
-    obi_status st = _writer_write_all(out_json, buf, (size_t)n);
+    st = _writer_write_all(out_json, buf, (size_t)n);
     if (st != OBI_STATUS_OK) {
         return st;
     }
@@ -383,8 +467,9 @@ static obi_status _md_render_to_html_writer(void* ctx,
     if ((!markdown.data && markdown.size > 0u) || !out_html.api || !out_html.api->write) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_md_parse_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     obi_dynbuf_v0 out;
@@ -399,7 +484,7 @@ static obi_status _md_render_to_html_writer(void* ctx,
         return OBI_STATUS_OUT_OF_MEMORY;
     }
 
-    obi_status st = _writer_write_all(out_html, out.data, out.size);
+    st = _writer_write_all(out_html, out.data, out.size);
     if (st == OBI_STATUS_OK && out_bytes_written) {
         *out_bytes_written = (uint64_t)out.size;
     }
@@ -485,8 +570,9 @@ static obi_status _md_events_parse_utf8(void* ctx,
     if ((!markdown.data && markdown.size > 0u) || !out_parser) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_md_events_parse_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     obi_md_parser_ctx_v0* p =
@@ -622,8 +708,9 @@ static obi_status _markup_open_from_bytes(obi_bytes_view_v0 bytes,
     if (!out_parser || (!bytes.data && bytes.size > 0u)) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_markup_open_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
     if (params && !_markup_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;
@@ -792,9 +879,12 @@ static obi_status _paged_doc_render_page(void* ctx,
                                          const obi_paged_render_params_v0* params,
                                          obi_paged_page_image_v0* out_image) {
     (void)ctx;
-    (void)params;
     if (page_index != 0u || !out_image) {
         return OBI_STATUS_BAD_ARG;
+    }
+    obi_status st = _validate_paged_render_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
 
     obi_paged_image_hold_v0* hold =
@@ -921,8 +1011,9 @@ static obi_status _paged_open_from_bytes(obi_bytes_view_v0 bytes,
     if ((!bytes.data && bytes.size > 0u) || !out_doc) {
         return OBI_STATUS_BAD_ARG;
     }
-    if (params && params->struct_size != 0u && params->struct_size < sizeof(*params)) {
-        return OBI_STATUS_BAD_ARG;
+    obi_status st = _validate_paged_open_params(params);
+    if (st != OBI_STATUS_OK) {
+        return st;
     }
     if (params && !_paged_format_supported(params->format_hint)) {
         return OBI_STATUS_UNSUPPORTED;
