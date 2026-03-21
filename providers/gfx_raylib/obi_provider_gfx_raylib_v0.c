@@ -6,6 +6,8 @@
 #include <obi/profiles/obi_gfx_render2d_v0.h>
 #include <obi/profiles/obi_gfx_window_input_v0.h>
 
+#include <raylib.h>
+
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +30,13 @@ typedef struct obi_gfx_raylib_window_v0 {
     uint32_t width;
     uint32_t height;
     uint32_t flags;
+    uint8_t uses_native_window;
+    uint8_t owns_native_window;
 } obi_gfx_raylib_window_v0;
+
+enum {
+    OBI_GFX_RAYLIB_EVENT_QUEUE_CAP = 128,
+};
 
 typedef struct obi_gfx_raylib_ctx_v0 {
     const obi_host_v0* host; /* borrowed */
@@ -48,7 +56,28 @@ typedef struct obi_gfx_raylib_ctx_v0 {
     uint32_t blend_mode;
     uint8_t scissor_enabled;
     obi_rectf_v0 scissor_rect;
+
+    uint8_t text_input_active;
+    uint8_t close_reported;
+    uint8_t mouse_valid;
+    int mouse_x;
+    int mouse_y;
+    uint8_t fb_valid;
+    uint32_t fb_w;
+    uint32_t fb_h;
+
+    obi_window_event_v0 event_queue[OBI_GFX_RAYLIB_EVENT_QUEUE_CAP];
+    size_t event_head;
+    size_t event_count;
 } obi_gfx_raylib_ctx_v0;
+
+static uint64_t _now_mono_ns(void) {
+    double t = GetTime();
+    if (t <= 0.0) {
+        return 0u;
+    }
+    return (uint64_t)(t * 1000000000.0);
+}
 
 static int _rgba8_row_bytes(uint32_t width, uint32_t* out_row_bytes) {
     if (!out_row_bytes || width == 0u || width > (UINT32_MAX / 4u)) {
@@ -132,9 +161,386 @@ static obi_gfx_raylib_tex_v0* _find_tex(obi_gfx_raylib_ctx_v0* p, obi_gfx_textur
     return NULL;
 }
 
+static void _event_queue_clear(obi_gfx_raylib_ctx_v0* p) {
+    if (!p) {
+        return;
+    }
+    p->event_head = 0u;
+    p->event_count = 0u;
+}
+
+static int _event_queue_push(obi_gfx_raylib_ctx_v0* p, const obi_window_event_v0* event) {
+    if (!p || !event || p->event_count >= OBI_GFX_RAYLIB_EVENT_QUEUE_CAP) {
+        return 0;
+    }
+
+    size_t at = (p->event_head + p->event_count) % OBI_GFX_RAYLIB_EVENT_QUEUE_CAP;
+    p->event_queue[at] = *event;
+    p->event_count++;
+    return 1;
+}
+
+static int _event_queue_pop(obi_gfx_raylib_ctx_v0* p, obi_window_event_v0* out_event) {
+    if (!p || !out_event || p->event_count == 0u) {
+        return 0;
+    }
+
+    *out_event = p->event_queue[p->event_head];
+    p->event_head = (p->event_head + 1u) % OBI_GFX_RAYLIB_EVENT_QUEUE_CAP;
+    p->event_count--;
+    return 1;
+}
+
+static void _window_framebuffer_refresh(obi_gfx_raylib_window_v0* w) {
+    if (!w) {
+        return;
+    }
+
+    int fb_w = GetRenderWidth();
+    int fb_h = GetRenderHeight();
+    if (fb_w <= 0) {
+        fb_w = GetScreenWidth();
+    }
+    if (fb_h <= 0) {
+        fb_h = GetScreenHeight();
+    }
+    if (fb_w <= 0) {
+        fb_w = 1;
+    }
+    if (fb_h <= 0) {
+        fb_h = 1;
+    }
+    w->width = (uint32_t)fb_w;
+    w->height = (uint32_t)fb_h;
+}
+
+static uint32_t _mods_from_raylib(void) {
+    uint32_t out = 0u;
+
+    if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
+        out |= OBI_KEYMOD_SHIFT;
+    }
+    if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
+        out |= OBI_KEYMOD_CTRL;
+    }
+    if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
+        out |= OBI_KEYMOD_ALT;
+    }
+    if (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) {
+        out |= OBI_KEYMOD_SUPER;
+    }
+    if (IsKeyDown(KEY_CAPS_LOCK)) {
+        out |= OBI_KEYMOD_CAPS;
+    }
+    if (IsKeyDown(KEY_NUM_LOCK)) {
+        out |= OBI_KEYMOD_NUM;
+    }
+
+    return out;
+}
+
+static obi_keycode_v0 _keycode_from_raylib(int key) {
+    if (key >= KEY_A && key <= KEY_Z) {
+        return (obi_keycode_v0)(0x04 + (key - KEY_A));
+    }
+    if (key >= KEY_ONE && key <= KEY_NINE) {
+        return (obi_keycode_v0)(0x1E + (key - KEY_ONE));
+    }
+    if (key == KEY_ZERO) {
+        return (obi_keycode_v0)0x27;
+    }
+    if (key >= KEY_F1 && key <= KEY_F12) {
+        return (obi_keycode_v0)(0x3A + (key - KEY_F1));
+    }
+    if (key >= KEY_KP_1 && key <= KEY_KP_9) {
+        return (obi_keycode_v0)(0x59 + (key - KEY_KP_1));
+    }
+    if (key == KEY_KP_0) {
+        return (obi_keycode_v0)0x62;
+    }
+
+    switch (key) {
+    case KEY_ENTER:
+        return (obi_keycode_v0)0x28;
+    case KEY_ESCAPE:
+        return (obi_keycode_v0)0x29;
+    case KEY_BACKSPACE:
+        return (obi_keycode_v0)0x2A;
+    case KEY_TAB:
+        return (obi_keycode_v0)0x2B;
+    case KEY_SPACE:
+        return (obi_keycode_v0)0x2C;
+    case KEY_MINUS:
+        return (obi_keycode_v0)0x2D;
+    case KEY_EQUAL:
+        return (obi_keycode_v0)0x2E;
+    case KEY_LEFT_BRACKET:
+        return (obi_keycode_v0)0x2F;
+    case KEY_RIGHT_BRACKET:
+        return (obi_keycode_v0)0x30;
+    case KEY_BACKSLASH:
+        return (obi_keycode_v0)0x31;
+    case KEY_SEMICOLON:
+        return (obi_keycode_v0)0x33;
+    case KEY_APOSTROPHE:
+        return (obi_keycode_v0)0x34;
+    case KEY_GRAVE:
+        return (obi_keycode_v0)0x35;
+    case KEY_COMMA:
+        return (obi_keycode_v0)0x36;
+    case KEY_PERIOD:
+        return (obi_keycode_v0)0x37;
+    case KEY_SLASH:
+        return (obi_keycode_v0)0x38;
+    case KEY_CAPS_LOCK:
+        return (obi_keycode_v0)0x39;
+    case KEY_PRINT_SCREEN:
+        return (obi_keycode_v0)0x46;
+    case KEY_SCROLL_LOCK:
+        return (obi_keycode_v0)0x47;
+    case KEY_PAUSE:
+        return (obi_keycode_v0)0x48;
+    case KEY_INSERT:
+        return (obi_keycode_v0)0x49;
+    case KEY_HOME:
+        return (obi_keycode_v0)0x4A;
+    case KEY_PAGE_UP:
+        return (obi_keycode_v0)0x4B;
+    case KEY_DELETE:
+        return (obi_keycode_v0)0x4C;
+    case KEY_END:
+        return (obi_keycode_v0)0x4D;
+    case KEY_PAGE_DOWN:
+        return (obi_keycode_v0)0x4E;
+    case KEY_RIGHT:
+        return (obi_keycode_v0)0x4F;
+    case KEY_LEFT:
+        return (obi_keycode_v0)0x50;
+    case KEY_DOWN:
+        return (obi_keycode_v0)0x51;
+    case KEY_UP:
+        return (obi_keycode_v0)0x52;
+    case KEY_NUM_LOCK:
+        return (obi_keycode_v0)0x53;
+    case KEY_KP_DIVIDE:
+        return (obi_keycode_v0)0x54;
+    case KEY_KP_MULTIPLY:
+        return (obi_keycode_v0)0x55;
+    case KEY_KP_SUBTRACT:
+        return (obi_keycode_v0)0x56;
+    case KEY_KP_ADD:
+        return (obi_keycode_v0)0x57;
+    case KEY_KP_ENTER:
+        return (obi_keycode_v0)0x58;
+    case KEY_KP_DECIMAL:
+        return (obi_keycode_v0)0x63;
+    case KEY_KP_EQUAL:
+        return (obi_keycode_v0)0x67;
+    case KEY_LEFT_CONTROL:
+        return (obi_keycode_v0)0xE0;
+    case KEY_LEFT_SHIFT:
+        return (obi_keycode_v0)0xE1;
+    case KEY_LEFT_ALT:
+        return (obi_keycode_v0)0xE2;
+    case KEY_LEFT_SUPER:
+        return (obi_keycode_v0)0xE3;
+    case KEY_RIGHT_CONTROL:
+        return (obi_keycode_v0)0xE4;
+    case KEY_RIGHT_SHIFT:
+        return (obi_keycode_v0)0xE5;
+    case KEY_RIGHT_ALT:
+        return (obi_keycode_v0)0xE6;
+    case KEY_RIGHT_SUPER:
+        return (obi_keycode_v0)0xE7;
+    default:
+        return (obi_keycode_v0)0;
+    }
+}
+
+static uint8_t _mouse_button_from_raylib(int button) {
+    switch (button) {
+    case MOUSE_BUTTON_LEFT:
+        return (uint8_t)OBI_MOUSE_BUTTON_LEFT;
+    case MOUSE_BUTTON_MIDDLE:
+        return (uint8_t)OBI_MOUSE_BUTTON_MIDDLE;
+    case MOUSE_BUTTON_RIGHT:
+        return (uint8_t)OBI_MOUSE_BUTTON_RIGHT;
+    case MOUSE_BUTTON_SIDE:
+        return (uint8_t)OBI_MOUSE_BUTTON_X1;
+    case MOUSE_BUTTON_EXTRA:
+        return (uint8_t)OBI_MOUSE_BUTTON_X2;
+    default:
+        return (uint8_t)0u;
+    }
+}
+
+static size_t _utf8_encode_codepoint(uint32_t cp, char out[4]) {
+    if (!out || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) {
+        return 0u;
+    }
+    if (cp <= 0x7Fu) {
+        out[0] = (char)cp;
+        return 1u;
+    }
+    if (cp <= 0x7FFu) {
+        out[0] = (char)(0xC0u | (cp >> 6));
+        out[1] = (char)(0x80u | (cp & 0x3Fu));
+        return 2u;
+    }
+    if (cp <= 0xFFFFu) {
+        out[0] = (char)(0xE0u | (cp >> 12));
+        out[1] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+        out[2] = (char)(0x80u | (cp & 0x3Fu));
+        return 3u;
+    }
+
+    out[0] = (char)(0xF0u | (cp >> 18));
+    out[1] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+    out[2] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+    out[3] = (char)(0x80u | (cp & 0x3Fu));
+    return 4u;
+}
+
+static void _event_init(obi_window_event_v0* evt, obi_window_id_v0 window, obi_window_event_type_v0 type) {
+    if (!evt) {
+        return;
+    }
+    memset(evt, 0, sizeof(*evt));
+    evt->window = window;
+    evt->type = type;
+    evt->timestamp_ns = _now_mono_ns();
+}
+
+static obi_status _collect_events(obi_gfx_raylib_ctx_v0* p) {
+    if (!p || p->window_count == 0u) {
+        return OBI_STATUS_NOT_READY;
+    }
+
+    obi_gfx_raylib_window_v0* w = &p->windows[0];
+    if (w->uses_native_window && !IsWindowReady()) {
+        return OBI_STATUS_NOT_READY;
+    }
+
+    if (!p->close_reported && WindowShouldClose()) {
+        obi_window_event_v0 evt;
+        _event_init(&evt, w->id, OBI_WINDOW_EVENT_CLOSE_REQUESTED);
+        (void)_event_queue_push(p, &evt);
+        p->close_reported = 1u;
+    }
+
+    if (w->uses_native_window) {
+        _window_framebuffer_refresh(w);
+    }
+    if (!p->fb_valid || p->fb_w != w->width || p->fb_h != w->height || IsWindowResized()) {
+        obi_window_event_v0 evt;
+        _event_init(&evt, w->id, OBI_WINDOW_EVENT_RESIZED);
+        evt.u.resized.width = w->width;
+        evt.u.resized.height = w->height;
+        (void)_event_queue_push(p, &evt);
+        p->fb_w = w->width;
+        p->fb_h = w->height;
+        p->fb_valid = 1u;
+    }
+
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        obi_window_event_v0 evt;
+        _event_init(&evt, w->id, OBI_WINDOW_EVENT_KEY);
+        evt.u.key.keycode = _keycode_from_raylib(key);
+        evt.u.key.mods = _mods_from_raylib();
+        evt.u.key.pressed = 1u;
+        evt.u.key.repeat = 0u;
+        (void)_event_queue_push(p, &evt);
+    }
+    for (int key = KEY_SPACE; key <= KEY_KB_MENU; ++key) {
+        if (IsKeyPressedRepeat(key)) {
+            obi_window_event_v0 evt;
+            _event_init(&evt, w->id, OBI_WINDOW_EVENT_KEY);
+            evt.u.key.keycode = _keycode_from_raylib(key);
+            evt.u.key.mods = _mods_from_raylib();
+            evt.u.key.pressed = 1u;
+            evt.u.key.repeat = 1u;
+            (void)_event_queue_push(p, &evt);
+        }
+        if (IsKeyReleased(key)) {
+            obi_window_event_v0 evt;
+            _event_init(&evt, w->id, OBI_WINDOW_EVENT_KEY);
+            evt.u.key.keycode = _keycode_from_raylib(key);
+            evt.u.key.mods = _mods_from_raylib();
+            evt.u.key.pressed = 0u;
+            evt.u.key.repeat = 0u;
+            (void)_event_queue_push(p, &evt);
+        }
+    }
+
+    if (p->text_input_active) {
+        for (int cp = GetCharPressed(); cp > 0; cp = GetCharPressed()) {
+            char utf8[4];
+            size_t len = _utf8_encode_codepoint((uint32_t)cp, utf8);
+            if (len == 0u || len >= OBI_WINDOW_TEXT_INPUT_CAP_V0) {
+                continue;
+            }
+
+            obi_window_event_v0 evt;
+            _event_init(&evt, w->id, OBI_WINDOW_EVENT_TEXT_INPUT);
+            memcpy(evt.u.text_input.text, utf8, len);
+            evt.u.text_input.text[len] = '\0';
+            evt.u.text_input.size = (uint32_t)len;
+            (void)_event_queue_push(p, &evt);
+        }
+    }
+
+    int mx = GetMouseX();
+    int my = GetMouseY();
+    if (!p->mouse_valid || mx != p->mouse_x || my != p->mouse_y) {
+        obi_window_event_v0 evt;
+        _event_init(&evt, w->id, OBI_WINDOW_EVENT_MOUSE_MOVE);
+        evt.u.mouse_move.x = (float)mx;
+        evt.u.mouse_move.y = (float)my;
+        (void)_event_queue_push(p, &evt);
+        p->mouse_x = mx;
+        p->mouse_y = my;
+        p->mouse_valid = 1u;
+    }
+
+    const int mouse_buttons[] = {
+        MOUSE_BUTTON_LEFT,
+        MOUSE_BUTTON_MIDDLE,
+        MOUSE_BUTTON_RIGHT,
+        MOUSE_BUTTON_SIDE,
+        MOUSE_BUTTON_EXTRA,
+    };
+    for (size_t i = 0u; i < (sizeof(mouse_buttons) / sizeof(mouse_buttons[0])); ++i) {
+        int btn = mouse_buttons[i];
+        if (IsMouseButtonPressed(btn) || IsMouseButtonReleased(btn)) {
+            obi_window_event_v0 evt;
+            _event_init(&evt, w->id, OBI_WINDOW_EVENT_MOUSE_BUTTON);
+            evt.u.mouse_button.button = _mouse_button_from_raylib(btn);
+            evt.u.mouse_button.pressed = IsMouseButtonPressed(btn) ? 1u : 0u;
+            evt.u.mouse_button.x = (float)mx;
+            evt.u.mouse_button.y = (float)my;
+            (void)_event_queue_push(p, &evt);
+        }
+    }
+
+    Vector2 wheel = GetMouseWheelMoveV();
+    if (wheel.x != 0.0f || wheel.y != 0.0f) {
+        obi_window_event_v0 evt;
+        _event_init(&evt, w->id, OBI_WINDOW_EVENT_MOUSE_WHEEL);
+        evt.u.mouse_wheel.dx = wheel.x;
+        evt.u.mouse_wheel.dy = wheel.y;
+        (void)_event_queue_push(p, &evt);
+    }
+
+    return OBI_STATUS_OK;
+}
+
 static void _destroy_window_at(obi_gfx_raylib_ctx_v0* p, size_t idx) {
     if (!p || idx >= p->window_count) {
         return;
+    }
+
+    if (p->windows[idx].uses_native_window && p->windows[idx].owns_native_window && IsWindowReady()) {
+        CloseWindow();
     }
 
     if (idx + 1u < p->window_count) {
@@ -143,6 +549,12 @@ static void _destroy_window_at(obi_gfx_raylib_ctx_v0* p, size_t idx) {
                 (p->window_count - (idx + 1u)) * sizeof(p->windows[0]));
     }
     p->window_count--;
+    if (p->window_count == 0u) {
+        p->close_reported = 0u;
+        p->mouse_valid = 0u;
+        p->fb_valid = 0u;
+        _event_queue_clear(p);
+    }
 }
 
 static void _destroy_tex_at(obi_gfx_raylib_ctx_v0* p, size_t idx) {
@@ -179,6 +591,10 @@ static obi_status _create_window(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
 
+    if (p->window_count > 0u) {
+        return OBI_STATUS_UNSUPPORTED;
+    }
+
     if (p->window_count == p->window_cap) {
         obi_status st = _windows_grow(p);
         if (st != OBI_STATUS_OK) {
@@ -194,11 +610,47 @@ static obi_status _create_window(void* ctx,
     obi_gfx_raylib_window_v0 w;
     memset(&w, 0, sizeof(w));
     w.id = id;
-    w.width = (params->width > 0u) ? params->width : 1u;
-    w.height = (params->height > 0u) ? params->height : 1u;
     w.flags = params->flags;
 
+    if (IsWindowReady()) {
+        w.uses_native_window = 1u;
+        w.owns_native_window = 0u;
+    } else {
+        unsigned int cfg = 0u;
+        if (params->flags & OBI_WINDOW_CREATE_RESIZABLE) {
+            cfg |= FLAG_WINDOW_RESIZABLE;
+        }
+        if (params->flags & OBI_WINDOW_CREATE_HIDDEN) {
+            cfg |= FLAG_WINDOW_HIDDEN;
+        }
+        if (params->flags & OBI_WINDOW_CREATE_HIGH_DPI) {
+            cfg |= FLAG_WINDOW_HIGHDPI;
+        }
+        if (params->flags & OBI_WINDOW_CREATE_BORDERLESS) {
+            cfg |= FLAG_WINDOW_UNDECORATED;
+        }
+        SetConfigFlags(cfg);
+        InitWindow((int)((params->width > 0u) ? params->width : 1u),
+                   (int)((params->height > 0u) ? params->height : 1u),
+                   (params->title && params->title[0] != '\0') ? params->title : "obi");
+        if (!IsWindowReady()) {
+            return OBI_STATUS_UNAVAILABLE;
+        }
+        w.uses_native_window = 1u;
+        w.owns_native_window = 1u;
+    }
+
+    if (params->flags & OBI_WINDOW_CREATE_HIDDEN) {
+        SetWindowState(FLAG_WINDOW_HIDDEN);
+    }
+    _window_framebuffer_refresh(&w);
+
     p->windows[p->window_count++] = w;
+    p->close_reported = 0u;
+    p->text_input_active = 1u;
+    p->mouse_valid = 0u;
+    p->fb_valid = 0u;
+    _event_queue_clear(p);
     *out_window = id;
     return OBI_STATUS_OK;
 }
@@ -230,7 +682,51 @@ static obi_status _poll_event(void* ctx, obi_window_event_v0* out_event, bool* o
 
     memset(out_event, 0, sizeof(*out_event));
     *out_has_event = false;
+
+    if (p->window_count == 0u) {
+        return OBI_STATUS_NOT_READY;
+    }
+
+    if (p->event_count == 0u) {
+        obi_status st = _collect_events(p);
+        if (st != OBI_STATUS_OK) {
+            return st;
+        }
+    }
+    if (_event_queue_pop(p, out_event)) {
+        *out_has_event = true;
+    }
     return OBI_STATUS_OK;
+}
+
+static obi_status _wait_event(void* ctx,
+                              uint64_t timeout_ns,
+                              obi_window_event_v0* out_event,
+                              bool* out_has_event) {
+    if (!ctx || !out_event || !out_has_event) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    const uint64_t start_ns = _now_mono_ns();
+    while (1) {
+        obi_status st = _poll_event(ctx, out_event, out_has_event);
+        if (st != OBI_STATUS_OK) {
+            return st;
+        }
+        if (*out_has_event) {
+            return OBI_STATUS_OK;
+        }
+        if (timeout_ns == 0u) {
+            return OBI_STATUS_OK;
+        }
+
+        uint64_t now_ns = _now_mono_ns();
+        if (now_ns >= start_ns + timeout_ns) {
+            return OBI_STATUS_OK;
+        }
+
+        WaitTime(0.001);
+    }
 }
 
 static obi_status _window_get_framebuffer_size(void* ctx,
@@ -247,6 +743,9 @@ static obi_status _window_get_framebuffer_size(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
 
+    if (w->uses_native_window && IsWindowReady()) {
+        _window_framebuffer_refresh(w);
+    }
     *out_w = w->width;
     *out_h = w->height;
     return OBI_STATUS_OK;
@@ -265,8 +764,88 @@ static obi_status _window_get_content_scale(void* ctx,
         return OBI_STATUS_BAD_ARG;
     }
 
-    *out_scale_x = 1.0f;
-    *out_scale_y = 1.0f;
+    if (IsWindowReady()) {
+        Vector2 scale = GetWindowScaleDPI();
+        *out_scale_x = (scale.x > 0.0f) ? scale.x : 1.0f;
+        *out_scale_y = (scale.y > 0.0f) ? scale.y : 1.0f;
+    } else {
+        *out_scale_x = 1.0f;
+        *out_scale_y = 1.0f;
+    }
+    return OBI_STATUS_OK;
+}
+
+static obi_status _clipboard_get_utf8(void* ctx,
+                                      char* dst,
+                                      size_t dst_cap,
+                                      size_t* out_size) {
+    (void)ctx;
+    if (!out_size || (!dst && dst_cap > 0u)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    const char* text = GetClipboardText();
+    if (!text) {
+        *out_size = 0u;
+        if (dst && dst_cap > 0u) {
+            dst[0] = '\0';
+        }
+        return OBI_STATUS_UNAVAILABLE;
+    }
+
+    size_t n = strlen(text);
+    *out_size = n;
+
+    if (!dst || dst_cap == 0u) {
+        return OBI_STATUS_OK;
+    }
+    if (dst_cap <= n) {
+        dst[0] = '\0';
+        return OBI_STATUS_BUFFER_TOO_SMALL;
+    }
+
+    memcpy(dst, text, n + 1u);
+    return OBI_STATUS_OK;
+}
+
+static obi_status _clipboard_set_utf8(void* ctx, obi_utf8_view_v0 text) {
+    (void)ctx;
+    if (!text.data && text.size > 0u) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    if (text.size == SIZE_MAX) {
+        return OBI_STATUS_BAD_ARG;
+    }
+
+    char* z = (char*)malloc(text.size + 1u);
+    if (!z) {
+        return OBI_STATUS_OUT_OF_MEMORY;
+    }
+
+    if (text.size > 0u) {
+        memcpy(z, text.data, text.size);
+    }
+    z[text.size] = '\0';
+    SetClipboardText(z);
+    free(z);
+    return OBI_STATUS_OK;
+}
+
+static obi_status _start_text_input(void* ctx, obi_window_id_v0 window) {
+    obi_gfx_raylib_ctx_v0* p = (obi_gfx_raylib_ctx_v0*)ctx;
+    if (!p || window == 0u || !_find_window(p, window)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    p->text_input_active = 1u;
+    return OBI_STATUS_OK;
+}
+
+static obi_status _stop_text_input(void* ctx, obi_window_id_v0 window) {
+    obi_gfx_raylib_ctx_v0* p = (obi_gfx_raylib_ctx_v0*)ctx;
+    if (!p || window == 0u || !_find_window(p, window)) {
+        return OBI_STATUS_BAD_ARG;
+    }
+    p->text_input_active = 0u;
     return OBI_STATUS_OK;
 }
 
@@ -511,13 +1090,20 @@ static const obi_window_input_api_v0 OBI_GFX_RAYLIB_WINDOW_API_V0 = {
     .abi_minor = OBI_CORE_ABI_MINOR,
     .struct_size = (uint32_t)sizeof(obi_window_input_api_v0),
     .reserved = 0,
-    .caps = 0,
+    .caps = OBI_WINDOW_CAP_WAIT_EVENT |
+            OBI_WINDOW_CAP_CLIPBOARD_UTF8 |
+            OBI_WINDOW_CAP_TEXT_INPUT,
 
     .create_window = _create_window,
     .destroy_window = _destroy_window,
     .poll_event = _poll_event,
+    .wait_event = _wait_event,
     .window_get_framebuffer_size = _window_get_framebuffer_size,
     .window_get_content_scale = _window_get_content_scale,
+    .clipboard_get_utf8 = _clipboard_get_utf8,
+    .clipboard_set_utf8 = _clipboard_set_utf8,
+    .start_text_input = _start_text_input,
+    .stop_text_input = _stop_text_input,
 };
 
 static const char* _provider_id(void* ctx) {
