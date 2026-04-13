@@ -88,6 +88,9 @@ option('provider_math_decimal_mpdecimal', type: 'feature', value: 'auto',
 option('provider_math_decimal_decnumber', type: 'feature', value: 'auto',
   description: 'Build math.decimal provider plugin using vendored decNumber.')
 
+option('provider_opt_highs', type: 'feature', value: 'auto',
+  description: 'Build opt lp/milp/qp provider plugin using HiGHS.')
+
 option('provider_db_native', type: 'feature', value: 'disabled',
   description: 'Build retired db kv/sql bootstrap provider plugin (native in-house fallback).')
 

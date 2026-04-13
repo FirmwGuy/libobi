@@ -64,6 +64,12 @@ obi.profile:math.decimal-0,obi.provider:math.decimal.mpdecimal,implemented,mpdec
 obi.profile:math.decimal-0,obi.provider:math.decimal.decnumber,implemented,decnumber_vendored,roadmap,final
 obi.profile:math.scientific_ops-0,obi.provider:math.science.native,implemented,native_libm_math_h,bootstrap,temporary_in_house
 obi.profile:math.scientific_ops-0,obi.provider:math.science.openlibm,implemented,openlibm,roadmap,final
+obi.profile:opt.lp-0,obi.provider:opt.highs,implemented,HiGHS,roadmap,final
+obi.profile:opt.lp-0,obi.provider:opt.glpk,planned,GLPK,roadmap,final
+obi.profile:opt.milp-0,obi.provider:opt.highs,implemented,HiGHS,roadmap,final
+obi.profile:opt.milp-0,obi.provider:opt.scip,planned,SCIP,roadmap,final
+obi.profile:opt.qp-0,obi.provider:opt.highs,implemented,HiGHS,roadmap,final
+obi.profile:opt.qp-0,obi.provider:opt.osqp,planned,OSQP,roadmap,final
 obi.profile:db.kv-0,obi.provider:db.kv.lmdb,implemented,lmdb_memory_mapped_btree_txn_cursor,roadmap,final
 obi.profile:db.kv-0,obi.provider:db.kv.sqlite,implemented,sqlite3_blob_primary_key_table_txn_cursor,roadmap,final
 obi.profile:db.sql-0,obi.provider:db.sql.sqlite,implemented,sqlite3_prepare_bind_step_column,roadmap,final

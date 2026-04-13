@@ -42,6 +42,7 @@
 #include <obi/profiles/obi_math_blas_v0.h>
 #include <obi/profiles/obi_math_decimal_v0.h>
 #include <obi/profiles/obi_math_scientific_ops_v0.h>
+#include <obi/profiles/obi_opt_linear_v0.h>
 #include <obi/profiles/obi_net_dns_v0.h>
 #include <obi/profiles/obi_net_http_client_v0.h>
 #include <obi/profiles/obi_net_socket_v0.h>
@@ -372,6 +373,15 @@ static size_t _profile_struct_size(const char* profile_id) {
     }
     if (strcmp(profile_id, OBI_PROFILE_MATH_SCIENTIFIC_OPS_V0) == 0) {
         return sizeof(obi_math_scientific_ops_v0);
+    }
+    if (strcmp(profile_id, OBI_PROFILE_OPT_LP_V0) == 0) {
+        return sizeof(obi_opt_lp_v0);
+    }
+    if (strcmp(profile_id, OBI_PROFILE_OPT_MILP_V0) == 0) {
+        return sizeof(obi_opt_milp_v0);
+    }
+    if (strcmp(profile_id, OBI_PROFILE_OPT_QP_V0) == 0) {
+        return sizeof(obi_opt_qp_v0);
     }
     if (strcmp(profile_id, OBI_PROFILE_DB_KV_V0) == 0) {
         return sizeof(obi_db_kv_v0);
@@ -11577,6 +11587,257 @@ cleanup:
     return ok;
 }
 
+static int _exercise_opt_lp_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
+    static const double kInf = 1.0e30;
+    static const double col_cost[2] = { 1.0, 1.0 };
+    static const double col_lower[2] = { 0.0, 0.0 };
+    static const double col_upper[2] = { kInf, kInf };
+    static const double row_lower[1] = { 1.0 };
+    static const double row_upper[1] = { kInf };
+    static const int32_t a_start[2] = { 0, 1 };
+    static const int32_t a_index[2] = { 0, 0 };
+    static const double a_value[2] = { 1.0, 1.0 };
+
+    obi_opt_lp_v0 opt;
+    obi_opt_linear_model_v0 model;
+    obi_opt_result_v0 result;
+    double col_value[2] = { 0.0, 0.0 };
+    double row_value[1] = { 0.0 };
+    double col_dual[2] = { 0.0, 0.0 };
+    double row_dual[1] = { 0.0 };
+    obi_status st;
+
+    memset(&opt, 0, sizeof(opt));
+    st = obi_rt_get_profile_from_provider(rt,
+                                          provider_id,
+                                          OBI_PROFILE_OPT_LP_V0,
+                                          OBI_CORE_ABI_MAJOR,
+                                          &opt,
+                                          sizeof(opt));
+    if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
+        return 1;
+    }
+    if (st != OBI_STATUS_OK || !opt.api || !opt.api->solve) {
+        fprintf(stderr,
+                "opt.lp exercise: provider=%s unavailable/incomplete (status=%d err=%s)\n",
+                provider_id,
+                (int)st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    memset(&model, 0, sizeof(model));
+    model.struct_size = (uint32_t)sizeof(model);
+    model.matrix_format = OBI_OPT_MATRIX_COLWISE;
+    model.num_col = 2;
+    model.num_row = 1;
+    model.num_nz = 2;
+    model.sense = OBI_OPT_MINIMIZE;
+    model.offset = 0.0;
+    model.col_cost = col_cost;
+    model.col_lower = col_lower;
+    model.col_upper = col_upper;
+    model.row_lower = row_lower;
+    model.row_upper = row_upper;
+    model.a_start = a_start;
+    model.a_index = a_index;
+    model.a_value = a_value;
+
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.col_value = col_value;
+    result.col_value_cap = 2u;
+    result.row_value = row_value;
+    result.row_value_cap = 1u;
+    result.col_dual = col_dual;
+    result.col_dual_cap = 2u;
+    result.row_dual = row_dual;
+    result.row_dual_cap = 1u;
+
+    st = opt.api->solve(opt.ctx, &model, NULL, &result);
+    if (st != OBI_STATUS_OK || result.model_status != OBI_OPT_MODEL_STATUS_OPTIMAL ||
+        _f64_abs(result.objective_value - 1.0) > 1e-8 ||
+        _f64_abs((col_value[0] + col_value[1]) - 1.0) > 1e-8 ||
+        _f64_abs(row_value[0] - 1.0) > 1e-8) {
+        fprintf(stderr,
+                "opt.lp exercise: provider=%s solve mismatch (status=%d model_status=%u objective=%.17g x=%.17g y=%.17g row=%.17g)\n",
+                provider_id,
+                (int)st,
+                (unsigned)result.model_status,
+                result.objective_value,
+                col_value[0],
+                col_value[1],
+                row_value[0]);
+        return 0;
+    }
+
+    return 1;
+}
+
+static int _exercise_opt_milp_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
+    static const double col_cost[2] = { 1.0, 1.0 };
+    static const double col_lower[2] = { 0.0, 0.0 };
+    static const double col_upper[2] = { 1.0, 1.0 };
+    static const double row_lower[1] = { 0.0 };
+    static const double row_upper[1] = { 1.0 };
+    static const int32_t a_start[2] = { 0, 1 };
+    static const int32_t a_index[2] = { 0, 0 };
+    static const double a_value[2] = { 1.0, 1.0 };
+    static const int32_t integrality[2] = { OBI_OPT_VAR_INTEGER, OBI_OPT_VAR_INTEGER };
+
+    obi_opt_milp_v0 opt;
+    obi_opt_linear_model_v0 model;
+    obi_opt_result_v0 result;
+    double col_value[2] = { 0.0, 0.0 };
+    double row_value[1] = { 0.0 };
+    obi_status st;
+
+    memset(&opt, 0, sizeof(opt));
+    st = obi_rt_get_profile_from_provider(rt,
+                                          provider_id,
+                                          OBI_PROFILE_OPT_MILP_V0,
+                                          OBI_CORE_ABI_MAJOR,
+                                          &opt,
+                                          sizeof(opt));
+    if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
+        return 1;
+    }
+    if (st != OBI_STATUS_OK || !opt.api || !opt.api->solve) {
+        fprintf(stderr,
+                "opt.milp exercise: provider=%s unavailable/incomplete (status=%d err=%s)\n",
+                provider_id,
+                (int)st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    memset(&model, 0, sizeof(model));
+    model.struct_size = (uint32_t)sizeof(model);
+    model.matrix_format = OBI_OPT_MATRIX_COLWISE;
+    model.num_col = 2;
+    model.num_row = 1;
+    model.num_nz = 2;
+    model.sense = OBI_OPT_MAXIMIZE;
+    model.offset = 0.0;
+    model.col_cost = col_cost;
+    model.col_lower = col_lower;
+    model.col_upper = col_upper;
+    model.row_lower = row_lower;
+    model.row_upper = row_upper;
+    model.a_start = a_start;
+    model.a_index = a_index;
+    model.a_value = a_value;
+
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.col_value = col_value;
+    result.col_value_cap = 2u;
+    result.row_value = row_value;
+    result.row_value_cap = 1u;
+
+    st = opt.api->solve(opt.ctx, &model, integrality, NULL, &result);
+    if (st != OBI_STATUS_OK || result.model_status != OBI_OPT_MODEL_STATUS_OPTIMAL ||
+        _f64_abs(result.objective_value - 1.0) > 1e-8 ||
+        _f64_abs((col_value[0] + col_value[1]) - 1.0) > 1e-8 ||
+        _f64_abs(row_value[0] - 1.0) > 1e-8) {
+        fprintf(stderr,
+                "opt.milp exercise: provider=%s solve mismatch (status=%d model_status=%u objective=%.17g x=%.17g y=%.17g row=%.17g)\n",
+                provider_id,
+                (int)st,
+                (unsigned)result.model_status,
+                result.objective_value,
+                col_value[0],
+                col_value[1],
+                row_value[0]);
+        return 0;
+    }
+
+    return 1;
+}
+
+static int _exercise_opt_qp_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
+    static const double kInf = 1.0e30;
+    static const double col_cost[1] = { 0.0 };
+    static const double col_lower[1] = { 1.0 };
+    static const double col_upper[1] = { kInf };
+    static const int32_t a_start[1] = { 0 };
+    static const int32_t q_start[1] = { 0 };
+    static const int32_t q_index[1] = { 0 };
+    static const double q_value[1] = { 1.0 };
+
+    obi_opt_qp_v0 opt;
+    obi_opt_linear_model_v0 model;
+    obi_opt_qp_hessian_v0 hessian;
+    obi_opt_result_v0 result;
+    double col_value[1] = { 0.0 };
+    double col_dual[1] = { 0.0 };
+    obi_status st;
+
+    memset(&opt, 0, sizeof(opt));
+    st = obi_rt_get_profile_from_provider(rt,
+                                          provider_id,
+                                          OBI_PROFILE_OPT_QP_V0,
+                                          OBI_CORE_ABI_MAJOR,
+                                          &opt,
+                                          sizeof(opt));
+    if (st == OBI_STATUS_UNSUPPORTED && allow_unsupported) {
+        return 1;
+    }
+    if (st != OBI_STATUS_OK || !opt.api || !opt.api->solve) {
+        fprintf(stderr,
+                "opt.qp exercise: provider=%s unavailable/incomplete (status=%d err=%s)\n",
+                provider_id,
+                (int)st,
+                obi_rt_last_error_utf8(rt));
+        return 0;
+    }
+
+    memset(&model, 0, sizeof(model));
+    model.struct_size = (uint32_t)sizeof(model);
+    model.matrix_format = OBI_OPT_MATRIX_COLWISE;
+    model.num_col = 1;
+    model.num_row = 0;
+    model.num_nz = 0;
+    model.sense = OBI_OPT_MINIMIZE;
+    model.offset = 0.0;
+    model.col_cost = col_cost;
+    model.col_lower = col_lower;
+    model.col_upper = col_upper;
+    model.a_start = a_start;
+
+    memset(&hessian, 0, sizeof(hessian));
+    hessian.struct_size = (uint32_t)sizeof(hessian);
+    hessian.format = OBI_OPT_HESSIAN_TRIANGULAR;
+    hessian.dim = 1;
+    hessian.num_nz = 1;
+    hessian.start = q_start;
+    hessian.index = q_index;
+    hessian.value = q_value;
+
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.col_value = col_value;
+    result.col_value_cap = 1u;
+    result.col_dual = col_dual;
+    result.col_dual_cap = 1u;
+
+    st = opt.api->solve(opt.ctx, &model, &hessian, NULL, &result);
+    if (st != OBI_STATUS_OK || result.model_status != OBI_OPT_MODEL_STATUS_OPTIMAL ||
+        _f64_abs(col_value[0] - 1.0) > 1e-8 ||
+        result.objective_value < -1e-8) {
+        fprintf(stderr,
+                "opt.qp exercise: provider=%s solve mismatch (status=%d model_status=%u objective=%.17g x=%.17g)\n",
+                provider_id,
+                (int)st,
+                (unsigned)result.model_status,
+                result.objective_value,
+                col_value[0]);
+        return 0;
+    }
+
+    return 1;
+}
+
 static int _exercise_math_scientific_ops_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_math_scientific_ops_v0 sci;
     memset(&sci, 0, sizeof(sci));
@@ -13943,6 +14204,15 @@ static int _exercise_profile_for_provider(obi_rt_v0* rt,
     if (strcmp(profile_id, OBI_PROFILE_MATH_SCIENTIFIC_OPS_V0) == 0) {
         return _exercise_math_scientific_ops_profile(rt, provider_id, allow_unsupported);
     }
+    if (strcmp(profile_id, OBI_PROFILE_OPT_LP_V0) == 0) {
+        return _exercise_opt_lp_profile(rt, provider_id, allow_unsupported);
+    }
+    if (strcmp(profile_id, OBI_PROFILE_OPT_MILP_V0) == 0) {
+        return _exercise_opt_milp_profile(rt, provider_id, allow_unsupported);
+    }
+    if (strcmp(profile_id, OBI_PROFILE_OPT_QP_V0) == 0) {
+        return _exercise_opt_qp_profile(rt, provider_id, allow_unsupported);
+    }
     if (strcmp(profile_id, OBI_PROFILE_DB_KV_V0) == 0) {
         return _exercise_db_kv_profile(rt, provider_id, allow_unsupported);
     }
@@ -14184,6 +14454,12 @@ static int _exercise_math_decimal_decnumber(obi_rt_v0* rt) {
                                           OBI_PROFILE_MATH_DECIMAL_V0,
                                           "obi.provider:math.decimal.decnumber",
                                           1);
+}
+
+static int _exercise_opt_highs(obi_rt_v0* rt) {
+    return _exercise_profile_for_provider(rt, OBI_PROFILE_OPT_LP_V0, "obi.provider:opt.highs", 1) &&
+           _exercise_profile_for_provider(rt, OBI_PROFILE_OPT_MILP_V0, "obi.provider:opt.highs", 1) &&
+           _exercise_profile_for_provider(rt, OBI_PROFILE_OPT_QP_V0, "obi.provider:opt.highs", 1);
 }
 
 static int _exercise_db_native(obi_rt_v0* rt) {
@@ -22184,6 +22460,15 @@ int main(int argc, char** argv) {
                 return 1;
             }
             printf("exercise_ok=math.decimal.decnumber\n");
+        }
+
+        if (_provider_loaded(rt, "obi.provider:opt.highs")) {
+            if (!_exercise_opt_highs(rt)) {
+                fprintf(stderr, "opt.highs exercise failed\n");
+                obi_rt_destroy(rt);
+                return 1;
+            }
+            printf("exercise_ok=opt.highs\n");
         }
 
         if (_provider_loaded(rt, "obi.provider:db.inhouse")) {

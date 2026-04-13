@@ -119,6 +119,10 @@ if not get_option('provider_math_decimal_decnumber').disabled()
   subdir('math_decimal_decnumber')
 endif
 
+if not get_option('provider_opt_highs').disabled()
+  subdir('opt_highs')
+endif
+
 if get_option('provider_db_native').enabled()
   subdir('db_native')
 endif
