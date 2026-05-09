@@ -109,7 +109,7 @@ Current provider modules (basic bring-up scope):
 - `obi_provider_null` -> provider id `obi.provider:null`
 - `obi_provider_gfx_sdl3` -> provider id `obi.provider:gfx.sdl3`
   - profiles: `obi.profile:gfx.window_input-0`, `obi.profile:gfx.render2d-0`, `obi.profile:gfx.gpu_device-0`
-  - status: functional SDL3 backend for window/input, 2D rendering, and GPU-device surface (resource lifecycle, frame begin/end, bindings/pipeline validation, upload paths)
+  - status: functional SDL3 backend for window/input, 2D rendering, and GPU-device surface (resource lifecycle, frame begin/end, bindings/pipeline validation, upload paths); builds from system SDL3 first or vendored `../libraries/SDL` when package metadata is absent
 - `obi_provider_gfx_raylib` -> provider id `obi.provider:gfx.raylib`
   - profiles: `obi.profile:gfx.window_input-0`, `obi.profile:gfx.render2d-0`
   - status: functional in-memory gfx baseline (window lifecycle/event poll/framebuffer size + render2d frame lifecycle, scissor/blend state, RGBA texture create/update/draw validation path)
@@ -145,7 +145,7 @@ Current provider modules (basic bring-up scope):
   - status: raqm-backed text layout backend (HarfBuzz/FriBidi/FreeType shaping path)
 - `obi_provider_text_ime_sdl3` -> provider id `obi.provider:text.ime.sdl3`
   - profiles: `obi.profile:text.ime-0`
-  - status: SDL3 text-input/IME backend
+  - status: SDL3 text-input/IME backend; builds from system SDL3 first or vendored `../libraries/SDL` when package metadata is absent
 - `obi_provider_text_ime_gtk` -> provider id `obi.provider:text.ime.gtk`
   - profiles: `obi.profile:text.ime-0`
   - status: GTK IM-context backend
@@ -325,7 +325,7 @@ Current provider modules (basic bring-up scope):
   - status: stb_image/stb_image_write-backed image codec backend (decode from bytes/reader and encode-to-writer for PNG/JPEG)
 - `obi_provider_media_audio_sdl3` -> provider id `obi.provider:media.audio.sdl3`
   - profiles: `obi.profile:media.audio_device-0`
-  - status: SDL3-backed audio device backend
+  - status: SDL3-backed audio device backend; builds from system SDL3 first or vendored `../libraries/SDL` when package metadata is absent
 - `obi_provider_media_audio_portaudio` -> provider id `obi.provider:media.audio.portaudio`
   - profiles: `obi.profile:media.audio_device-0`
   - status: PortAudio-backed audio device backend
@@ -524,8 +524,9 @@ Provider provenance and fallback policy:
   vendored fallback second) instead of embedding third-party parser code;
 - the civil-date helpers in `providers/time_common/obi_provider_time_base.inc` are documented as local expressions of
   published formulas rather than embedded upstream source text;
-- vendored compiled fallback should prefer shared linkage: providers should resolve system shared libraries first, then
-  vendored shared builds, with static fallback enabled only behind an explicit Meson option gate;
-- the current in-tree static vendored fallback exception is the `phys2d` pair (`obi.provider:phys2d.box2d`,
-  `obi.provider:phys2d.chipmunk`) through `-Dphys2d_allow_static_fallback=true`; otherwise those vendored fallbacks build as
-  shared libraries.
+- vendored compiled fallback should prefer system package metadata first, then vendored `../libraries` sources;
+- vendored shared builds remain preferred when an upstream library supports clean module loading, while static PIC fallback is
+  allowed where it keeps a provider self-contained;
+- current static vendored fallback exceptions are `obi.provider:opt.highs` through `../libraries/highs` and the `phys2d` pair
+  (`obi.provider:phys2d.box2d`, `obi.provider:phys2d.chipmunk`) through `-Dphys2d_allow_static_fallback=true`; otherwise those
+  vendored fallbacks build as shared libraries, matching the SDL3 provider fallback through `../libraries/SDL`.

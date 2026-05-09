@@ -17,6 +17,19 @@
 #  define OBI_EXPORT __attribute__((visibility("default")))
 #endif
 
+/* Keep route metadata ABI-stable across header snapshots: newer OBI-ABI
+ * exports canonical route IDs, while older snapshots still need local fallbacks.
+ */
+#ifndef OBI_OPT_ROUTE_LP_HIGHS_V0
+#  define OBI_OPT_ROUTE_LP_HIGHS_V0 "opt:lp:highs"
+#endif
+#ifndef OBI_OPT_ROUTE_MILP_HIGHS_V0
+#  define OBI_OPT_ROUTE_MILP_HIGHS_V0 "opt:milp:highs"
+#endif
+#ifndef OBI_OPT_ROUTE_QP_HIGHS_V0
+#  define OBI_OPT_ROUTE_QP_HIGHS_V0 "opt:qp:highs"
+#endif
+
 #define OBI_OPT_HIGHS_PROVIDER_ID      "obi.provider:opt.highs"
 #define OBI_OPT_HIGHS_PROVIDER_VERSION "0.1.0"
 
@@ -967,6 +980,105 @@ static obi_status _describe_legal_metadata(void* ctx,
             .spdx_expression = "MIT",
         },
     }};
+    static const obi_legal_selector_term_v0 lp_selectors[2] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0),
+            .key_utf8 = "profile",
+            .value_utf8 = OBI_PROFILE_OPT_LP_V0,
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0),
+            .key_utf8 = "backend",
+            .value_utf8 = "highs",
+        },
+    };
+    static const obi_legal_selector_term_v0 milp_selectors[2] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0),
+            .key_utf8 = "profile",
+            .value_utf8 = OBI_PROFILE_OPT_MILP_V0,
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0),
+            .key_utf8 = "backend",
+            .value_utf8 = "highs",
+        },
+    };
+    static const obi_legal_selector_term_v0 qp_selectors[2] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0),
+            .key_utf8 = "profile",
+            .value_utf8 = OBI_PROFILE_OPT_QP_V0,
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_selector_term_v0),
+            .key_utf8 = "backend",
+            .value_utf8 = "highs",
+        },
+    };
+    static const char* route_dep_highs[1] = { "highs" };
+    static const obi_legal_route_v0 routes[3] = {
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE,
+            .flags = OBI_LEGAL_ROUTE_FLAG_DEFAULT,
+            .route_id = OBI_OPT_ROUTE_LP_HIGHS_V0,
+            .profile_id = OBI_PROFILE_OPT_LP_V0,
+            .summary_utf8 = "LP solve route through HiGHS",
+            .implementation_utf8 = "highs",
+            .selectors = lp_selectors,
+            .selector_count = sizeof(lp_selectors) / sizeof(lp_selectors[0]),
+            .dependency_ids = route_dep_highs,
+            .dependency_id_count = sizeof(route_dep_highs) / sizeof(route_dep_highs[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "MPL-2.0 AND MIT",
+                .summary_utf8 = "Effective posture reflects module plus required HiGHS dependency",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE,
+            .flags = OBI_LEGAL_ROUTE_FLAG_DEFAULT,
+            .route_id = OBI_OPT_ROUTE_MILP_HIGHS_V0,
+            .profile_id = OBI_PROFILE_OPT_MILP_V0,
+            .summary_utf8 = "MILP solve route through HiGHS",
+            .implementation_utf8 = "highs",
+            .selectors = milp_selectors,
+            .selector_count = sizeof(milp_selectors) / sizeof(milp_selectors[0]),
+            .dependency_ids = route_dep_highs,
+            .dependency_id_count = sizeof(route_dep_highs) / sizeof(route_dep_highs[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "MPL-2.0 AND MIT",
+                .summary_utf8 = "Effective posture reflects module plus required HiGHS dependency",
+            },
+        },
+        {
+            .struct_size = (uint32_t)sizeof(obi_legal_route_v0),
+            .availability = OBI_LEGAL_ROUTE_AVAILABILITY_AVAILABLE,
+            .flags = OBI_LEGAL_ROUTE_FLAG_DEFAULT,
+            .route_id = OBI_OPT_ROUTE_QP_HIGHS_V0,
+            .profile_id = OBI_PROFILE_OPT_QP_V0,
+            .summary_utf8 = "QP solve route through HiGHS",
+            .implementation_utf8 = "highs",
+            .selectors = qp_selectors,
+            .selector_count = sizeof(qp_selectors) / sizeof(qp_selectors[0]),
+            .dependency_ids = route_dep_highs,
+            .dependency_id_count = sizeof(route_dep_highs) / sizeof(route_dep_highs[0]),
+            .effective_license = {
+                .struct_size = (uint32_t)sizeof(obi_legal_term_v0),
+                .copyleft_class = OBI_LEGAL_COPYLEFT_WEAK,
+                .patent_posture = OBI_LEGAL_PATENT_POSTURE_ORDINARY,
+                .spdx_expression = "MPL-2.0 AND MIT",
+                .summary_utf8 = "Effective posture reflects module plus required HiGHS dependency",
+            },
+        },
+    };
 
     (void)ctx;
     if (!out_meta || out_meta_size < sizeof(*out_meta)) {
@@ -993,6 +1105,8 @@ static obi_status _describe_legal_metadata(void* ctx,
 
     out_meta->dependencies = deps;
     out_meta->dependency_count = 1u;
+    out_meta->routes = routes;
+    out_meta->route_count = sizeof(routes) / sizeof(routes[0]);
     return OBI_STATUS_OK;
 }
 

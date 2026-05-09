@@ -3,6 +3,64 @@ provider_modules = []
 provider_profiles = []
 provider_profile_pairs = []
 
+obi_sdl3_available = false
+obi_sdl3_include_dirs = [inc]
+obi_sdl3_deps = deps
+obi_sdl3_link_args = []
+obi_sdl3_link_depends = []
+obi_sdl3_build_rpath = ''
+obi_sdl3_needed = not get_option('provider_gfx_sdl3').disabled()
+obi_sdl3_needed = obi_sdl3_needed or not get_option('provider_text_ime_sdl3').disabled()
+obi_sdl3_needed = obi_sdl3_needed or not get_option('provider_media_audio_sdl3').disabled()
+
+if obi_sdl3_needed
+  obi_sdl3_dep = dependency('sdl3', required: false, method: 'pkg-config')
+  if obi_sdl3_dep.found()
+    obi_sdl3_deps += [obi_sdl3_dep]
+    obi_sdl3_available = true
+  elif has_vendor_libraries_root
+    obi_sdl3_vendor_name = ''
+    foreach candidate : ['SDL', 'SDL3', 'sdl3']
+      if obi_sdl3_vendor_name == ''
+        candidate_root = join_paths(vendor_libraries_root, candidate)
+        if fs.is_file(join_paths(candidate_root, 'CMakeLists.txt')) and fs.is_file(join_paths(candidate_root, 'include', 'SDL3', 'SDL.h'))
+          obi_sdl3_vendor_name = candidate
+        endif
+      endif
+    endforeach
+
+    if obi_sdl3_vendor_name != ''
+      cmake = find_program('cmake', required: false)
+      if cmake.found()
+        obi_sdl3_vendor_root = join_paths(vendor_libraries_root, obi_sdl3_vendor_name)
+        obi_sdl3_vendor_rel_root = join_paths(vendor_libraries_rel_root, obi_sdl3_vendor_name)
+        obi_sdl3_vendor_build_dir = join_paths(meson.current_build_dir(), 'sdl3_vendor_shared')
+        obi_sdl3_vendor_lib = join_paths(obi_sdl3_vendor_build_dir, 'libSDL3.so')
+        obi_sdl3_vendor_stamp = custom_target(
+          'sdl3_vendor_shared',
+          output: 'sdl3_vendor_shared.stamp',
+          command: [
+            find_program('sh'),
+            '-c',
+            'set -eu; src="$1"; build="$2"; lib="$3"; out="$4"; cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL=OFF -DSDL_X11_XCURSOR=OFF -DSDL_X11_XDBE=OFF -DSDL_X11_XFIXES=OFF -DSDL_X11_XINPUT=OFF -DSDL_X11_XRANDR=OFF -DSDL_X11_XSCRNSAVER=OFF -DSDL_X11_XSHAPE=OFF -DSDL_X11_XSYNC=OFF -DSDL_X11_XTEST=OFF; cmake --build "$build" --target SDL3-shared --parallel "${MESON_NUM_PROCESSES:-2}"; test -f "$lib"; printf "ok\n" > "$out"',
+            'sdl3_vendor_shared',
+            obi_sdl3_vendor_root,
+            obi_sdl3_vendor_build_dir,
+            obi_sdl3_vendor_lib,
+            '@OUTPUT@',
+          ],
+          build_by_default: false,
+        )
+        obi_sdl3_include_dirs += [include_directories(join_paths(obi_sdl3_vendor_rel_root, 'include'))]
+        obi_sdl3_link_args += [obi_sdl3_vendor_lib]
+        obi_sdl3_link_depends += [obi_sdl3_vendor_stamp]
+        obi_sdl3_build_rpath = obi_sdl3_vendor_build_dir
+        obi_sdl3_available = true
+      endif
+    endif
+  endif
+endif
+
 if get_option('provider_null').enabled()
   subdir('null')
 endif

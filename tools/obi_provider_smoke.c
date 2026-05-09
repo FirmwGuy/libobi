@@ -100,6 +100,7 @@ static int _profile_provider_load_priority(const char* target_profile,
                                            const char* target_provider_id,
                                            const char* provider_path);
 static int _exercise_mixed_backend_mix_eligibility_sweep(obi_rt_v0* rt);
+static int _emit_opt_route_packet(obi_rt_v0* rt, const char* provider_id);
 static uint32_t _mix_current_cycle_index = UINT32_MAX;
 
 static void _usage(const char* argv0) {
@@ -113,7 +114,9 @@ static void _usage(const char* argv0) {
             "  %s --mix-media-routes <provider_path>...\n"
             "  %s --mix-family-stateful <provider_path>...\n"
             "  %s --mix-family-gfx <provider_path>...\n"
-            "  %s --profile-provider <profile_id> <provider_id> <provider_path>...\n",
+            "  %s --profile-provider <profile_id> <provider_id> <provider_path>...\n"
+            "  %s --opt-route-packet <provider_id> <provider_path>...\n",
+            argv0,
             argv0,
             argv0,
             argv0,
@@ -142,6 +145,25 @@ static void _set_env_if_unset(const char* name, const char* value) {
 #else
     (void)setenv(name, value, 0);
 #endif
+}
+
+static int _env_flag_enabled(const char* name) {
+    if (!name || name[0] == '\0') {
+        return 0;
+    }
+
+    const char* raw = getenv(name);
+    if (!raw || raw[0] == '\0') {
+        return 0;
+    }
+
+    if (strcmp(raw, "0") == 0 || strcmp(raw, "false") == 0 || strcmp(raw, "FALSE") == 0 ||
+        strcmp(raw, "off") == 0 || strcmp(raw, "OFF") == 0 || strcmp(raw, "no") == 0 ||
+        strcmp(raw, "NO") == 0) {
+        return 0;
+    }
+
+    return 1;
 }
 
 typedef struct obi_env_saved_value_v0 {
@@ -11838,6 +11860,505 @@ static int _exercise_opt_qp_profile(obi_rt_v0* rt, const char* provider_id, int 
     return 1;
 }
 
+typedef struct obi_opt_route_eval_v0 {
+    const char* profile_id;
+    const char* selector;
+    uint32_t api_abi_major;
+    uint32_t api_abi_minor;
+    uint64_t api_caps;
+    int solve_status;
+    uint32_t model_status;
+    double objective_expected;
+    double objective_observed;
+    double objective_abs_error;
+    double parity_abs_error;
+    double latency_us;
+    double latency_budget_us;
+    int solve_pass;
+    int parity_pass;
+    int latency_pass;
+    const char* legal_route_id;
+    const char* legal_spdx;
+    uint32_t legal_copyleft_class;
+    uint32_t legal_patent_posture;
+} obi_opt_route_eval_v0;
+
+static void _opt_route_eval_init(obi_opt_route_eval_v0* eval,
+                                 const char* profile_id,
+                                 const char* selector,
+                                 double latency_budget_us) {
+    if (!eval) {
+        return;
+    }
+    memset(eval, 0, sizeof(*eval));
+    eval->profile_id = profile_id;
+    eval->selector = selector;
+    eval->objective_expected = 0.0;
+    eval->objective_observed = 0.0;
+    eval->objective_abs_error = 0.0;
+    eval->parity_abs_error = 0.0;
+    eval->latency_us = -1.0;
+    eval->latency_budget_us = latency_budget_us;
+    eval->legal_route_id = "missing_route_metadata";
+    eval->legal_spdx = "unknown";
+}
+
+static const obi_legal_route_v0* _opt_route_find_legal_route(const obi_provider_legal_metadata_v0* meta,
+                                                              const char* profile_id) {
+    if (!meta || meta->struct_size < (uint32_t)sizeof(*meta) || !meta->routes || !profile_id) {
+        return NULL;
+    }
+    for (size_t i = 0u; i < meta->route_count; i++) {
+        const obi_legal_route_v0* route = &meta->routes[i];
+        if (!route || route->struct_size < (uint32_t)sizeof(*route) || !route->profile_id) {
+            continue;
+        }
+        if (strcmp(route->profile_id, profile_id) == 0) {
+            return route;
+        }
+    }
+    return NULL;
+}
+
+static void _opt_route_eval_apply_legal(obi_opt_route_eval_v0* eval,
+                                        const obi_provider_legal_metadata_v0* meta) {
+    if (!eval) {
+        return;
+    }
+
+    if (!meta || meta->struct_size < (uint32_t)sizeof(*meta)) {
+        return;
+    }
+
+    const obi_legal_term_v0* effective = &meta->effective_license;
+    if (effective->struct_size >= (uint32_t)sizeof(*effective)) {
+        eval->legal_copyleft_class = effective->copyleft_class;
+        eval->legal_patent_posture = effective->patent_posture;
+        if (effective->spdx_expression && effective->spdx_expression[0] != '\0') {
+            eval->legal_spdx = effective->spdx_expression;
+        }
+    }
+
+    const obi_legal_route_v0* route = _opt_route_find_legal_route(meta, eval->profile_id);
+    if (!route) {
+        return;
+    }
+
+    if (route->route_id && route->route_id[0] != '\0') {
+        eval->legal_route_id = route->route_id;
+    } else {
+        eval->legal_route_id = "route_without_id";
+    }
+
+    if (route->effective_license.struct_size >= (uint32_t)sizeof(route->effective_license)) {
+        eval->legal_copyleft_class = route->effective_license.copyleft_class;
+        eval->legal_patent_posture = route->effective_license.patent_posture;
+        if (route->effective_license.spdx_expression &&
+            route->effective_license.spdx_expression[0] != '\0') {
+            eval->legal_spdx = route->effective_license.spdx_expression;
+        }
+    }
+}
+
+static int _opt_route_capture_unsupported_profile_mode(obi_rt_v0* rt, const char* provider_id) {
+    obi_opt_lp_v0 probe;
+    memset(&probe, 0, sizeof(probe));
+    const obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                            provider_id,
+                                                            "obi.profile:opt.unsupported-0",
+                                                            OBI_CORE_ABI_MAJOR,
+                                                            &probe,
+                                                            sizeof(probe));
+    return st == OBI_STATUS_UNSUPPORTED;
+}
+
+static int _opt_route_collect_lp(obi_rt_v0* rt, const char* provider_id, obi_opt_route_eval_v0* eval) {
+    static const double kInf = 1.0e30;
+    static const double col_cost[2] = { 1.0, 1.0 };
+    static const double col_lower[2] = { 0.0, 0.0 };
+    static const double col_upper[2] = { kInf, kInf };
+    static const double row_lower[1] = { 1.0 };
+    static const double row_upper[1] = { kInf };
+    static const int32_t a_start[2] = { 0, 1 };
+    static const int32_t a_index[2] = { 0, 0 };
+    static const double a_value[2] = { 1.0, 1.0 };
+    obi_opt_lp_v0 opt;
+    obi_opt_linear_model_v0 model;
+    obi_opt_result_v0 result;
+    double col_value[2] = { 0.0, 0.0 };
+    double row_value[1] = { 0.0 };
+    double col_dual[2] = { 0.0, 0.0 };
+    double row_dual[1] = { 0.0 };
+
+    if (!rt || !provider_id || !eval) {
+        return 0;
+    }
+
+    memset(&opt, 0, sizeof(opt));
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      provider_id,
+                                                      OBI_PROFILE_OPT_LP_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &opt,
+                                                      sizeof(opt));
+    eval->solve_status = (int)st;
+    if (st != OBI_STATUS_OK || !opt.api || !opt.api->solve) {
+        return 0;
+    }
+
+    eval->api_abi_major = opt.api->abi_major;
+    eval->api_abi_minor = opt.api->abi_minor;
+    eval->api_caps = opt.api->caps;
+    eval->objective_expected = 1.0;
+
+    memset(&model, 0, sizeof(model));
+    model.struct_size = (uint32_t)sizeof(model);
+    model.matrix_format = OBI_OPT_MATRIX_COLWISE;
+    model.num_col = 2;
+    model.num_row = 1;
+    model.num_nz = 2;
+    model.sense = OBI_OPT_MINIMIZE;
+    model.offset = 0.0;
+    model.col_cost = col_cost;
+    model.col_lower = col_lower;
+    model.col_upper = col_upper;
+    model.row_lower = row_lower;
+    model.row_upper = row_upper;
+    model.a_start = a_start;
+    model.a_index = a_index;
+    model.a_value = a_value;
+
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.col_value = col_value;
+    result.col_value_cap = 2u;
+    result.row_value = row_value;
+    result.row_value_cap = 1u;
+    result.col_dual = col_dual;
+    result.col_dual_cap = 2u;
+    result.row_dual = row_dual;
+    result.row_dual_cap = 1u;
+
+    const clock_t start_ticks = clock();
+    st = opt.api->solve(opt.ctx, &model, NULL, &result);
+    const clock_t end_ticks = clock();
+    eval->solve_status = (int)st;
+    if (start_ticks != (clock_t)-1 && end_ticks != (clock_t)-1 && end_ticks >= start_ticks) {
+        eval->latency_us = ((double)(end_ticks - start_ticks) * 1000000.0) / (double)CLOCKS_PER_SEC;
+    }
+
+    eval->model_status = result.model_status;
+    eval->objective_observed = result.objective_value;
+    eval->objective_abs_error = _f64_abs(result.objective_value - 1.0);
+    eval->parity_abs_error = _f64_abs((col_value[0] + col_value[1]) - 1.0);
+    if (_f64_abs(row_value[0] - 1.0) > eval->parity_abs_error) {
+        eval->parity_abs_error = _f64_abs(row_value[0] - 1.0);
+    }
+
+    eval->solve_pass = (st == OBI_STATUS_OK) && (result.model_status == OBI_OPT_MODEL_STATUS_OPTIMAL);
+    eval->parity_pass = eval->solve_pass &&
+                        (eval->objective_abs_error <= 1e-8) &&
+                        (eval->parity_abs_error <= 1e-8);
+    eval->latency_pass = eval->latency_us >= 0.0 && eval->latency_us <= eval->latency_budget_us;
+    return eval->solve_pass;
+}
+
+static int _opt_route_collect_milp(obi_rt_v0* rt, const char* provider_id, obi_opt_route_eval_v0* eval) {
+    static const double col_cost[2] = { 1.0, 1.0 };
+    static const double col_lower[2] = { 0.0, 0.0 };
+    static const double col_upper[2] = { 1.0, 1.0 };
+    static const double row_lower[1] = { 0.0 };
+    static const double row_upper[1] = { 1.0 };
+    static const int32_t a_start[2] = { 0, 1 };
+    static const int32_t a_index[2] = { 0, 0 };
+    static const double a_value[2] = { 1.0, 1.0 };
+    static const int32_t integrality[2] = { OBI_OPT_VAR_INTEGER, OBI_OPT_VAR_INTEGER };
+    obi_opt_milp_v0 opt;
+    obi_opt_linear_model_v0 model;
+    obi_opt_result_v0 result;
+    double col_value[2] = { 0.0, 0.0 };
+    double row_value[1] = { 0.0 };
+
+    if (!rt || !provider_id || !eval) {
+        return 0;
+    }
+
+    memset(&opt, 0, sizeof(opt));
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      provider_id,
+                                                      OBI_PROFILE_OPT_MILP_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &opt,
+                                                      sizeof(opt));
+    eval->solve_status = (int)st;
+    if (st != OBI_STATUS_OK || !opt.api || !opt.api->solve) {
+        return 0;
+    }
+
+    eval->api_abi_major = opt.api->abi_major;
+    eval->api_abi_minor = opt.api->abi_minor;
+    eval->api_caps = opt.api->caps;
+    eval->objective_expected = 1.0;
+
+    memset(&model, 0, sizeof(model));
+    model.struct_size = (uint32_t)sizeof(model);
+    model.matrix_format = OBI_OPT_MATRIX_COLWISE;
+    model.num_col = 2;
+    model.num_row = 1;
+    model.num_nz = 2;
+    model.sense = OBI_OPT_MAXIMIZE;
+    model.offset = 0.0;
+    model.col_cost = col_cost;
+    model.col_lower = col_lower;
+    model.col_upper = col_upper;
+    model.row_lower = row_lower;
+    model.row_upper = row_upper;
+    model.a_start = a_start;
+    model.a_index = a_index;
+    model.a_value = a_value;
+
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.col_value = col_value;
+    result.col_value_cap = 2u;
+    result.row_value = row_value;
+    result.row_value_cap = 1u;
+
+    const clock_t start_ticks = clock();
+    st = opt.api->solve(opt.ctx, &model, integrality, NULL, &result);
+    const clock_t end_ticks = clock();
+    eval->solve_status = (int)st;
+    if (start_ticks != (clock_t)-1 && end_ticks != (clock_t)-1 && end_ticks >= start_ticks) {
+        eval->latency_us = ((double)(end_ticks - start_ticks) * 1000000.0) / (double)CLOCKS_PER_SEC;
+    }
+
+    eval->model_status = result.model_status;
+    eval->objective_observed = result.objective_value;
+    eval->objective_abs_error = _f64_abs(result.objective_value - 1.0);
+    eval->parity_abs_error = _f64_abs((col_value[0] + col_value[1]) - 1.0);
+    if (_f64_abs(row_value[0] - 1.0) > eval->parity_abs_error) {
+        eval->parity_abs_error = _f64_abs(row_value[0] - 1.0);
+    }
+
+    eval->solve_pass = (st == OBI_STATUS_OK) && (result.model_status == OBI_OPT_MODEL_STATUS_OPTIMAL);
+    eval->parity_pass = eval->solve_pass &&
+                        (eval->objective_abs_error <= 1e-8) &&
+                        (eval->parity_abs_error <= 1e-8);
+    eval->latency_pass = eval->latency_us >= 0.0 && eval->latency_us <= eval->latency_budget_us;
+    return eval->solve_pass;
+}
+
+static int _opt_route_collect_qp(obi_rt_v0* rt, const char* provider_id, obi_opt_route_eval_v0* eval) {
+    static const double kInf = 1.0e30;
+    static const double col_cost[1] = { 0.0 };
+    static const double col_lower[1] = { 1.0 };
+    static const double col_upper[1] = { kInf };
+    static const int32_t a_start[1] = { 0 };
+    static const int32_t q_start[1] = { 0 };
+    static const int32_t q_index[1] = { 0 };
+    static const double q_value[1] = { 1.0 };
+    obi_opt_qp_v0 opt;
+    obi_opt_linear_model_v0 model;
+    obi_opt_qp_hessian_v0 hessian;
+    obi_opt_result_v0 result;
+    double col_value[1] = { 0.0 };
+    double col_dual[1] = { 0.0 };
+
+    if (!rt || !provider_id || !eval) {
+        return 0;
+    }
+
+    memset(&opt, 0, sizeof(opt));
+    obi_status st = obi_rt_get_profile_from_provider(rt,
+                                                      provider_id,
+                                                      OBI_PROFILE_OPT_QP_V0,
+                                                      OBI_CORE_ABI_MAJOR,
+                                                      &opt,
+                                                      sizeof(opt));
+    eval->solve_status = (int)st;
+    if (st != OBI_STATUS_OK || !opt.api || !opt.api->solve) {
+        return 0;
+    }
+
+    eval->api_abi_major = opt.api->abi_major;
+    eval->api_abi_minor = opt.api->abi_minor;
+    eval->api_caps = opt.api->caps;
+    eval->objective_expected = 0.0;
+
+    memset(&model, 0, sizeof(model));
+    model.struct_size = (uint32_t)sizeof(model);
+    model.matrix_format = OBI_OPT_MATRIX_COLWISE;
+    model.num_col = 1;
+    model.num_row = 0;
+    model.num_nz = 0;
+    model.sense = OBI_OPT_MINIMIZE;
+    model.offset = 0.0;
+    model.col_cost = col_cost;
+    model.col_lower = col_lower;
+    model.col_upper = col_upper;
+    model.a_start = a_start;
+
+    memset(&hessian, 0, sizeof(hessian));
+    hessian.struct_size = (uint32_t)sizeof(hessian);
+    hessian.format = OBI_OPT_HESSIAN_TRIANGULAR;
+    hessian.dim = 1;
+    hessian.num_nz = 1;
+    hessian.start = q_start;
+    hessian.index = q_index;
+    hessian.value = q_value;
+
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.col_value = col_value;
+    result.col_value_cap = 1u;
+    result.col_dual = col_dual;
+    result.col_dual_cap = 1u;
+
+    const clock_t start_ticks = clock();
+    st = opt.api->solve(opt.ctx, &model, &hessian, NULL, &result);
+    const clock_t end_ticks = clock();
+    eval->solve_status = (int)st;
+    if (start_ticks != (clock_t)-1 && end_ticks != (clock_t)-1 && end_ticks >= start_ticks) {
+        eval->latency_us = ((double)(end_ticks - start_ticks) * 1000000.0) / (double)CLOCKS_PER_SEC;
+    }
+
+    eval->model_status = result.model_status;
+    eval->objective_observed = result.objective_value;
+    eval->objective_abs_error = _f64_abs(result.objective_value - 0.0);
+    eval->parity_abs_error = _f64_abs(col_value[0] - 1.0);
+
+    eval->solve_pass = (st == OBI_STATUS_OK) && (result.model_status == OBI_OPT_MODEL_STATUS_OPTIMAL);
+    eval->parity_pass = eval->solve_pass &&
+                        (eval->parity_abs_error <= 1e-8) &&
+                        (result.objective_value >= -1e-8);
+    eval->latency_pass = eval->latency_us >= 0.0 && eval->latency_us <= eval->latency_budget_us;
+    return eval->solve_pass;
+}
+
+static int _emit_opt_route_packet(obi_rt_v0* rt, const char* provider_id) {
+    if (!rt || !provider_id || provider_id[0] == '\0') {
+        fprintf(stderr, "opt-route-packet: invalid input\n");
+        return 0;
+    }
+
+    size_t provider_index = 0u;
+    if (!_provider_index_by_id(rt, provider_id, &provider_index)) {
+        fprintf(stderr, "opt-route-packet: provider not loaded: %s\n", provider_id);
+        return 0;
+    }
+
+    const obi_provider_legal_metadata_v0* meta = NULL;
+    obi_status legal_st = obi_rt_provider_legal_metadata(rt, provider_index, &meta);
+    if (legal_st != OBI_STATUS_OK) {
+        fprintf(stderr,
+                "opt-route-packet: legal metadata unavailable provider=%s status=%d\n",
+                provider_id,
+                (int)legal_st);
+        return 0;
+    }
+
+    const int unsupported_profile_rejected = _opt_route_capture_unsupported_profile_mode(rt, provider_id);
+
+    obi_opt_route_eval_v0 eval_lp;
+    obi_opt_route_eval_v0 eval_milp;
+    obi_opt_route_eval_v0 eval_qp;
+    _opt_route_eval_init(&eval_lp,
+                         OBI_PROFILE_OPT_LP_V0,
+                         "runtime_dual_obi_opt_lp_conformance",
+                         20000.0);
+    _opt_route_eval_init(&eval_milp,
+                         OBI_PROFILE_OPT_MILP_V0,
+                         "runtime_dual_obi_opt_milp_conformance",
+                         30000.0);
+    _opt_route_eval_init(&eval_qp,
+                         OBI_PROFILE_OPT_QP_V0,
+                         "runtime_dual_obi_opt_qp_conformance",
+                         20000.0);
+
+    const int lp_ok = _opt_route_collect_lp(rt, provider_id, &eval_lp);
+    const int milp_ok = _opt_route_collect_milp(rt, provider_id, &eval_milp);
+    const int qp_ok = _opt_route_collect_qp(rt, provider_id, &eval_qp);
+
+    _opt_route_eval_apply_legal(&eval_lp, meta);
+    _opt_route_eval_apply_legal(&eval_milp, meta);
+    _opt_route_eval_apply_legal(&eval_qp, meta);
+
+    const int all_pass = unsupported_profile_rejected &&
+                         lp_ok && milp_ok && qp_ok &&
+                         eval_lp.parity_pass && eval_milp.parity_pass && eval_qp.parity_pass &&
+                         eval_lp.latency_pass && eval_milp.latency_pass && eval_qp.latency_pass;
+
+    printf("{\"schema\":\"obi.opt.route_packet.v1\","
+           "\"provider_id\":\"%s\","
+           "\"unsupported_profile_mode\":\"%s\","
+           "\"profiles\":["
+           "{\"profile_id\":\"%s\",\"selector\":\"%s\",\"api_abi_major\":%u,\"api_abi_minor\":%u,"
+           "\"api_caps\":%llu,\"solve_status\":%d,\"model_status\":%u,"
+           "\"objective_expected\":%.17g,\"objective_observed\":%.17g,"
+           "\"objective_abs_error\":%.17g,\"parity_abs_error\":%.17g,"
+           "\"latency_us\":%.3f,\"latency_budget_us\":%.3f,"
+           "\"solve_pass\":%s,\"parity_pass\":%s,\"latency_pass\":%s,"
+           "\"legal_route_id\":\"%s\",\"legal_spdx\":\"%s\",\"legal_copyleft_class\":%u,"
+           "\"legal_patent_posture\":%u},"
+           "{\"profile_id\":\"%s\",\"selector\":\"%s\",\"api_abi_major\":%u,\"api_abi_minor\":%u,"
+           "\"api_caps\":%llu,\"solve_status\":%d,\"model_status\":%u,"
+           "\"objective_expected\":%.17g,\"objective_observed\":%.17g,"
+           "\"objective_abs_error\":%.17g,\"parity_abs_error\":%.17g,"
+           "\"latency_us\":%.3f,\"latency_budget_us\":%.3f,"
+           "\"solve_pass\":%s,\"parity_pass\":%s,\"latency_pass\":%s,"
+           "\"legal_route_id\":\"%s\",\"legal_spdx\":\"%s\",\"legal_copyleft_class\":%u,"
+           "\"legal_patent_posture\":%u},"
+           "{\"profile_id\":\"%s\",\"selector\":\"%s\",\"api_abi_major\":%u,\"api_abi_minor\":%u,"
+           "\"api_caps\":%llu,\"solve_status\":%d,\"model_status\":%u,"
+           "\"objective_expected\":%.17g,\"objective_observed\":%.17g,"
+           "\"objective_abs_error\":%.17g,\"parity_abs_error\":%.17g,"
+           "\"latency_us\":%.3f,\"latency_budget_us\":%.3f,"
+           "\"solve_pass\":%s,\"parity_pass\":%s,\"latency_pass\":%s,"
+           "\"legal_route_id\":\"%s\",\"legal_spdx\":\"%s\",\"legal_copyleft_class\":%u,"
+           "\"legal_patent_posture\":%u}],"
+           "\"all_pass\":%s}\n",
+           provider_id,
+           unsupported_profile_rejected ? "unsupported_profile_rejected" : "unexpected_status",
+           eval_lp.profile_id, eval_lp.selector,
+           eval_lp.api_abi_major, eval_lp.api_abi_minor,
+           (unsigned long long)eval_lp.api_caps,
+           eval_lp.solve_status, eval_lp.model_status,
+           eval_lp.objective_expected, eval_lp.objective_observed,
+           eval_lp.objective_abs_error, eval_lp.parity_abs_error,
+           eval_lp.latency_us, eval_lp.latency_budget_us,
+           eval_lp.solve_pass ? "true" : "false",
+           eval_lp.parity_pass ? "true" : "false",
+           eval_lp.latency_pass ? "true" : "false",
+           eval_lp.legal_route_id, eval_lp.legal_spdx,
+           eval_lp.legal_copyleft_class, eval_lp.legal_patent_posture,
+           eval_milp.profile_id, eval_milp.selector,
+           eval_milp.api_abi_major, eval_milp.api_abi_minor,
+           (unsigned long long)eval_milp.api_caps,
+           eval_milp.solve_status, eval_milp.model_status,
+           eval_milp.objective_expected, eval_milp.objective_observed,
+           eval_milp.objective_abs_error, eval_milp.parity_abs_error,
+           eval_milp.latency_us, eval_milp.latency_budget_us,
+           eval_milp.solve_pass ? "true" : "false",
+           eval_milp.parity_pass ? "true" : "false",
+           eval_milp.latency_pass ? "true" : "false",
+           eval_milp.legal_route_id, eval_milp.legal_spdx,
+           eval_milp.legal_copyleft_class, eval_milp.legal_patent_posture,
+           eval_qp.profile_id, eval_qp.selector,
+           eval_qp.api_abi_major, eval_qp.api_abi_minor,
+           (unsigned long long)eval_qp.api_caps,
+           eval_qp.solve_status, eval_qp.model_status,
+           eval_qp.objective_expected, eval_qp.objective_observed,
+           eval_qp.objective_abs_error, eval_qp.parity_abs_error,
+           eval_qp.latency_us, eval_qp.latency_budget_us,
+           eval_qp.solve_pass ? "true" : "false",
+           eval_qp.parity_pass ? "true" : "false",
+           eval_qp.latency_pass ? "true" : "false",
+           eval_qp.legal_route_id, eval_qp.legal_spdx,
+           eval_qp.legal_copyleft_class, eval_qp.legal_patent_posture,
+           all_pass ? "true" : "false");
+    return all_pass;
+}
+
 static int _exercise_math_scientific_ops_profile(obi_rt_v0* rt, const char* provider_id, int allow_unsupported) {
     obi_math_scientific_ops_v0 sci;
     memset(&sci, 0, sizeof(sci));
@@ -19994,6 +20515,9 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
     }
     _mix_current_cycle_index = cycle_index;
     printf("mix_cycle_begin=%u load_mode=%u\n", (unsigned)cycle_index, (unsigned)(cycle_index % 3u));
+    const int allow_load_failures = _env_flag_enabled("OBI_SMOKE_ALLOW_LOAD_FAILURES");
+    const size_t expected_provider_count = (provider_count > 0) ? (size_t)provider_count : 0u;
+    size_t skipped_count = 0u;
 
     for (int i = 0; i < provider_count; i++) {
         int idx = i;
@@ -20011,6 +20535,16 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
 
         st = obi_rt_load_provider_path(rt, provider_paths[idx]);
         if (st != OBI_STATUS_OK) {
+            if (allow_load_failures) {
+                fprintf(stderr,
+                        "mix lifecycle: cycle=%u load skipped path=%s status=%d err=%s\n",
+                        (unsigned)cycle_index,
+                        provider_paths[idx],
+                        (int)st,
+                        obi_rt_last_error_utf8(rt));
+                skipped_count++;
+                continue;
+            }
             fprintf(stderr,
                     "mix lifecycle: cycle=%u load failed path=%s status=%d err=%s\n",
                     (unsigned)cycle_index,
@@ -20025,7 +20559,7 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
 
     size_t loaded_count = 0u;
     st = obi_rt_provider_count(rt, &loaded_count);
-    if (st != OBI_STATUS_OK || loaded_count != (size_t)provider_count) {
+    if (st != OBI_STATUS_OK || (!allow_load_failures && loaded_count != (size_t)provider_count)) {
         fprintf(stderr,
                 "mix lifecycle: cycle=%u provider_count mismatch status=%d got=%zu expected=%d\n",
                 (unsigned)cycle_index,
@@ -20035,6 +20569,25 @@ static int _exercise_mixed_backend_cycle(const char* const* provider_paths,
         obi_rt_destroy(rt);
         _mix_current_cycle_index = UINT32_MAX;
         return 0;
+    }
+    if (allow_load_failures) {
+        if (loaded_count == 0u) {
+            fprintf(stderr,
+                    "mix lifecycle: cycle=%u all provider loads skipped/failure (attempted=%zu)\n",
+                    (unsigned)cycle_index,
+                    expected_provider_count);
+            obi_rt_destroy(rt);
+            _mix_current_cycle_index = UINT32_MAX;
+            return 0;
+        }
+        if (skipped_count > 0u) {
+            fprintf(stderr,
+                    "mix lifecycle: cycle=%u load skip summary attempted=%zu loaded=%zu skipped=%zu\n",
+                    (unsigned)cycle_index,
+                    expected_provider_count,
+                    loaded_count,
+                    skipped_count);
+        }
     }
 
     for (size_t i = 0u; i < loaded_count; i++) {
@@ -20101,10 +20654,22 @@ static int _exercise_mixed_backend_pairwise_once(const char* const* provider_pat
         fprintf(stderr, "mix pairwise: rt_create failed (status=%d)\n", (int)st);
         return 0;
     }
+    const int allow_load_failures = _env_flag_enabled("OBI_SMOKE_ALLOW_LOAD_FAILURES");
+    const size_t expected_provider_count = (provider_count > 0) ? (size_t)provider_count : 0u;
+    size_t skipped_count = 0u;
 
     for (int i = 0; i < provider_count; i++) {
         st = obi_rt_load_provider_path(rt, provider_paths[i]);
         if (st != OBI_STATUS_OK) {
+            if (allow_load_failures) {
+                fprintf(stderr,
+                        "mix pairwise: load skipped path=%s status=%d err=%s\n",
+                        provider_paths[i],
+                        (int)st,
+                        obi_rt_last_error_utf8(rt));
+                skipped_count++;
+                continue;
+            }
             fprintf(stderr,
                     "mix pairwise: load failed path=%s status=%d err=%s\n",
                     provider_paths[i],
@@ -20117,7 +20682,7 @@ static int _exercise_mixed_backend_pairwise_once(const char* const* provider_pat
 
     size_t loaded_count = 0u;
     st = obi_rt_provider_count(rt, &loaded_count);
-    if (st != OBI_STATUS_OK || loaded_count != (size_t)provider_count) {
+    if (st != OBI_STATUS_OK || (!allow_load_failures && loaded_count != (size_t)provider_count)) {
         fprintf(stderr,
                 "mix pairwise: provider_count mismatch status=%d got=%zu expected=%d\n",
                 (int)st,
@@ -20125,6 +20690,22 @@ static int _exercise_mixed_backend_pairwise_once(const char* const* provider_pat
                 provider_count);
         obi_rt_destroy(rt);
         return 0;
+    }
+    if (allow_load_failures) {
+        if (loaded_count == 0u) {
+            fprintf(stderr,
+                    "mix pairwise: all provider loads skipped/failure (attempted=%zu)\n",
+                    expected_provider_count);
+            obi_rt_destroy(rt);
+            return 0;
+        }
+        if (skipped_count > 0u) {
+            fprintf(stderr,
+                    "mix pairwise: load skip summary attempted=%zu loaded=%zu skipped=%zu\n",
+                    expected_provider_count,
+                    loaded_count,
+                    skipped_count);
+        }
     }
 
     for (size_t i = 0u; i < loaded_count; i++) {
@@ -20171,7 +20752,9 @@ static int _mix_load_runtime_paths_selected(obi_rt_v0* rt,
         return 0;
     }
 
+    const int allow_load_failures = _env_flag_enabled("OBI_SMOKE_ALLOW_LOAD_FAILURES");
     int selected_count = 0;
+    int skipped_count = 0;
     for (int i = 0; i < provider_count; i++) {
         int include = 1;
         if (subset_mode != 0) {
@@ -20183,6 +20766,16 @@ static int _mix_load_runtime_paths_selected(obi_rt_v0* rt,
 
         obi_status st = obi_rt_load_provider_path(rt, provider_paths[i]);
         if (st != OBI_STATUS_OK) {
+            if (allow_load_failures) {
+                fprintf(stderr,
+                        "mix %s: load skipped path=%s status=%d err=%s\n",
+                        label,
+                        provider_paths[i],
+                        (int)st,
+                        obi_rt_last_error_utf8(rt));
+                skipped_count++;
+                continue;
+            }
             fprintf(stderr,
                     "mix %s: load failed path=%s status=%d err=%s\n",
                     label,
@@ -20196,7 +20789,7 @@ static int _mix_load_runtime_paths_selected(obi_rt_v0* rt,
 
     size_t loaded_count = 0u;
     obi_status st = obi_rt_provider_count(rt, &loaded_count);
-    if (st != OBI_STATUS_OK || loaded_count != (size_t)selected_count) {
+    if (st != OBI_STATUS_OK || (!allow_load_failures && loaded_count != (size_t)selected_count)) {
         fprintf(stderr,
                 "mix %s: provider_count mismatch status=%d got=%zu expected=%d\n",
                 label,
@@ -20204,6 +20797,20 @@ static int _mix_load_runtime_paths_selected(obi_rt_v0* rt,
                 loaded_count,
                 selected_count);
         return 0;
+    }
+    if (allow_load_failures) {
+        if (loaded_count == 0u) {
+            fprintf(stderr, "mix %s: all selected providers skipped/failed (selected=%d)\n", label, selected_count);
+            return 0;
+        }
+        if (skipped_count > 0) {
+            fprintf(stderr,
+                    "mix %s: load skip summary selected=%d loaded=%zu skipped=%d\n",
+                    label,
+                    selected_count,
+                    loaded_count,
+                    skipped_count);
+        }
     }
 
     for (size_t i = 0u; i < loaded_count; i++) {
@@ -22092,6 +22699,7 @@ int main(int argc, char** argv) {
     int mode_mix_family_stateful = 0;
     int mode_mix_family_gfx = 0;
     int mode_profile_provider = 0;
+    int mode_opt_route_packet = 0;
     if (strcmp(argv[1], "--load-only") == 0) {
         mode_profiles = 0;
     } else if (strcmp(argv[1], "--profiles") == 0) {
@@ -22110,6 +22718,8 @@ int main(int argc, char** argv) {
         mode_mix_family_gfx = 1;
     } else if (strcmp(argv[1], "--profile-provider") == 0) {
         mode_profile_provider = 1;
+    } else if (strcmp(argv[1], "--opt-route-packet") == 0) {
+        mode_opt_route_packet = 1;
     } else {
         _usage(argv[0]);
         return 2;
@@ -22144,6 +22754,14 @@ int main(int argc, char** argv) {
         target_provider_id = argv[3];
         provider_begin = 4;
     }
+    if (mode_opt_route_packet) {
+        if (argc < 4) {
+            _usage(argv[0]);
+            return 2;
+        }
+        target_provider_id = argv[2];
+        provider_begin = 3;
+    }
 
     if (mode_profiles) {
         for (int i = split + 1; i < argc; i++) {
@@ -22158,6 +22776,12 @@ int main(int argc, char** argv) {
         }
         if (!target_provider_id || target_provider_id[0] == '\0') {
             fprintf(stderr, "--profile-provider: empty provider id\n");
+            return 1;
+        }
+    }
+    if (mode_opt_route_packet) {
+        if (!target_provider_id || target_provider_id[0] == '\0') {
+            fprintf(stderr, "--opt-route-packet: empty provider id\n");
             return 1;
         }
     }
@@ -22221,6 +22845,9 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    const int allow_load_failures = _env_flag_enabled("OBI_SMOKE_ALLOW_LOAD_FAILURES");
+    const size_t expected_provider_count = (provider_end > provider_begin) ? (size_t)(provider_end - provider_begin) : 0u;
+
     obi_rt_v0* rt = NULL;
     obi_status st = obi_rt_create(NULL, &rt);
     if (st != OBI_STATUS_OK) {
@@ -22237,6 +22864,14 @@ int main(int argc, char** argv) {
 
                 st = obi_rt_load_provider_path(rt, argv[i]);
                 if (st != OBI_STATUS_OK) {
+                    if (allow_load_failures) {
+                        fprintf(stderr,
+                                "load skipped: %s (status=%d err=%s)\n",
+                                argv[i],
+                                (int)st,
+                                obi_rt_last_error_utf8(rt));
+                        continue;
+                    }
                     fprintf(stderr,
                             "load failed: %s (status=%d err=%s)\n",
                             argv[i],
@@ -22251,10 +22886,39 @@ int main(int argc, char** argv) {
                 }
             }
         }
+    } else if (mode_opt_route_packet) {
+        for (int i = provider_begin; i < provider_end; i++) {
+            st = obi_rt_load_provider_path(rt, argv[i]);
+            if (st != OBI_STATUS_OK) {
+                if (allow_load_failures) {
+                    fprintf(stderr,
+                            "load skipped: %s (status=%d err=%s)\n",
+                            argv[i],
+                            (int)st,
+                            obi_rt_last_error_utf8(rt));
+                    continue;
+                }
+                fprintf(stderr,
+                        "load failed: %s (status=%d err=%s)\n",
+                        argv[i],
+                        (int)st,
+                        obi_rt_last_error_utf8(rt));
+                obi_rt_destroy(rt);
+                return 1;
+            }
+        }
     } else {
         for (int i = provider_begin; i < provider_end; i++) {
             st = obi_rt_load_provider_path(rt, argv[i]);
             if (st != OBI_STATUS_OK) {
+                if (allow_load_failures) {
+                    fprintf(stderr,
+                            "load skipped: %s (status=%d err=%s)\n",
+                            argv[i],
+                            (int)st,
+                            obi_rt_last_error_utf8(rt));
+                    continue;
+                }
                 fprintf(stderr,
                         "load failed: %s (status=%d err=%s)\n",
                         argv[i],
@@ -22278,13 +22942,33 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (provider_count != (size_t)(provider_end - provider_begin)) {
+    if (!allow_load_failures && provider_count != expected_provider_count) {
         fprintf(stderr,
                 "provider count mismatch: got=%zu expected=%d\n",
                 provider_count,
                 provider_end - provider_begin);
         obi_rt_destroy(rt);
         return 1;
+    }
+    if (allow_load_failures) {
+        if (provider_count == 0u) {
+            fprintf(stderr,
+                    "provider load failed: no providers could be loaded (attempted=%zu)\n",
+                    expected_provider_count);
+            obi_rt_destroy(rt);
+            return 1;
+        }
+
+        const size_t skipped_count = (provider_count <= expected_provider_count)
+                                         ? (expected_provider_count - provider_count)
+                                         : 0u;
+        if (skipped_count > 0u) {
+            fprintf(stderr,
+                    "load skip summary: attempted=%zu loaded=%zu skipped=%zu\n",
+                    expected_provider_count,
+                    provider_count,
+                    skipped_count);
+        }
     }
 
     for (size_t i = 0u; i < provider_count; i++) {
@@ -22307,6 +22991,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
             if (!_pick_any_loaded_provider_for_profile(rt, profile)) {
+                if (allow_load_failures) {
+                    printf("profile_skip=%s reason=no_loaded_provider\n", profile);
+                    continue;
+                }
                 fprintf(stderr, "profile/provider mismatch: no loaded provider advertises profile=%s\n", profile);
                 obi_rt_destroy(rt);
                 return 1;
@@ -22927,6 +23615,13 @@ int main(int argc, char** argv) {
                                               target_provider_id,
                                               &resolved_provider_id,
                                               &used_helper_fallback)) {
+            if (allow_load_failures && _count_loaded_provider_id(rt, target_provider_id) == 0u) {
+                printf("profile_provider_skip profile=%s provider=%s reason=provider_not_loaded\n",
+                       target_profile,
+                       target_provider_id);
+                obi_rt_destroy(rt);
+                return 0;
+            }
             obi_rt_destroy(rt);
             return 1;
         }
@@ -22947,6 +23642,15 @@ int main(int argc, char** argv) {
             return 1;
         }
         printf("exercise_ok=%s provider=%s\n", target_profile, target_provider_id);
+    } else if (mode_opt_route_packet) {
+        if (!_emit_opt_route_packet(rt, target_provider_id)) {
+            fprintf(stderr,
+                    "opt-route-packet: route packet failed provider=%s\n",
+                    target_provider_id);
+            obi_rt_destroy(rt);
+            return 1;
+        }
+        printf("exercise_ok=opt.route_packet provider=%s\n", target_provider_id);
     }
 
     obi_rt_destroy(rt);

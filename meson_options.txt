@@ -5,7 +5,7 @@ option('provider_null', type: 'feature', value: 'enabled',
   description: 'Build the dependency-free null provider plugin.')
 
 option('provider_gfx_sdl3', type: 'feature', value: 'auto',
-  description: 'Build SDL3-backed gfx window/input provider plugin.')
+  description: 'Build SDL3-backed gfx window/input provider plugin using system SDL3 or vendored ../libraries/SDL.')
 
 option('provider_gfx_raylib', type: 'feature', value: 'enabled',
   description: 'Build raylib-profile gfx provider plugin (functional in-memory render2d baseline).')
@@ -41,7 +41,7 @@ option('provider_text_layout_raqm', type: 'feature', value: 'auto',
   description: 'Build text.layout provider plugin using raqm (`text.layout.raqm`).')
 
 option('provider_text_ime_sdl3', type: 'feature', value: 'auto',
-  description: 'Build text.ime provider plugin using SDL3 (`text.ime.sdl3`).')
+  description: 'Build text.ime provider plugin using system SDL3 or vendored ../libraries/SDL (`text.ime.sdl3`).')
 
 option('provider_text_ime_gtk', type: 'feature', value: 'auto',
   description: 'Build text.ime provider plugin using GTK IM contexts (`text.ime.gtk`).')
@@ -89,7 +89,7 @@ option('provider_math_decimal_decnumber', type: 'feature', value: 'auto',
   description: 'Build math.decimal provider plugin using vendored decNumber.')
 
 option('provider_opt_highs', type: 'feature', value: 'auto',
-  description: 'Build opt lp/milp/qp provider plugin using HiGHS.')
+  description: 'Build opt lp/milp/qp provider plugin using system HiGHS or vendored ../libraries/highs.')
 
 option('provider_db_native', type: 'feature', value: 'disabled',
   description: 'Build retired db kv/sql bootstrap provider plugin (native in-house fallback).')
@@ -200,7 +200,7 @@ option('provider_media_audio_resample_libsamplerate', type: 'feature', value: 'a
   description: 'Build media.audio_resample provider plugin using libsamplerate.')
 
 option('provider_media_audio_sdl3', type: 'feature', value: 'auto',
-  description: 'Build media.audio_device provider plugin using SDL3 (`media.audio.sdl3`).')
+  description: 'Build media.audio_device provider plugin using system SDL3 or vendored ../libraries/SDL (`media.audio.sdl3`).')
 
 option('provider_media_audio_portaudio', type: 'feature', value: 'auto',
   description: 'Build media.audio_device provider plugin using PortAudio (`media.audio.portaudio`).')

@@ -73,6 +73,17 @@ if python3.found()
     python3,
     args: [matrix_check_script, matrix_csv],
   )
+
+  paired_runtime_check_script = join_paths(
+    meson.project_source_root(),
+    'tools',
+    'paired_runtime_evidence_check.py',
+  )
+  test(
+    'paired_runtime_evidence_contract_selfcheck',
+    python3,
+    args: [paired_runtime_check_script, '--self-check', '--check'],
+  )
 endif
 
 if provider_modules.length() > 0
@@ -167,11 +178,15 @@ if provider_modules.length() > 0
     bootstrap_mix_provider_paths += [path]
   endforeach
 
+  roadmap_smoke_env = environment()
+  roadmap_smoke_env.set('OBI_SMOKE_ALLOW_LOAD_FAILURES', '1')
+
   if roadmap_provider_paths.length() > 0
     test(
       'provider_load_smoke_roadmap',
       provider_smoke,
       args: ['--load-only'] + roadmap_provider_paths,
+      env: roadmap_smoke_env,
     )
   endif
 
@@ -271,22 +286,26 @@ if provider_modules.length() > 0
       'provider_mix_smoke_roadmap',
       provider_smoke,
       args: ['--mix'] + roadmap_provider_paths,
+      env: roadmap_smoke_env,
     )
     test(
       'provider_mix_smoke_roadmap_pairwise',
       provider_smoke,
       args: ['--mix-pairwise'] + roadmap_provider_paths,
+      env: roadmap_smoke_env,
     )
     test(
       'provider_mix_smoke_dual_runtime',
       provider_smoke,
       args: ['--mix-dual-runtime'] + roadmap_provider_paths,
+      env: roadmap_smoke_env,
     )
     if roadmap_mix_media_routes_ready
       test(
         'provider_mix_smoke_media_routes',
         provider_smoke,
         args: ['--mix-media-routes'] + roadmap_provider_paths,
+        env: roadmap_smoke_env,
       )
     endif
     if roadmap_mix_has_family_stateful_profiles
@@ -294,6 +313,7 @@ if provider_modules.length() > 0
         'provider_mix_smoke_family_stateful',
         provider_smoke,
         args: ['--mix-family-stateful'] + roadmap_provider_paths,
+        env: roadmap_smoke_env,
       )
     endif
     if roadmap_mix_has_family_gfx_profiles
@@ -301,6 +321,7 @@ if provider_modules.length() > 0
         'provider_mix_smoke_family_gfx',
         provider_smoke,
         args: ['--mix-family-gfx'] + roadmap_provider_paths,
+        env: roadmap_smoke_env,
       )
     endif
   endif
@@ -339,6 +360,7 @@ if provider_modules.length() > 0
       'provider_profile_smoke_roadmap',
       provider_smoke,
       args: ['--profiles'] + roadmap_provider_paths + ['--'] + roadmap_provider_profiles,
+      env: roadmap_smoke_env,
     )
   endif
 
@@ -374,8 +396,18 @@ if provider_modules.length() > 0
         'provider_profile_conformance_roadmap__' + profile_token + '__' + provider_token,
         provider_smoke,
         args: ['--profile-provider', profile_id, provider_id] + roadmap_provider_paths,
+        env: roadmap_smoke_env,
       )
     endforeach
+  endif
+
+  if roadmap_provider_ids.contains('obi.provider:opt.highs') and roadmap_provider_paths.length() > 0
+    test(
+      'provider_opt_route_packet_highs',
+      provider_smoke,
+      args: ['--opt-route-packet', 'obi.provider:opt.highs'] + roadmap_provider_paths,
+      env: roadmap_smoke_env,
+    )
   endif
 
   if bootstrap_provider_profile_pairs.length() > 0

@@ -1,0 +1,409 @@
+1/1 kernel+packs - CEP:cep_unit_tests RUNNING       
+>>> MALLOC_PERTURB_=121 MSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1 MESON_TEST_ITERATION=1 /home/vic/Documents/src/CEP/build/cep_tests --no-fork --param timeout 120
+――――――――――――――――――――――――――――――――――――― ✀  ―――――――――――――――――――――――――――――――――――――
+Running test suite with seed 0xbf39c21e...
+/CEP/cell                            
+  timeout=120, boot_cycle=fresh      [ OK    ] [ 0.00558461 / 0.00557966 CPU ]
+  timeout=120, boot_cycle=after_reboot[ OK    ] [ 0.00559988 / 0.00559226 CPU ]
+/CEP/cell/immutable                  
+  boot_cycle=fresh                   [ OK    ] [ 0.00014116 / 0.00013945 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00008337 / 0.00008343 CPU ]
+/CEP/traverse                        
+  timeout=120, boot_cycle=fresh      [dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db16990 cell=0x559c1db050f0
+[dataset:list] step=1 used=1 position=1 chdBefore=1 chdAfter=2 store=0x559c1db16990 cell=0x559c1db07520
+[dataset:list] step=2 used=2 position=2 chdBefore=2 chdAfter=3 store=0x559c1db16990 cell=0x559c1db06260
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db16990 cell=0x559c1db05ee0
+[dataset:list] step=4 used=4 position=2 chdBefore=4 chdAfter=5 store=0x559c1db16990 cell=0x559c1db056b0
+[dataset:list] step=5 used=5 position=5 chdBefore=5 chdAfter=6 store=0x559c1db16990 cell=0x559c1db1a910
+[dataset:list] step=6 used=6 position=1 chdBefore=6 chdAfter=7 store=0x559c1db16990 cell=0x559c1db07a50
+[dataset:list] step=7 used=7 position=3 chdBefore=7 chdAfter=8 store=0x559c1db16990 cell=0x559c1db07f30
+[dataset:list] step=8 used=8 position=2 chdBefore=8 chdAfter=9 store=0x559c1db16990 cell=0x559c1db05810
+[dataset:list] step=9 used=9 position=8 chdBefore=9 chdAfter=10 store=0x559c1db16990 cell=0x559c1db05a50
+[dataset:list] step=10 used=10 position=9 chdBefore=10 chdAfter=11 store=0x559c1db16990 cell=0x559c1db05970
+[dataset:list] step=11 used=11 position=2 chdBefore=11 chdAfter=12 store=0x559c1db16990 cell=0x559c1db05920
+[dataset:list] step=12 used=12 position=2 chdBefore=12 chdAfter=13 store=0x559c1db16990 cell=0x559c1db077e0
+[dataset:list] step=13 used=13 position=7 chdBefore=13 chdAfter=14 store=0x559c1db16990 cell=0x559c1db05bb0
+[dataset:list] step=14 used=14 position=1 chdBefore=14 chdAfter=15 store=0x559c1db16990 cell=0x559c1db07e80
+[dataset:list] step=15 used=15 position=5 chdBefore=15 chdAfter=16 store=0x559c1db16990 cell=0x559c1db12560
+[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db16990 cell=0x559c1db14040
+[dataset:list] step=1 used=1 position=1 chdBefore=1 chdAfter=2 store=0x559c1db16990 cell=0x559c1db14078
+[dataset:list] step=2 used=2 position=0 chdBefore=2 chdAfter=3 store=0x559c1db16990 cell=0x559c1db14040
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db16990 cell=0x559c1db140e8
+[dataset:list] step=4 used=4 position=2 chdBefore=4 chdAfter=5 store=0x559c1db16990 cell=0x559c1db140b0
+[dataset:list] step=5 used=5 position=5 chdBefore=5 chdAfter=6 store=0x559c1db16990 cell=0x559c1db14158
+[dataset:list] step=6 used=6 position=3 chdBefore=6 chdAfter=7 store=0x559c1db16990 cell=0x559c1db140e8
+[dataset:list] step=7 used=7 position=5 chdBefore=7 chdAfter=8 store=0x559c1db16990 cell=0x559c1db14158
+[dataset:list] step=8 used=8 position=2 chdBefore=8 chdAfter=9 store=0x559c1db16990 cell=0x559c1db140b0
+[dataset:list] step=9 used=9 position=7 chdBefore=9 chdAfter=10 store=0x559c1db16990 cell=0x559c1db141c8
+[dataset:list] step=10 used=10 position=3 chdBefore=10 chdAfter=11 store=0x559c1db16990 cell=0x559c1db140e8
+[dataset:list] step=11 used=11 position=6 chdBefore=11 chdAfter=12 store=0x559c1db16990 cell=0x559c1db14190
+[dataset:list] step=12 used=12 position=12 chdBefore=12 chdAfter=13 store=0x559c1db16990 cell=0x559c1db142e0
+[dataset:list] step=13 used=13 position=12 chdBefore=13 chdAfter=14 store=0x559c1db16990 cell=0x559c1db142e0
+[dataset:list] step=14 used=14 position=9 chdBefore=14 chdAfter=15 store=0x559c1db16990 cell=0x559c1db14238
+[dataset:list] step=15 used=15 position=10 chdBefore=15 chdAfter=16 store=0x559c1db16990 cell=0x559c1db14270
+[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db16990 cell=0x559c1db05970
+[dataset:list] step=1 used=1 position=1 chdBefore=1 chdAfter=2 store=0x559c1db16990 cell=0x559c1db05a50
+[dataset:list] step=2 used=2 position=2 chdBefore=2 chdAfter=3 store=0x559c1db16990 cell=0x559c1db05ee0
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db16990 cell=0x559c1db06260
+[dataset:list] step=4 used=4 position=0 chdBefore=4 chdAfter=5 store=0x559c1db16990 cell=0x559c1db056b0
+[dataset:list] step=5 used=5 position=4 chdBefore=5 chdAfter=6 store=0x559c1db16990 cell=0x559c1db05bb0
+[dataset:list] step=6 used=6 position=5 chdBefore=6 chdAfter=7 store=0x559c1db16990 cell=0x559c1db07f30
+[dataset:list] step=7 used=7 position=2 chdBefore=7 chdAfter=8 store=0x559c1db16990 cell=0x559c1db07520
+[dataset:list] step=8 used=8 position=8 chdBefore=8 chdAfter=9 store=0x559c1db16990 cell=0x559c1db05810
+[dataset:list] step=9 used=9 position=1 chdBefore=9 chdAfter=10 store=0x559c1db16990 cell=0x559c1db12560
+[dataset:list] step=10 used=10 position=6 chdBefore=10 chdAfter=11 store=0x559c1db16990 cell=0x559c1db05920
+[dataset:list] step=11 used=11 position=3 chdBefore=11 chdAfter=12 store=0x559c1db16990 cell=0x559c1db077e0
+[dataset:list] step=12 used=12 position=0 chdBefore=12 chdAfter=13 store=0x559c1db16990 cell=0x559c1db07a50
+[dataset:list] step=13 used=13 position=13 chdBefore=13 chdAfter=14 store=0x559c1db16990 cell=0x559c1db07e80
+[dataset:list] step=14 used=14 position=9 chdBefore=14 chdAfter=15 store=0x559c1db16990 cell=0x559c1db050f0
+[dataset:list] step=15 used=15 position=8 chdBefore=15 chdAfter=16 store=0x559c1db16990 cell=0x559c1db04060
+[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db16990 cell=0x559c1db14040
+[dataset:list] step=1 used=1 position=0 chdBefore=1 chdAfter=2 store=0x559c1db16990 cell=0x559c1db14040
+[dataset:list] step=2 used=2 position=2 chdBefore=2 chdAfter=3 store=0x559c1db16990 cell=0x559c1db140b0
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db16990 cell=0x559c1db140e8
+[dataset:list] step=4 used=4 position=3 chdBefore=4 chdAfter=5 store=0x559c1db16990 cell=0x559c1db140e8
+[dataset:list] step=5 used=5 position=4 chdBefore=5 chdAfter=6 store=0x559c1db16990 cell=0x559c1db14120
+[dataset:list] step=6 used=6 position=4 chdBefore=6 chdAfter=7 store=0x559c1db16990 cell=0x559c1db14120
+[dataset:list] step=7 used=7 position=7 chdBefore=7 chdAfter=8 store=0x559c1db16990 cell=0x559c1db141c8
+[dataset:list] step=8 used=8 position=5 chdBefore=8 chdAfter=9 store=0x559c1db16990 cell=0x559c1db14158
+[dataset:list] step=9 used=9 position=5 chdBefore=9 chdAfter=10 store=0x559c1db16990 cell=0x559c1db14158
+[dataset:list] step=10 used=10 position=4 chdBefore=10 chdAfter=11 store=0x559c1db16990 cell=0x559c1db14120
+[dataset:list] step=11 used=11 position=0 chdBefore=11 chdAfter=12 store=0x559c1db16990 cell=0x559c1db14040
+[dataset:list] step=12 used=12 position=6 chdBefore=12 chdAfter=13 store=0x559c1db16990 cell=0x559c1db14190
+[dataset:list] step=13 used=13 position=0 chdBefore=13 chdAfter=14 store=0x559c1db16990 cell=0x559c1db14040
+[dataset:list] step=14 used=14 position=10 chdBefore=14 chdAfter=15 store=0x559c1db16990 cell=0x559c1db14270
+[dataset:list] step=15 used=15 position=4 chdBefore=15 chdAfter=16 store=0x559c1db16990 cell=0x559c1db14120
+[ OK    ] [ 0.00220930 / 0.00221848 CPU ]
+  timeout=120, boot_cycle=after_reboot[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db13a40 cell=0x559c1db05970
+[dataset:list] step=1 used=1 position=1 chdBefore=1 chdAfter=2 store=0x559c1db13a40 cell=0x559c1db07c30
+[dataset:list] step=2 used=2 position=2 chdBefore=2 chdAfter=3 store=0x559c1db13a40 cell=0x559c1db05920
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db13a40 cell=0x559c1db05860
+[dataset:list] step=4 used=4 position=2 chdBefore=4 chdAfter=5 store=0x559c1db13a40 cell=0x559c1db04060
+[dataset:list] step=5 used=5 position=5 chdBefore=5 chdAfter=6 store=0x559c1db13a40 cell=0x559c1db077e0
+[dataset:list] step=6 used=6 position=1 chdBefore=6 chdAfter=7 store=0x559c1db13a40 cell=0x559c1db05ee0
+[dataset:list] step=7 used=7 position=3 chdBefore=7 chdAfter=8 store=0x559c1db13a40 cell=0x559c1db056b0
+[dataset:list] step=8 used=8 position=2 chdBefore=8 chdAfter=9 store=0x559c1db13a40 cell=0x559c1db050f0
+[dataset:list] step=9 used=9 position=8 chdBefore=9 chdAfter=10 store=0x559c1db13a40 cell=0x559c1db07520
+[dataset:list] step=10 used=10 position=9 chdBefore=10 chdAfter=11 store=0x559c1db13a40 cell=0x559c1db12560
+[dataset:list] step=11 used=11 position=2 chdBefore=11 chdAfter=12 store=0x559c1db13a40 cell=0x559c1db07a50
+[dataset:list] step=12 used=12 position=2 chdBefore=12 chdAfter=13 store=0x559c1db13a40 cell=0x559c1db05810
+[dataset:list] step=13 used=13 position=7 chdBefore=13 chdAfter=14 store=0x559c1db13a40 cell=0x559c1db05bb0
+[dataset:list] step=14 used=14 position=1 chdBefore=14 chdAfter=15 store=0x559c1db13a40 cell=0x559c1db0fd30
+[dataset:list] step=15 used=15 position=5 chdBefore=15 chdAfter=16 store=0x559c1db13a40 cell=0x559c1db057c0
+[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db13a40 cell=0x559c1db12df0
+[dataset:list] step=1 used=1 position=1 chdBefore=1 chdAfter=2 store=0x559c1db13a40 cell=0x559c1db12e28
+[dataset:list] step=2 used=2 position=0 chdBefore=2 chdAfter=3 store=0x559c1db13a40 cell=0x559c1db12df0
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db13a40 cell=0x559c1db12e98
+[dataset:list] step=4 used=4 position=2 chdBefore=4 chdAfter=5 store=0x559c1db13a40 cell=0x559c1db12e60
+[dataset:list] step=5 used=5 position=5 chdBefore=5 chdAfter=6 store=0x559c1db13a40 cell=0x559c1db12f08
+[dataset:list] step=6 used=6 position=3 chdBefore=6 chdAfter=7 store=0x559c1db13a40 cell=0x559c1db12e98
+[dataset:list] step=7 used=7 position=5 chdBefore=7 chdAfter=8 store=0x559c1db13a40 cell=0x559c1db12f08
+[dataset:list] step=8 used=8 position=2 chdBefore=8 chdAfter=9 store=0x559c1db13a40 cell=0x559c1db12e60
+[dataset:list] step=9 used=9 position=7 chdBefore=9 chdAfter=10 store=0x559c1db13a40 cell=0x559c1db12f78
+[dataset:list] step=10 used=10 position=3 chdBefore=10 chdAfter=11 store=0x559c1db13a40 cell=0x559c1db12e98
+[dataset:list] step=11 used=11 position=6 chdBefore=11 chdAfter=12 store=0x559c1db13a40 cell=0x559c1db12f40
+[dataset:list] step=12 used=12 position=12 chdBefore=12 chdAfter=13 store=0x559c1db13a40 cell=0x559c1db13090
+[dataset:list] step=13 used=13 position=12 chdBefore=13 chdAfter=14 store=0x559c1db13a40 cell=0x559c1db13090
+[dataset:list] step=14 used=14 position=9 chdBefore=14 chdAfter=15 store=0x559c1db13a40 cell=0x559c1db12fe8
+[dataset:list] step=15 used=15 position=10 chdBefore=15 chdAfter=16 store=0x559c1db13a40 cell=0x559c1db13020
+[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db13a40 cell=0x559c1db077e0
+[dataset:list] step=1 used=1 position=1 chdBefore=1 chdAfter=2 store=0x559c1db13a40 cell=0x559c1db12560
+[dataset:list] step=2 used=2 position=2 chdBefore=2 chdAfter=3 store=0x559c1db13a40 cell=0x559c1db07520
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db13a40 cell=0x559c1db05860
+[dataset:list] step=4 used=4 position=0 chdBefore=4 chdAfter=5 store=0x559c1db13a40 cell=0x559c1db05920
+[dataset:list] step=5 used=5 position=4 chdBefore=5 chdAfter=6 store=0x559c1db13a40 cell=0x559c1db04060
+[dataset:list] step=6 used=6 position=5 chdBefore=6 chdAfter=7 store=0x559c1db13a40 cell=0x559c1db05bb0
+[dataset:list] step=7 used=7 position=2 chdBefore=7 chdAfter=8 store=0x559c1db13a40 cell=0x559c1db056b0
+[dataset:list] step=8 used=8 position=8 chdBefore=8 chdAfter=9 store=0x559c1db13a40 cell=0x559c1db07c30
+[dataset:list] step=9 used=9 position=1 chdBefore=9 chdAfter=10 store=0x559c1db13a40 cell=0x559c1db050f0
+[dataset:list] step=10 used=10 position=6 chdBefore=10 chdAfter=11 store=0x559c1db13a40 cell=0x559c1db057c0
+[dataset:list] step=11 used=11 position=3 chdBefore=11 chdAfter=12 store=0x559c1db13a40 cell=0x559c1db07a50
+[dataset:list] step=12 used=12 position=0 chdBefore=12 chdAfter=13 store=0x559c1db13a40 cell=0x559c1db05810
+[dataset:list] step=13 used=13 position=13 chdBefore=13 chdAfter=14 store=0x559c1db13a40 cell=0x559c1db05ee0
+[dataset:list] step=14 used=14 position=9 chdBefore=14 chdAfter=15 store=0x559c1db13a40 cell=0x559c1db0fd30
+[dataset:list] step=15 used=15 position=8 chdBefore=15 chdAfter=16 store=0x559c1db13a40 cell=0x559c1db05970
+[dataset:list] step=0 used=0 position=0 chdBefore=0 chdAfter=1 store=0x559c1db13a40 cell=0x559c1db12df0
+[dataset:list] step=1 used=1 position=0 chdBefore=1 chdAfter=2 store=0x559c1db13a40 cell=0x559c1db12df0
+[dataset:list] step=2 used=2 position=2 chdBefore=2 chdAfter=3 store=0x559c1db13a40 cell=0x559c1db12e60
+[dataset:list] step=3 used=3 position=3 chdBefore=3 chdAfter=4 store=0x559c1db13a40 cell=0x559c1db12e98
+[dataset:list] step=4 used=4 position=3 chdBefore=4 chdAfter=5 store=0x559c1db13a40 cell=0x559c1db12e98
+[dataset:list] step=5 used=5 position=4 chdBefore=5 chdAfter=6 store=0x559c1db13a40 cell=0x559c1db12ed0
+[dataset:list] step=6 used=6 position=4 chdBefore=6 chdAfter=7 store=0x559c1db13a40 cell=0x559c1db12ed0
+[dataset:list] step=7 used=7 position=7 chdBefore=7 chdAfter=8 store=0x559c1db13a40 cell=0x559c1db12f78
+[dataset:list] step=8 used=8 position=5 chdBefore=8 chdAfter=9 store=0x559c1db13a40 cell=0x559c1db12f08
+[dataset:list] step=9 used=9 position=5 chdBefore=9 chdAfter=10 store=0x559c1db13a40 cell=0x559c1db12f08
+[dataset:list] step=10 used=10 position=4 chdBefore=10 chdAfter=11 store=0x559c1db13a40 cell=0x559c1db12ed0
+[dataset:list] step=11 used=11 position=0 chdBefore=11 chdAfter=12 store=0x559c1db13a40 cell=0x559c1db12df0
+[dataset:list] step=12 used=12 position=6 chdBefore=12 chdAfter=13 store=0x559c1db13a40 cell=0x559c1db12f40
+[dataset:list] step=13 used=13 position=0 chdBefore=13 chdAfter=14 store=0x559c1db13a40 cell=0x559c1db12df0
+[dataset:list] step=14 used=14 position=10 chdBefore=14 chdAfter=15 store=0x559c1db13a40 cell=0x559c1db13020
+[dataset:list] step=15 used=15 position=4 chdBefore=15 chdAfter=16 store=0x559c1db13a40 cell=0x559c1db12ed0
+[ OK    ] [ 0.00309977 / 0.00313573 CPU ]
+/CEP/traverse/all                    
+  boot_cycle=fresh                   [ OK    ] [ 0.00013015 / 0.00012871 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00007002 / 0.00007011 CPU ]
+/CEP/domain_tag_naming               
+  boot_cycle=fresh                   [ OK    ] [ 0.00076691 / 0.00076755 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00162357 / 0.00162425 CPU ]
+/CEP/identifier                      
+  boot_cycle=fresh                   [ OK    ] [ 0.00000409 / 0.00000396 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00095115 / 0.00092455 CPU ]
+/CEP/mailbox/public                  
+  boot_cycle=fresh                   [ OK    ] [ 0.00262272 / 0.00261722 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00324319 / 0.00323884 CPU ]
+/CEP/mailbox/private                 
+  boot_cycle=fresh                   [ OK    ] [ 0.00256630 / 0.00256704 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00334818 / 0.00333654 CPU ]
+/CEP/cei/mailbox                     
+  boot_cycle=fresh                   [ OK    ] [ 0.01511719 / 0.01504237 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01200069 / 0.01192868 CPU ]
+/CEP/cei/cell_append_guard           
+  boot_cycle=fresh                   [ OK    ] [ 0.01118581 / 0.01112260 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01193903 / 0.01187652 CPU ]
+/CEP/cei/signal_ledger               
+  boot_cycle=fresh                   [ OK    ] [ 0.01073042 / 0.01066426 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01142815 / 0.01137579 CPU ]
+/CEP/cei/op_failure                  
+  boot_cycle=fresh                   [ OK    ] [ 0.01073362 / 0.01067868 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01155322 / 0.01147378 CPU ]
+/CEP/cei/fatal_shutdown              
+  boot_cycle=fresh                   [ OK    ] [ 0.01094242 / 0.01089200 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01181241 / 0.01174153 CPU ]
+/CEP/prr/pause_resume_backlog        
+  boot_cycle=fresh                   [ OK    ] [ 0.01414566 / 0.01408558 CPU ]
+  boot_cycle=after_reboot            [ SKIP  ]
+/CEP/prr/pause_rollback_backlog_guard
+  boot_cycle=fresh                   [ OK    ] [ 0.01731003 / 0.01719762 CPU ]
+  boot_cycle=after_reboot            [ SKIP  ]
+/CEP/prr/soft_delete_lookup          
+  boot_cycle=fresh                   [ OK    ] [ 0.01644972 / 0.01639360 CPU ]
+  boot_cycle=after_reboot            [ SKIP  ]
+/CEP/prr/view_horizon_snapshot       
+  boot_cycle=fresh                   [ OK    ] [ 0.01644442 / 0.01637553 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01714519 / 0.01705587 CPU ]
+/CEP/prr/soft_deleted_dictionary_revives
+  boot_cycle=fresh                   [ OK    ] [ 0.01708032 / 0.01702222 CPU ]
+  boot_cycle=after_reboot            [ SKIP  ]
+/CEP/prr/history_autoid_monotonic    
+  boot_cycle=fresh                   [ OK    ] [ 0.01680347 / 0.01674787 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01743941 / 0.01733569 CPU ]
+/CEP/prr/minimal_rollback            
+  boot_cycle=fresh                   [ OK    ] [ 0.01572414 / 0.01568929 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01636220 / 0.01628955 CPU ]
+/CEP/prr/control_failure_cei         
+  boot_cycle=fresh                   [ OK    ] [ 0.01172682 / 0.01167553 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01241054 / 0.01234564 CPU ]
+/CEP/prr/watcher_timeout_cei         
+  boot_cycle=fresh                   [ OK    ] [ 0.01221057 / 0.01215337 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01299106 / 0.01291870 CPU ]
+/CEP/cps/replay/inline               [ OK    ] [ 0.01981048 / 0.01175436 CPU ]
+/CEP/cps/replay/cas_cache            [ OK    ] [ 0.02012677 / 0.01231279 CPU ]
+/CEP/cps/replay/cas_runtime          [ OK    ] [ 0.01966659 / 0.01185867 CPU ]
+/CEP/cps/hydrate/multi_chunk_deflate [ OK    ] [ 0.01993161 / 0.01191669 CPU ]
+/CEP/cps/hydrate/multi_chunk_xchacha [ OK    ] [ 0.02005194 / 0.01187041 CPU ]
+/CEP/cps/hydrate/unsupported_aead    [ OK    ] [ 0.02072407 / 0.01225566 CPU ]
+/CEP/cps/history/payload_spill_hydrate[ OK    ] [ 3.58099807 / 0.29512441 CPU ]
+/CEP/cps/export/windowed_external    [ OK    ] [ 0.01744827 / 0.01189963 CPU ]
+/CEP/cps/stage/external_bundle       [ OK    ] [ 0.02429776 / 0.01288543 CPU ]
+/CEP/ops                             
+  boot_cycle=fresh                   [ OK    ] [ 0.05079750 / 0.05055214 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.05031606 / 0.05013384 CPU ]
+/CEP/branch/dirty_tracking           
+  boot_cycle=fresh                   [ OK    ] [ 0.00036251 / 0.00036299 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00136087 / 0.00136150 CPU ]
+/CEP/branch/policy_flush             
+  boot_cycle=fresh                   [ OK    ] [ 0.00973480 / 0.00969510 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01191649 / 0.01185563 CPU ]
+/CEP/branch/history_eviction         
+  boot_cycle=fresh                   [ OK    ] [ 0.00026079 / 0.00026105 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01218632 / 0.01211778 CPU ]
+/CEP/branch/snapshot_policy          
+  boot_cycle=fresh                   [ OK    ] [ 0.00001908 / 0.00001899 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01185479 / 0.01180845 CPU ]
+/CEP/branch/security_guard           
+  boot_cycle=fresh                   [ OK    ] [ 0.00073846 / 0.00073876 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01252368 / 0.01246103 CPU ]
+/CEP/heartbeat/single                
+  timeout=120, boot_cycle=fresh      [ OK    ] [ 11.72273458 / 2.71124659 CPU ]
+  timeout=120, boot_cycle=after_reboot[ OK    ] [ 11.36416124 / 2.75358491 CPU ]
+/CEP/heartbeat/bootstrap             
+  boot_cycle=fresh                   [ OK    ] [ 50.14882075 / 11.68617312 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 49.98115531 / 12.44246192 CPU ]
+/CEP/organ/sys_state                 
+  boot_cycle=fresh                   [instrument][test] organ_prepare_runtime runtime=0x559c1dbc1140 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1dbc1140 previous=(nil)
+[ OK    ] [ 23.56151588 / 7.47210944 CPU ]
+  boot_cycle=after_reboot            [instrument][test] organ_prepare_runtime runtime=0x559c1dbc1140 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1dbc1140 previous=(nil)
+[ OK    ] [ 27.01217100 / 6.66264421 CPU ]
+/CEP/organ/rt_ops                    
+  boot_cycle=fresh                   [instrument][test] organ_prepare_runtime runtime=0x559c1dbc1140 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1dbc1140 previous=(nil)
+[ OK    ] [ 26.01046551 / 6.80381560 CPU ]
+  boot_cycle=after_reboot            [instrument][test] organ_prepare_runtime runtime=0x559c1dbc1140 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1dbc1140 previous=(nil)
+[ OK    ] [ 25.86854034 / 6.67472102 CPU ]
+/CEP/organ/bootstrap/constructors    
+  boot_cycle=fresh                   [instrument][test] organ_prepare_runtime runtime=0x559c1db95cc0 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1db95cc0 previous=(nil)
+[ OK    ] [ 47.02858878 / 13.25035075 CPU ]
+  boot_cycle=after_reboot            [instrument][test] organ_prepare_runtime runtime=0x559c1e077b30 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1e077b30 previous=(nil)
+[ OK    ] [ 46.72589045 / 13.68502134 CPU ]
+/CEP/organ/destructors/cycles        
+  boot_cycle=fresh                   [instrument][test] organ_prepare_runtime runtime=0x559c1db04430 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1db04430 previous=(nil)
+[ OK    ] [ 80.14658354 / 26.53470035 CPU ]
+  boot_cycle=after_reboot            [instrument][test] organ_prepare_runtime runtime=0x559c1dba98f0 previous=(nil)
+[instrument][test] organ_cleanup_runtime runtime=0x559c1dba98f0 previous=(nil)
+[ OK    ] [ 78.50850042 / 25.77085270 CPU ]
+/CEP/organ/constructors              
+  boot_cycle=fresh                   [ OK    ] [ 29.35073815 / 6.78991374 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 23.01508780 / 6.94866846 CPU ]
+/CEP/organ/destructors               
+  boot_cycle=fresh                   [ OK    ] [ 25.58032021 / 6.76271205 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 26.10996592 / 6.66325516 CPU ]
+/CEP/organ/dossiers                  
+  boot_cycle=fresh                   [ OK    ] [ 40.13435240 / 12.58021472 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 43.25106437 / 12.14900817 CPU ]
+/CEP/serialization/flat_multi_chunk  [ OK    ] [ 0.00180912 / 0.00178882 CPU ]
+/CEP/serialization/flat_payload_ref_fixtures[ OK    ] [ 0.00015563 / 0.00015582 CPU ]
+/CEP/serialization/flat_round_trip   [ OK    ] [ 0.00001068 / 0.00001062 CPU ]
+/CEP/serialization/flat_chunk_offset_violation[ OK    ] [ 0.00004904 / 0.00004918 CPU ]
+/CEP/serialization/flat_chunk_order_violation[ OK    ] [ 0.00001572 / 0.00001580 CPU ]
+/CEP/serialization/flat_randomized_corruption[ OK    ] [ 0.00426102 / 0.00425402 CPU ]
+/CEP/stream/episode_guard            
+  boot_cycle=fresh                   [ OK    ] [ 0.00113346 / 0.00113416 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00131458 / 0.00130874 CPU ]
+/CEP/stream/stdio                    
+  boot_cycle=fresh                   [ OK    ] [ 0.00080769 / 0.00080806 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00144032 / 0.00144087 CPU ]
+/CEP/contract/capability_gate_mutations[ OK    ] [ 0.01155619 / 0.01149993 CPU ]
+/CEP/contract/decision_module_replay [ OK    ] [ 0.01654771 / 0.01648674 CPU ]
+/CEP/stream/zip                      
+  boot_cycle=fresh                   [ OK    ] [ 0.00073255 / 0.00073306 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00117150 / 0.00117221 CPU ]
+/CEP/executor/queue                  
+  boot_cycle=fresh                   [ OK    ] [ 0.00001229 / 0.00001212 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00000301 / 0.00000291 CPU ]
+/CEP/executor/cancel                 
+  boot_cycle=fresh                   [ OK    ] [ 0.00000255 / 0.00000245 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00000210 / 0.00000200 CPU ]
+/CEP/executor/io_budget              
+  boot_cycle=fresh                   [ OK    ] [ 0.00000487 / 0.00000481 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00000308 / 0.00000300 CPU ]
+/CEP/executor/self_cancel            
+  boot_cycle=fresh                   [ OK    ] [ 0.00000258 / 0.00000877 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00000252 / 0.00000239 CPU ]
+/CEP/episode/yield_resume            
+  boot_cycle=fresh                   [ OK    ] [ 3.25269256 / 1.14982208 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 5.98719648 / 1.10512946 CPU ]
+/CEP/episode/await_resume            
+  boot_cycle=fresh                   [ OK    ] [ 10.63146242 / 2.91012184 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 10.77494275 / 2.82477065 CPU ]
+/CEP/episode/await_timeout           
+  boot_cycle=fresh                   [ OK    ] [ 8.32533422 / 1.98259990 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 11.47086796 / 2.02294998 CPU ]
+/CEP/episode/lease_enforcement       
+  boot_cycle=fresh                   [ OK    ] [ 0.01294271 / 0.01288747 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01268710 / 0.01264941 CPU ]
+/CEP/episode/rw_suspend_resume       
+  boot_cycle=fresh                   [ OK    ] [ 0.01241213 / 0.01236012 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.01240982 / 0.01233522 CPU ]
+/CEP/episode/hybrid_promote_demote   
+  boot_cycle=fresh                   [ OK    ] [ 11.15133256 / 3.31722142 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 11.19741555 / 3.15780431 CPU ]
+/CEP/fed_transport/negotiation       [ OK    ] [ 0.01325823 / 0.01320642 CPU ]
+/CEP/fed_transport/upd_latest        [ OK    ] [ 0.01706429 / 0.01699045 CPU ]
+/CEP/fed_transport/send_cell_flat    [ OK    ] [ 0.01540051 / 0.01530368 CPU ]
+/CEP/fed_transport/send_cell_provider_caps[ OK    ] [ 0.01635947 / 0.01631033 CPU ]
+/CEP/fed_mirror/frame_contract       [ OK    ] [ 0.00000150 / 0.00000136 CPU ]
+/CEP/fed_invoke/frame_contract       [ OK    ] [ 0.00000152 / 0.00000144 CPU ]
+/CEP/fed_invoke/decision_ledger      [ OK    ] [ 0.01381373 / 0.01374336 CPU ]
+/CEP/fed_transport/inbound           [ OK    ] [ 0.01422273 / 0.01416414 CPU ]
+/CEP/fed_transport/close_events      [ OK    ] [ 0.01344196 / 0.01336827 CPU ]
+/CEP/fed_security/analytics_limit    [ OK    ] [ 0.01467520 / 0.01460908 CPU ]
+/CEP/fed_security/pipeline_enforcement[ OK    ] [ 0.01462086 / 0.01456277 CPU ]
+/CEP/fed_link/validator_success      [ OK    ] [ 0.01369134 / 0.01364106 CPU ]
+/CEP/fed_link/validator_duplicate_request[ OK    ] [ 0.01420913 / 0.01412527 CPU ]
+/CEP/fed_link/validator_missing_peer [ OK    ] [ 0.01287090 / 0.01282522 CPU ]
+/CEP/fed_link/emit_cell              [ OK    ] [ 0.01527949 / 0.01521022 CPU ]
+/CEP/fed_link/frame_contract         [ OK    ] [ 0.00000197 / 0.00000184 CPU ]
+/CEP/fed_mirror/validator_success    [ OK    ] [ 63.72012521 / 20.96574663 CPU ]
+/CEP/fed_mirror/validator_conflict   [ OK    ] [ 0.01581228 / 0.01577858 CPU ]
+/CEP/fed_mirror/validator_deadline   [ OK    ] [ 0.01330152 / 0.01327960 CPU ]
+/CEP/fed_mirror/emit_cell            [ OK    ] [ 0.01638737 / 0.01635206 CPU ]
+/CEP/fed_invoke/validator_long_name  [ OK    ] [ 0.01331667 / 0.01325808 CPU ]
+/CEP/fed_invoke/pipeline_metadata    [ OK    ] [ 5.52694275 / 2.06619317 CPU ]
+/CEP/fed_invoke/success              [ OK    ] [ 8.42837348 / 2.03982834 CPU ]
+/CEP/fed_invoke/reconfigure_cancel   [ OK    ] [ 0.01588064 / 0.01584528 CPU ]
+/CEP/fed_invoke/dual_runtime_happy   [ OK    ] [ 8.33386738 / 2.15034982 CPU ]
+/CEP/fed_invoke/dual_runtime_timeout [ OK    ] [ 46.44996661 / 14.36069860 CPU ]
+/CEP/fed_link/dual_runtime_provider_fatal[ OK    ] [ 4.83388076 / 0.68158621 CPU ]
+/CEP/fed_invoke/timeout              [ OK    ] [ 12.68799568 / 3.77432653 CPU ]
+/CEP/fed_invoke/reject               [ OK    ] [ 0.00667302 / 0.00665123 CPU ]
+/CEP/fed_invoke/emit_cell            [ OK    ] [ 0.00687910 / 0.00686261 CPU ]
+/CEP/ratworld/determinism            [ OK    ] [ 0.00331425 / 0.00330854 CPU ]
+/CEP/ratworld/solvable               [ OK    ] [ 0.00389660 / 0.00389058 CPU ]
+/CEP/ratworld/rooms_and_visibility   [ OK    ] [ 0.00004074 / 0.00004073 CPU ]
+/CEP/ratworld/renderer               [ OK    ] [ 0.00000220 / 0.00000208 CPU ]
+/CEP/ratworld/tick_mechanics         [ OK    ] [ 0.00002290 / 0.00002282 CPU ]
+/CEP/ratworld/social_board_event_hooks[ OK    ] [ 0.00001651 / 0.00001646 CPU ]
+/CEP/ratworld/pit_trap               [ OK    ] [ 0.00001188 / 0.00001182 CPU ]
+/CEP/ratworld/runtime_host/load_success[ OK    ] [ 0.00448046 / 0.00231327 CPU ]
+/CEP/ratworld/runtime_host/reject_missing_required_record[ OK    ] [ 0.00321581 / 0.00133075 CPU ]
+/CEP/ratworld/runtime_host/reject_duplicated_record[ OK    ] [ 0.00309856 / 0.00133870 CPU ]
+/CEP/ratworld/runtime_host/reject_aliased_ids[ OK    ] [ 0.00316186 / 0.00139762 CPU ]
+/CEP/ratworld/visible_export/reject_serialization[ OK    ] [ 0.00092436 / 0.00092472 CPU ]
+/CEP/ratworld/visible_export/replay_linkage[ OK    ] [ 0.00025412 / 0.00025412 CPU ]
+/CEP/ratworld/runtime_host/package_visible_export_end_to_end[ OK    ] [ 0.00022370 / 0.00022363 CPU ]
+/CEP/ratworld/paired_runtime/visible_export_determinism[ OK    ] [ 0.00006525 / 0.00006532 CPU ]
+/CEP/ratworld/paired_runtime/reject_missing_lineage_refs[ OK    ] [ 0.00003210 / 0.00003212 CPU ]
+/CEP/ratworld/paired_runtime/reject_hidden_fallback_transitions[ OK    ] [ 0.00003037 / 0.00003036 CPU ]
+/CEP/ratworld/paired_runtime/reject_mismatched_seed_handles[ OK    ] [ 0.00002949 / 0.00002953 CPU ]
+/CEP/ratworld/paired_runtime/reject_incomplete_comparison_evidence[ OK    ] [ 0.00002759 / 0.00002761 CPU ]
+/CEP/ratworld/paired_runtime/reject_missing_learner_update_evidence[ OK    ] [ 0.00003145 / 0.00003144 CPU ]
+/CEP/ratworld/tower_zone_cycle/fairness_band_contract[ OK    ] [ 0.00006260 / 0.00006261 CPU ]
+/CEP/ratworld/tower_zone_cycle/reject_omniscient_pressure_claim[ OK    ] [ 0.00005250 / 0.00005247 CPU ]
+/CEP/ratworld/screening/stage1_reject_case[ OK    ] [ 0.00001928 / 0.00001924 CPU ]
+/CEP/ratworld/screening/stage2_reject_case[ OK    ] [ 0.00001433 / 0.00001432 CPU ]
+/CEP/ratworld/screening/admitted_case_with_lineage[ OK    ] [ 0.00001509 / 0.00001506 CPU ]
+/CEP/ratworld/screening/replay_stability[ OK    ] [ 0.00001648 / 0.00001649 CPU ]
+/CEP/ratworld/culture_compile/reject_incomplete_rejected_alternatives[ OK    ] [ 0.20138369 / 0.00132386 CPU ]
+/CEP/ratworld/culture_compile/reject_missing_fallback_condition_id[ OK    ] [ 0.20148444 / 0.00140218 CPU ]
+/CEP/ratworld/culture_compile/reject_missing_source_provenance[ OK    ] [ 0.20152794 / 0.00143604 CPU ]
+/CEP/ratworld/culture_compile/seed_fixture_chain_compile_completeness[ OK    ] [ 0.00078231 / 0.00078287 CPU ]
+/CEP/ratworld/culture_compile/quarantine_to_load_admitted_seed_flow[ OK    ] [ 42.21907302 / 0.00530993 CPU ]
+/CEP/ratworld/trainer/promoted_vs_quarantined_seed_load_behavior[ OK    ] [ 16.41180569 / 0.00588157 CPU ]
+/CEP/ratworld/trainer/summary_lineage_and_teacher_provenance[ OK    ] [ 39.21646442 / 0.00353428 CPU ]
+/CEP/ratworld/trainer/summary_source_state_transitions[ OK    ] [ 0.00013834 / 0.00013838 CPU ]
+/CEP/ratworld/trainer/apprentice_shadow_teacher_keeps_learner_updates[ OK    ] [ 80.23445029 / 0.00699455 CPU ]
+/CEP/runtime/dual_isolation          [ OK    ] [ 0.00535106 / 0.00533949 CPU ]
+/CEP/runtime/obi_policy_permuted     [ OK    ] [ 0.00461770 / 0.00460709 CPU ]
+/CEP/runtime/obi_provider_paths_permuted[ OK    ] [ 0.00762982 / 0.00759233 CPU ]
+/CEP/runtime/obi_lifecycle_handle_stream[ OK    ] [ 0.00210924 / 0.00210397 CPU ]
+/CEP/runtime/obi_provider_dir_permuted[ OK    ] [ 0.00416112 / 0.00415698 CPU ]
+/CEP/runtime/obi_opt_lp_conformance  [ OK    ] [ 0.00318171 / 0.00349945 CPU ]
+/CEP/runtime/obi_opt_milp_conformance[ OK    ] [ 0.00069749 / 0.00095883 CPU ]
+/CEP/runtime/obi_opt_qp_conformance  [ OK    ] [ 0.00051203 / 0.00062388 CPU ]
+/CEP/locking/lock_store_blocks_append
+  boot_cycle=fresh                   [ OK    ] [ 0.00001862 / 0.00001862 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00087709 / 0.00085723 CPU ]
+/CEP/locking/lock_data_blocks_update 
+  boot_cycle=fresh                   [ OK    ] [ 0.00000804 / 0.00000797 CPU ]
+  boot_cycle=after_reboot            [ OK    ] [ 0.00127810 / 0.00127896 CPU ]
+/CEP/contract/beat_determinism/order_and_replay[ OK    ] [ 0.00352399 / 0.00351627 CPU ]
+/CEP/contract/enforcement/capability_observe_vs_enforce[ OK    ] [ 0.00190299 / 0.00187095 CPU ]
+/CEP/contract/enforcement/membrane_branch_guard[ OK    ] [ 0.00214215 / 0.00214269 CPU ]
+/CEP/contract/enforcement/hydrate_budget_caps[ OK    ] [ 0.00165225 / 0.00164255 CPU ]
+/CEP/contract/decision_replay/completeness[ OK    ] [ 0.00160936 / 0.00160995 CPU ]
+/CEP/contract/decision_replay/divergence[ OK    ] [ 0.00190561 / 0.00187094 CPU ]
+196 of 196 (100%) tests successful, 4 (2%) test skipped.
+――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
+1/1 kernel+packs - CEP:cep_unit_tests OK             1078.49s
+
+
+Ok:                1   
+Fail:              0   
+
+Full log written to /home/vic/Documents/src/CEP/build/meson-logs/testlog.txt

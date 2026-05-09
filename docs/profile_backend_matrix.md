@@ -28,7 +28,7 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 
 | Provider ID | Profiles served now | Notes |
 |---|---:|---|
-| `obi.provider:gfx.sdl3` | 3 | Roadmap-final SDL3 backend for `gfx.window_input-0`, `gfx.render2d-0`, and `gfx.gpu_device-0`. |
+| `obi.provider:gfx.sdl3` | 3 | Roadmap-final SDL3 backend for `gfx.window_input-0`, `gfx.render2d-0`, and `gfx.gpu_device-0`; it uses system SDL3 first and vendored `../libraries/SDL` when package metadata is absent. |
 | `obi.provider:gfx.raylib` | 2 | Roadmap-final raylib backend for current 2D/window coverage. |
 | `obi.provider:gfx.gpu.sokol` | 1 | Roadmap-final sokol backend for `gfx.gpu_device-0` (vendored `../libraries/sokol`). |
 | `obi.provider:gfx.render3d.raylib` | 1 | Roadmap-final raylib 3D backend for `gfx.render3d-0` (vendored `../libraries/raylib`). |
@@ -39,7 +39,7 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 | `obi.provider:text.stb` | 1 | Roadmap-final `text.raster_cache-0` backend using `stb_truetype`. |
 | `obi.provider:text.layout.pango` | 1 | Roadmap-final `text.layout-0` backend using Pango. |
 | `obi.provider:text.layout.raqm` | 1 | Roadmap-final `text.layout-0` backend using raqm (+ HarfBuzz/FriBidi/FreeType stack). |
-| `obi.provider:text.ime.sdl3` | 1 | Roadmap-final `text.ime-0` backend using SDL3 text-input/IME hooks. |
+| `obi.provider:text.ime.sdl3` | 1 | Roadmap-final `text.ime-0` backend using SDL3 text-input/IME hooks; it uses system SDL3 first and vendored `../libraries/SDL` when package metadata is absent. |
 | `obi.provider:text.ime.gtk` | 1 | Roadmap-final `text.ime-0` backend using GTK IM contexts. |
 | `obi.provider:text.spell.enchant` | 1 | Roadmap-final `text.spellcheck-0` backend using Enchant. |
 | `obi.provider:text.spell.aspell` | 1 | Roadmap-final `text.spellcheck-0` backend using Aspell. |
@@ -62,6 +62,7 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 | `obi.provider:math.blas.blis` | 1 | Roadmap-final `math.blas-0` backend using BLIS CBLAS GEMM entry points. |
 | `obi.provider:math.decimal.mpdecimal` | 1 | Roadmap-final `math.decimal-0` backend using mpdecimal context/quantize/string APIs. |
 | `obi.provider:math.decimal.decnumber` | 1 | Roadmap-final `math.decimal-0` backend using vendored decNumber arithmetic/context APIs. |
+| `obi.provider:opt.highs` | 3 | Roadmap-final LP/MILP/QP backend using system HiGHS first and vendored `../libraries/highs` when package metadata is absent. |
 | `obi.provider:db.kv.sqlite` | 1 | Roadmap-final `db.kv-0` backend using SQLite key/value table + transaction + cursor flows. |
 | `obi.provider:db.kv.lmdb` | 1 | Roadmap-final `db.kv-0` backend using LMDB memory-mapped B+tree transactions/cursors. |
 | `obi.provider:db.sql.sqlite` | 1 | Roadmap-final `db.sql-0` backend using SQLite prepare/bind/step column APIs. |
@@ -121,7 +122,7 @@ The detailed per-profile rows live in `docs/profile_backend_matrix.csv`.
 | `obi.provider:media.image` | 1 | Roadmap-final image-codec backend via libpng/libjpeg/libwebp. |
 | `obi.provider:media.gdkpixbuf` | 1 | Roadmap-final image-codec backend via gdk-pixbuf. |
 | `obi.provider:media.stb` | 1 | Roadmap-final image-codec backend via `stb_image`/`stb_image_write`. |
-| `obi.provider:media.audio.sdl3` | 1 | Roadmap-final `media.audio_device-0` backend using SDL3 audio APIs. |
+| `obi.provider:media.audio.sdl3` | 1 | Roadmap-final `media.audio_device-0` backend using SDL3 audio APIs; it uses system SDL3 first and vendored `../libraries/SDL` when package metadata is absent. |
 | `obi.provider:media.audio.portaudio` | 1 | Roadmap-final `media.audio_device-0` backend using PortAudio stream APIs. |
 | `obi.provider:media.audio.miniaudio` | 1 | Roadmap-final `media.audio_mix-0` backend using miniaudio mixer paths. |
 | `obi.provider:media.audio.openal` | 1 | Roadmap-final `media.audio_mix-0` backend using OpenAL Soft APIs. |
@@ -178,10 +179,14 @@ Dual-runtime coexistence now includes non-SDL3 gfx providers
 Sokol providers use shared process-local setup/shutdown refcounting to avoid
 runtime collision during interleaved two-runtime execution.
 
-Build policy: backend resolution should prefer
-system shared libraries first, then vendored shared fallbacks. Static vendored
-fallback is opt-in only; the current explicit gate is `-Dphys2d_allow_static_fallback=true`
-for `obi.provider:phys2d.box2d` and `obi.provider:phys2d.chipmunk`.
+Build policy: backend resolution should prefer system package metadata first,
+then vendored `../libraries` fallbacks. Vendored shared builds remain preferred
+when the upstream library supports them cleanly; static PIC fallbacks are allowed
+where they keep provider modules self-contained. Current static vendored
+fallbacks are `obi.provider:opt.highs` and, behind
+`-Dphys2d_allow_static_fallback=true`, `obi.provider:phys2d.box2d` plus
+`obi.provider:phys2d.chipmunk`. Current shared vendored fallbacks include
+the SDL3-backed gfx, text IME, and audio providers through `../libraries/SDL`.
 
 GPIO conformance/smoke registration is explicitly target-gated in Meson with `-Dgpio_hardware_tests=true`.
 Default generic CI keeps GPIO profile conformance disabled; runtime smoke remains SKIP-only off Raspberry Pi/test-jig targets.

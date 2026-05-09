@@ -1,0 +1,110 @@
+{
+  "command": [
+    "/home/vic/Documents/src/CEP/build/ratworld_tower_trial",
+    "--suite",
+    "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt",
+    "--tower-mind",
+    "mind1",
+    "--mode",
+    "shared",
+    "--rat-minds",
+    "model_c",
+    "--runs-per-mind",
+    "1",
+    "--ticks-per-run",
+    "60",
+    "--floors",
+    "3",
+    "--suite-count",
+    "1",
+    "--train-lite",
+    "--checkpoint-every",
+    "1",
+    "--checkpoint-flush",
+    "on",
+    "--cps-root",
+    "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline",
+    "--cps-branch",
+    "ratworld.seed_pair.ls4700.rs5600.baseline",
+    "--phase",
+    "report",
+    "--freeze-rat",
+    "on",
+    "--tower-learn",
+    "off",
+    "--arbiter-learn",
+    "off",
+    "--eval-suite",
+    "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt"
+  ],
+  "lane": "baseline",
+  "lane_controls": {
+    "arbiter_learn": "off",
+    "freeze_rat": "on",
+    "phase": "report",
+    "tower_learn": "off"
+  },
+  "lane_cps_branch": "ratworld.seed_pair.ls4700.rs5600.baseline",
+  "lane_run_id": "ratworld.seed_pair.ls4700.rs5600.baseline.run",
+  "output_refs": {
+    "behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.baseline.behavioral_evidence.v1.jsonl",
+    "canonical_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+    "lane_log_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log",
+    "replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+    "visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report"
+  },
+  "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+  "pair_index": 1,
+  "pair_provenance": {
+    "comparison_thresholds": {
+      "demotion_threshold": -0.05,
+      "promotion_threshold": 0.05
+    },
+    "culture_seed": "ratworld.teacher_trace_seed.v1",
+    "episode_budget": {
+      "runs_per_mind": 1,
+      "ticks_per_run": 60
+    },
+    "evidence_capture": {
+      "evidence_capture_mode": "headless",
+      "selected_modes": [
+        "headless"
+      ]
+    },
+    "heuristic_or_optimization_teacher_source": "not_applicable",
+    "learner_ref": "model_c",
+    "overlay_modes": {
+      "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+      "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+      "selected_by_mode": {
+        "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+      }
+    },
+    "run_mode": "baseline_vs_praxis_runtime_actor",
+    "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+    "teacher_ref": "not_applicable"
+  },
+  "run_mode": "baseline_vs_praxis_runtime_actor",
+  "schema_id": "ratworld.paired_runtime.lane_run_manifest.v1",
+  "shared_inputs": {
+    "control_source": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+    "culture_seed": "ratworld.teacher_trace_seed.v1",
+    "culture_seed_fixture_ref": "",
+    "culture_seed_input_mode": "metadata_only",
+    "demotion_threshold": -0.05,
+    "episode_budget": {
+      "runs_per_mind": 1,
+      "ticks_per_run": 60
+    },
+    "evidence_capture_mode": "headless",
+    "heuristic_or_optimization_teacher_source": "not_applicable",
+    "learner_ref": "model_c",
+    "overlay_selection_by_mode": {
+      "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+    },
+    "promotion_threshold": 0.05,
+    "seed_pair": "4700 5600",
+    "seed_suite_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt",
+    "teacher_ref": "not_applicable"
+  }
+}

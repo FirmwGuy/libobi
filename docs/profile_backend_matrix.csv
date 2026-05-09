@@ -1,10 +1,10 @@
 profile_id,provider_id,status,backend_libraries,matrix_lane,provider_disposition
-obi.profile:gfx.window_input-0,obi.provider:gfx.sdl3,implemented,SDL3,roadmap,final
+obi.profile:gfx.window_input-0,obi.provider:gfx.sdl3,implemented,SDL3_system_or_vendored,roadmap,final
 obi.profile:gfx.window_input-0,obi.provider:gfx.raylib,implemented,raylib,roadmap,final
-obi.profile:gfx.render2d-0,obi.provider:gfx.sdl3,implemented,SDL3,roadmap,final
+obi.profile:gfx.render2d-0,obi.provider:gfx.sdl3,implemented,SDL3_system_or_vendored,roadmap,final
 obi.profile:gfx.render2d-0,obi.provider:gfx.raylib,implemented,raylib,roadmap,final
 obi.profile:gfx.gpu_device-0,obi.provider:gfx.gpu.sokol,implemented,sokol_gfx_vendored,roadmap,final
-obi.profile:gfx.gpu_device-0,obi.provider:gfx.sdl3,implemented,SDL3_GPU,roadmap,final
+obi.profile:gfx.gpu_device-0,obi.provider:gfx.sdl3,implemented,SDL3_system_or_vendored_GPU,roadmap,final
 obi.profile:gfx.render3d-0,obi.provider:gfx.render3d.raylib,implemented,raylib_vendored,roadmap,final
 obi.profile:gfx.render3d-0,obi.provider:gfx.render3d.sokol,implemented,sokol_gfx_vendored,roadmap,final
 obi.profile:time.datetime-0,obi.provider:time.glib,implemented,GLib,roadmap,final
@@ -48,7 +48,7 @@ obi.profile:text.segmenter-0,obi.provider:text.stack,implemented,FriBidi,roadmap
 obi.profile:text.segmenter-0,obi.provider:text.icu,implemented,ICU4C,roadmap,final
 obi.profile:text.layout-0,obi.provider:text.layout.pango,implemented,Pango,roadmap,final
 obi.profile:text.layout-0,obi.provider:text.layout.raqm,implemented,"raqm,HarfBuzz,FriBidi,FreeType",roadmap,final
-obi.profile:text.ime-0,obi.provider:text.ime.sdl3,implemented,SDL3,roadmap,final
+obi.profile:text.ime-0,obi.provider:text.ime.sdl3,implemented,SDL3_system_or_vendored,roadmap,final
 obi.profile:text.ime-0,obi.provider:text.ime.gtk,implemented,GTK,roadmap,final
 obi.profile:text.spellcheck-0,obi.provider:text.spell.enchant,implemented,Enchant,roadmap,final
 obi.profile:text.spellcheck-0,obi.provider:text.spell.aspell,implemented,Aspell,roadmap,final
@@ -64,11 +64,11 @@ obi.profile:math.decimal-0,obi.provider:math.decimal.mpdecimal,implemented,mpdec
 obi.profile:math.decimal-0,obi.provider:math.decimal.decnumber,implemented,decnumber_vendored,roadmap,final
 obi.profile:math.scientific_ops-0,obi.provider:math.science.native,implemented,native_libm_math_h,bootstrap,temporary_in_house
 obi.profile:math.scientific_ops-0,obi.provider:math.science.openlibm,implemented,openlibm,roadmap,final
-obi.profile:opt.lp-0,obi.provider:opt.highs,implemented,HiGHS,roadmap,final
+obi.profile:opt.lp-0,obi.provider:opt.highs,implemented,HiGHS_system_or_vendored,roadmap,final
 obi.profile:opt.lp-0,obi.provider:opt.glpk,planned,GLPK,roadmap,final
-obi.profile:opt.milp-0,obi.provider:opt.highs,implemented,HiGHS,roadmap,final
+obi.profile:opt.milp-0,obi.provider:opt.highs,implemented,HiGHS_system_or_vendored,roadmap,final
 obi.profile:opt.milp-0,obi.provider:opt.scip,planned,SCIP,roadmap,final
-obi.profile:opt.qp-0,obi.provider:opt.highs,implemented,HiGHS,roadmap,final
+obi.profile:opt.qp-0,obi.provider:opt.highs,implemented,HiGHS_system_or_vendored,roadmap,final
 obi.profile:opt.qp-0,obi.provider:opt.osqp,planned,OSQP,roadmap,final
 obi.profile:db.kv-0,obi.provider:db.kv.lmdb,implemented,lmdb_memory_mapped_btree_txn_cursor,roadmap,final
 obi.profile:db.kv-0,obi.provider:db.kv.sqlite,implemented,sqlite3_blob_primary_key_table_txn_cursor,roadmap,final
@@ -125,7 +125,7 @@ obi.profile:crypto.random-0,obi.provider:crypto.sodium,implemented,libsodium_ran
 obi.profile:crypto.random-0,obi.provider:crypto.inhouse,implemented,os_rng_portability_fallback,bootstrap,temporary_in_house
 obi.profile:crypto.sign-0,obi.provider:crypto.openssl,implemented,OpenSSL_Ed25519_raw_key_sign_verify,roadmap,final
 obi.profile:crypto.sign-0,obi.provider:crypto.sodium,implemented,libsodium_Ed25519_detached_sign_verify,roadmap,final
-obi.profile:media.audio_device-0,obi.provider:media.audio.sdl3,implemented,SDL3_audio,roadmap,final
+obi.profile:media.audio_device-0,obi.provider:media.audio.sdl3,implemented,SDL3_system_or_vendored_audio,roadmap,final
 obi.profile:media.audio_device-0,obi.provider:media.audio.portaudio,implemented,PortAudio,roadmap,final
 obi.profile:media.audio_mix-0,obi.provider:media.audio.miniaudio,implemented,miniaudio,roadmap,final
 obi.profile:media.audio_mix-0,obi.provider:media.audio.openal,implemented,OpenAL_Soft,roadmap,final

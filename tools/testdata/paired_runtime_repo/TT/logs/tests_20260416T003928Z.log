@@ -1,0 +1,15 @@
+[screening_gate] status=ok cases=4 admitted=2 stage1_reject=1 stage2_reject=1
+[paired_runtime] pair=1/1 lane=baseline run_mode=baseline_vs_praxis_runtime_actor pair_id=ratworld.seed_pair.ls4700.rs5600 seeds=4700/5600 log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log
+[paired_runtime] pair=1/1 lane=praxis run_mode=baseline_vs_praxis_runtime_actor pair_id=ratworld.seed_pair.ls4700.rs5600 seeds=4700/5600 log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log
+[learning_gate] baseline start log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/learning_gate_baseline.log
+[learning_gate] train pass=1/1 start log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/learning_gate_train_1.log
+[learning_gate] post start log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/learning_gate_post.log
+[learning_gate] ok_all=yes minds=model_c
+[cycle] 1/1
+[rat_tune] cycle=1 pass=1/1 start log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/cycle1_rat_tune_1.log
+[rat_tune] cycle=1 pass=1/1 rc=0 timed_out=False avg_succ_all=0.00
+[tower_tune] cycle=1 pass=1/1 start log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/cycle1_tower_tune_1.log
+[tower_tune] cycle=1 pass=1/1 rc=0 timed_out=False updates=1 last_zone={'phase': 'tune', 'batch': 1, 'layouts': 1, 'zone_ok': 0, 'viol': 'fail', 'stable': 0, 'pending': 0, 'frozen': 0, 'food': 1.15, 'food_path': 0.75, 'trap_delta': 0, 'trap_path': 0.55, 'updated': True}
+[report] cycle=1 start log=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/cycle1_report.log
+[report] cycle=1 status=fail zone_ok_all=no min_layout_ok=0.00 max_tail_fail=1.00 dominant=fail
+[done] logs=build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928 summary=build/logs/ratworld_item20_seed_sweep.jsonl

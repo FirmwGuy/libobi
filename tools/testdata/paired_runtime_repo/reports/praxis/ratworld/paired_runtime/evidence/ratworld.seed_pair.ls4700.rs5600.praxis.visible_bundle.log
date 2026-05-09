@@ -1,0 +1,21 @@
+CMD: /home/vic/Documents/src/CEP/build/ratworld_tower_trial --suite build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt --tower-mind mind1 --mode shared --rat-minds model_c --runs-per-mind 1 --ticks-per-run 60 --floors 3 --suite-count 1 --train-lite --checkpoint-every 1 --checkpoint-flush on --cps-root build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis --cps-branch ratworld.seed_pair.ls4700.rs5600.praxis --phase report --freeze-rat off --tower-learn off --arbiter-learn off --eval-suite build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt
+[rat_pipeline] flow=rat_explore pid=rat_tick(20324356780818432) sid=rat_explore(20324341191687749) dag=2 hop=1
+[rat_pipeline] flow=rat_mem pid=rat_tick(20324356780818432) sid=rat_mem(20324349140533248) dag=2 hop=1
+[rat_pipeline] flow=rat_move pid=rat_tick(20324356780818432) sid=rat_move(20324349485678592) dag=2 hop=1
+[rat_pipeline] flow=rat_plan pid=rat_tick(20324356780818432) sid=rat_plan(20324352584515584) dag=2 hop=1
+[rat_pipeline] flow=rat_explore pid=rat_tick(20324356780818432) sid=rat_explore(20324341191687749) dag=2 hop=1
+[rat_pipeline] flow=rat_mem pid=rat_tick(20324356780818432) sid=rat_mem(20324349140533248) dag=2 hop=1
+[rat_pipeline] flow=rat_move pid=rat_tick(20324356780818432) sid=rat_move(20324349485678592) dag=2 hop=1
+[rat_pipeline] flow=rat_plan pid=rat_tick(20324356780818432) sid=rat_plan(20324352584515584) dag=2 hop=1
+[tower_paired] lane=baseline tick=1 failure=praxis_rat_tick_orchestrate control_selector=model_c learner_selector=model_c
+[tower_paired] comparison_run_id=ratworld.rat_mind.runtime_actor.comparison_run.ls4700.rs5600.a1 failure=baseline_tick_step
+paired lane execute failed (mind=rat_mind.model_c)
+[tower_trial] phase=report profile=mind1 layouts=1 runs_per_mind=1 mode=shared floors=3 difficulty=0.45 fixed food_scale=1.00 batch=4 checkpoint=1 freeze_rat=off persist=train-lite snap_playbooks=off train=self reset_learn=no tower_learn=off arbiter_learn=off teacher_council_members=3 seed_lineage=seed_lineage:ratworld.rat_mind.runtime_actor.teacher_council.v1
+[tower_food_probe] layout=layout_7966699252103121366_seed4700 home=(36,9) floor0_food=13 home_adj_food=2 rat=(36,9,0) exit=(52,2,2) snap=1
+[tower_score] layout=layout_7966699252103121366_seed4700 mind=rat_mind.model_c succ=0.00 med_health=0.00 med_ticks=0 class=too_hard score=-1.00
+[tower_outcomes] layout=layout_7966699252103121366_seed4700 mind=rat_mind.model_c deaths=0 trap=0 hunger=0 unknown=0 timeouts=0
+[tower_food_eaten] layout=layout_7966699252103121366_seed4700 mind=rat_mind.model_c food=0
+[tower_layout] layout=layout_7966699252103121366_seed4700 avg_score=-1.00
+[tower_zone] phase=report batch=1 layouts=1 zone_ok=0 viol=layout stable=0 pending=0 frozen=0 food=1.00 food_path=0.65 trap_delta=0 trap_path=0.55 updated=no fail_rate=0.00 bored_rate=0.00 panic_rate=0.00 depth_low_rate=0.00 depth_high_rate=0.00 layout_ok_rate=0.00 tail_fail_max=0.00 arousal_mean=0.00 peril_mean=0.00 band_lo=0.00 band_hi=0.00
+[tower_report] phase=report controller=0 layouts=1 layout_ok=0.00 zone_ok=0 dominant=layout tail_fail_max=0.00 diagnosis=layout ok rate below threshold
+[tower_fairness] phase=report controller=0 with_scout_exit_rate=0.000 without_scout_exit_rate=0.000 with_scout_death_rate=0.000 without_scout_death_rate=0.000 with_scout_learning_delta=0.000 without_scout_learning_delta=0.000 ally_usefulness_delta=0.000 with_scout_dead_turn_rate=0.000 without_scout_dead_turn_rate=0.000 with_scout_board_coord_rate=0.000 without_scout_board_coord_rate=0.000 with_scout_board_pressure_rate=0.000 without_scout_board_pressure_rate=0.000 with_scout_envelope_rate=0.000 without_scout_envelope_rate=0.000 coordination_metric=0.000 no_scout_baseline=explicit board_signal=tower_alarm_board+rat_scent_board local_perception_bound=yes omniscient_read_turns=0 coordination_without_omniscience=yes fairness_band={exit:low,death:low,dead_turn:low,ally_delta:neutral}

@@ -1,0 +1,41 @@
+{
+  "baseline_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+  "baseline_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+  "capture_mode": "headless",
+  "overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+  "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+  "pair_provenance": {
+    "comparison_thresholds": {
+      "demotion_threshold": -0.05,
+      "promotion_threshold": 0.05
+    },
+    "culture_seed": "ratworld.teacher_trace_seed.v1",
+    "episode_budget": {
+      "runs_per_mind": 1,
+      "ticks_per_run": 60
+    },
+    "evidence_capture": {
+      "evidence_capture_mode": "headless",
+      "selected_modes": [
+        "headless"
+      ]
+    },
+    "heuristic_or_optimization_teacher_source": "not_applicable",
+    "learner_ref": "model_c",
+    "overlay_modes": {
+      "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+      "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+      "selected_by_mode": {
+        "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+      }
+    },
+    "run_mode": "baseline_vs_praxis_runtime_actor",
+    "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+    "teacher_ref": "not_applicable"
+  },
+  "paired_run_mode": "baseline_vs_praxis_runtime_actor",
+  "praxis_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report",
+  "praxis_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260414_041442/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames",
+  "run_mode": "headless",
+  "schema_id": "ratworld.paired_runtime.evidence_bundle.v1"
+}

@@ -1,0 +1,537 @@
+{
+  "auditable_evidence_artifact_paths": {
+    "headless": {
+      "baseline_evidence_path": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.baseline.visible_bundle.log",
+      "baseline_replay_path": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.baseline.replay.frames",
+      "overlay_path": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json",
+      "praxis_evidence_path": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.visible_bundle.log",
+      "praxis_replay_path": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.replay.frames"
+    }
+  },
+  "auditable_evidence_bundles": {
+    "headless": {
+      "baseline_evidence_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.baseline.visible_bundle.log#tower_report",
+      "baseline_replay_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.baseline.replay.frames",
+      "overlay_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json",
+      "overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+      "praxis_evidence_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.visible_bundle.log#tower_report",
+      "praxis_replay_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.replay.frames",
+      "run_mode": "headless"
+    }
+  },
+  "tt_validation": {
+    "source": "TT-managed test logs",
+    "commands": [
+      {
+        "command": "meson test -C build --no-rebuild --print-errorlogs -j1 -v cep_unit_tests",
+        "status": "passed",
+        "log_ref": "TT/logs/tests_20260413T064603Z.log"
+      },
+      {
+        "command": "./build/ratworld_gui_viewer --headless-smoke",
+        "status": "passed",
+        "log_ref": "TT/logs/tests_20260413T070416Z.log"
+      },
+      {
+        "command": "./build/ratworld_ogif_ctl --smoke",
+        "status": "passed",
+        "log_ref": "TT/logs/tests_20260413T031340Z.log"
+      }
+    ]
+  },
+  "shipped_four_controller_ecology": {
+    "controller_count": 4,
+    "controllers": [
+      "runtime_controller.pc_solver",
+      "runtime_controller.ally_scout",
+      "runtime_controller.tower_sentry",
+      "runtime_controller.tower_hunter"
+    ],
+    "baseline_vs_praxis_distinct_runtime_mind_surfaces": true,
+    "lane_runtime_mind_modes": {
+      "baseline": "deterministic_baseline",
+      "praxis": "adaptive_runtime"
+    },
+    "controller_source_ref": "reports/praxis/ratworld/paired_runtime/ratworld_tower_zone_cycle_paired_runtime_parity_report.v1.json#minimal_ecology_controller_roles"
+  },
+  "per_actor_controller_identity": {
+    "pc_rat": {
+      "runtime_mind_id": "runtime_caste.pc_rat",
+      "controller_id": "runtime_controller.pc_solver"
+    },
+    "scout_ally": {
+      "runtime_mind_id": "runtime_caste.scout_ally",
+      "controller_id": "runtime_controller.ally_scout"
+    },
+    "sentry_foe": {
+      "runtime_mind_id": "runtime_caste.sentry_foe",
+      "controller_id": "runtime_controller.tower_sentry"
+    },
+    "hunter_foe": {
+      "runtime_mind_id": "runtime_caste.hunter_foe",
+      "controller_id": "runtime_controller.tower_hunter"
+    }
+  },
+  "replayable_boards": {
+    "board_ids": [
+      "tower",
+      "scent"
+    ],
+    "tower": {
+      "runtime_board": "tower_alarm_board",
+      "replayable": true,
+      "viewer_log_ref": "TT/logs/tests_20260413T070416Z.log",
+      "replay_source_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.replay.frames"
+    },
+    "scent": {
+      "runtime_board": "rat_scent_board",
+      "replayable": true,
+      "viewer_log_ref": "TT/logs/tests_20260413T070416Z.log",
+      "replay_source_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.replay.frames"
+    },
+    "fairness_reproducible_from_replay_and_beat_records": true,
+    "fairness_reproduction_inputs": [
+      "replay.paired_runtime.board_inputs",
+      "replay.paired_runtime.board_delta",
+      "replay.paired_tick_frames[]",
+      "auditable_evidence_bundles.headless.baseline_replay_ref",
+      "auditable_evidence_bundles.headless.praxis_replay_ref"
+    ]
+  },
+  "controller_observable_metadata": {
+    "subject_identity": "ratworld_runtime_actor.v1",
+    "environment_affordances_id": "maze_tiles|stairs|food|traps|tower_alarm_board|tower_alarm_board.writer_identity|tower_alarm_board.age_decay|tower_alarm_board.summary|tower_alarm_board.source_mask|tower_alarm_board.write_tracking|rat_scent_board|rat_scent_board.writer_identity|rat_scent_board.age_decay|rat_scent_board.summary|rat_scent_board.source_mask|rat_scent_board.write_tracking|board_delta.source_mask|board_delta.write_tracking|local_perception_window|episode_tick_budget|shared_seed_replay|no_omniscient_reads",
+    "controller_observability": "controller_local_perception_only",
+    "required_fields": [
+      "subject_identity",
+      "environment_affordances_id",
+      "acting_caste_mind",
+      "action_envelope",
+      "board_inputs.tower_board_update",
+      "board_inputs.scent_board_update",
+      "board_inputs.controller_observability"
+    ],
+    "source_ref": "reports/praxis/ratworld/paired_runtime/ratworld_tower_zone_cycle_paired_runtime_parity_report.v1.json#controller_observable_metadata"
+  },
+  "decision_result_contract": {
+    "required_result_fields": [
+      "requested_action",
+      "committed_action",
+      "action_envelope",
+      "outcome_delta",
+      "reward_delta",
+      "surprise_delta",
+      "fallback_transition_state",
+      "seed_lineage_id",
+      "comparison_run_id",
+      "scenario_script_id",
+      "replay_handle_id"
+    ],
+    "paired_runtime_pointer": "replay.paired_runtime",
+    "paired_tick_frames_pointer": "replay.paired_tick_frames[]",
+    "source_ref": "reports/praxis/ratworld/paired_runtime/ratworld_tower_zone_cycle_paired_runtime_parity_report.v1.json#decision_result_contract"
+  },
+  "board_update_metadata": {
+    "tower_board_update_fields": [
+      "writer_identity",
+      "writer_identity_token",
+      "writer_slot",
+      "writer_age",
+      "decay_per_beat",
+      "decay_applied"
+    ],
+    "scent_board_update_fields": [
+      "writer_identity",
+      "writer_identity_token",
+      "writer_slot",
+      "writer_age",
+      "decay_per_beat",
+      "decay_applied"
+    ],
+    "writer_identity_tokens": [
+      "none",
+      "pc_rat",
+      "scout_ally",
+      "sentry_foe",
+      "hunter_foe",
+      "generic"
+    ],
+    "controller_observable_pointer": "paired_runtime.board_inputs.controller_observability",
+    "source_ref": "reports/praxis/ratworld/paired_runtime/ratworld_tower_zone_cycle_paired_runtime_parity_report.v1.json#board_update_metadata"
+  },
+  "arbiter_fairness_fields": {
+    "with_scout": {
+      "exit_rate": 0.0,
+      "death_rate": 0.0,
+      "dead_turn_rate": 0.0
+    },
+    "without_scout": {
+      "exit_rate": 0.0,
+      "death_rate": 0.0,
+      "dead_turn_rate": 0.0
+    },
+    "baseline_profile": "without_scout_explicit_no_scout_profile",
+    "coordination_signal_source": "board_events_plus_local_controller_outputs",
+    "fairness_aggregate_source": "board_derived_replay_and_beat_records",
+    "controller_internal_only": false,
+    "seed_sweep_exit_rate": 0.0,
+    "seed_sweep_death_rate": 0.0,
+    "dead_turn_rate": 0.0,
+    "ally_usefulness_delta": 0.0,
+    "coordination_metric": 0.0,
+    "coordination_without_omniscience": true,
+    "omniscient_read_turns": 0,
+    "coordinated_pressure": {
+      "with_scout": 0.0,
+      "without_scout": 0.0,
+      "delta": 0.0,
+      "status": "derived_from_runtime_outcome_lineage",
+      "source_ref": "reports/praxis/ratworld/paired_runtime/ratworld_tower_zone_cycle_paired_runtime_parity_report.v1.json#tower_pressure_coordination"
+    }
+  },
+  "replay": {
+    "paired_runtime": {
+      "evaluator": {
+        "coordination": {
+          "coordination_signal_source": "board_events_plus_local_controller_outputs",
+          "coordination_metric": 0.0,
+          "coordination_without_omniscience": true,
+          "board_coordination_evidence": {
+            "paired_runtime_surface": {
+              "lane_id": "praxis",
+              "mode_id": "adaptive_runtime",
+              "acting_caste_mind_id": "runtime_caste.scout_ally",
+              "action_envelope_id": "bounded_assist_or_retreat_choice",
+              "fallback_transition_state": "shadow_teacher",
+              "controller_observability": "controller_local_perception_only"
+            },
+            "board_beat_indices": {
+              "social": 20,
+              "tower": 20,
+              "scent": 20,
+              "aligned": true
+            },
+            "tower_alarm_board": {
+              "writer_identity": 3,
+              "writer_identity_token": "sentry_foe",
+              "writer_slot": 0,
+              "writer_age": 1,
+              "pressure_summary": 4,
+              "escalation_summary": 2,
+              "alarm_level": 3,
+              "rescue_requests": 1,
+              "recent_hostile_sightings": 2,
+              "source_mask": 5,
+              "controller_source_mask": 5,
+              "controller_write_mask": 5,
+              "controller_write_count": 1
+            },
+            "rat_scent_board": {
+              "writer_identity": 2,
+              "writer_identity_token": "scout_ally",
+              "writer_slot": 0,
+              "writer_age": 1,
+              "trail_summary": 4,
+              "posture_summary": 3,
+              "safe_trail_summary": 3,
+              "danger_trail_summary": 2,
+              "food_trail_summary": 2,
+              "source_mask": 3,
+              "controller_source_mask": 3,
+              "controller_write_mask": 3,
+              "controller_write_count": 1
+            },
+            "visible_social_memory_deltas": {
+              "tower_alarm_level_delta": 1,
+              "tower_rescue_requests_delta": 1,
+              "tower_recent_hostile_sightings_delta": 1,
+              "scent_safe_trail_delta": 1,
+              "scent_danger_trail_delta": 0,
+              "scent_food_trail_delta": 1,
+              "scent_assist_posture_delta": 1,
+              "scent_retreat_posture_delta": -1,
+              "tower_delta_source_mask": 5,
+              "scent_delta_source_mask": 3
+            },
+            "learning_delta": {
+              "status": "applied",
+              "reason": "none",
+              "err_applied": 2
+            },
+            "non_omniscient_guard": {
+              "omniscient_read_turns": 0,
+              "coordination_without_omniscience": true
+            },
+            "baseline_fallback_lane": {
+              "paired_runtime_surface": {
+                "lane_id": "baseline",
+                "mode_id": "deterministic_baseline",
+                "acting_caste_mind_id": "runtime_caste.sentry_foe",
+                "action_envelope_id": "bounded_investigate_or_hold_choice",
+                "fallback_transition_state": "fallback_to_baseline",
+                "controller_observability": "controller_local_perception_only"
+              },
+              "board_beat_indices": {
+                "social": 19,
+                "tower": 19,
+                "scent": 19,
+                "aligned": true
+              },
+              "tower_alarm_board": {
+                "writer_identity": 3,
+                "writer_identity_token": "sentry_foe",
+                "writer_slot": 0,
+                "writer_age": 1,
+                "pressure_summary": 3,
+                "escalation_summary": 1,
+                "alarm_level": 2,
+                "rescue_requests": 0,
+                "recent_hostile_sightings": 1,
+                "source_mask": 5,
+                "controller_source_mask": 5,
+                "controller_write_mask": 5,
+                "controller_write_count": 1
+              },
+              "rat_scent_board": {
+                "writer_identity": 1,
+                "writer_identity_token": "pc_rat",
+                "writer_slot": 0,
+                "writer_age": 1,
+                "trail_summary": 3,
+                "posture_summary": 2,
+                "safe_trail_summary": 2,
+                "danger_trail_summary": 1,
+                "food_trail_summary": 1,
+                "source_mask": 3,
+                "controller_source_mask": 3,
+                "controller_write_mask": 3,
+                "controller_write_count": 1
+              },
+              "visible_social_memory_deltas": {
+                "tower_alarm_level_delta": 0,
+                "tower_rescue_requests_delta": 0,
+                "tower_recent_hostile_sightings_delta": 1,
+                "scent_safe_trail_delta": 1,
+                "scent_danger_trail_delta": 0,
+                "scent_food_trail_delta": 0,
+                "scent_assist_posture_delta": 0,
+                "scent_retreat_posture_delta": 0,
+                "tower_delta_source_mask": 5,
+                "scent_delta_source_mask": 3
+              },
+              "learning_delta": {
+                "status": "not_applicable",
+                "reason": "baseline_lane",
+                "err_applied": 0
+              },
+              "non_omniscient_guard": {
+                "omniscient_read_turns": 0,
+                "coordination_without_omniscience": true
+              }
+            }
+          }
+        },
+        "fairness": {
+          "coordination_signal_source": "board_events_plus_local_controller_outputs",
+          "baseline_profile": "without_scout_explicit_no_scout_profile",
+          "seed_sweep_exit_rate": 0.0,
+          "seed_sweep_death_rate": 0.0,
+          "praxis_lane": {
+            "lane_id": "praxis",
+            "mode_id": "adaptive_runtime",
+            "fallback_transition_state": "shadow_teacher",
+            "exit_rate": 0.0,
+            "death_rate": 0.0,
+            "dead_turn_rate": 0.0,
+            "board_coord_turn_rate": 0.0,
+            "board_pressure_turn_rate": 0.0,
+            "envelope_turn_rate": 0.0
+          },
+          "baseline_fallback_lane": {
+            "lane_id": "baseline",
+            "mode_id": "deterministic_baseline",
+            "fallback_transition_state": "fallback_to_baseline",
+            "exit_rate": 0.0,
+            "death_rate": 0.0,
+            "dead_turn_rate": 0.0,
+            "board_coord_turn_rate": 0.0,
+            "board_pressure_turn_rate": 0.0,
+            "envelope_turn_rate": 0.0
+          },
+          "exit_rate": 0.0,
+          "death_rate": 0.0,
+          "dead_turn_rate": 0.0,
+          "ally_usefulness_delta": 0.0,
+          "coordinated_pressure": {
+            "with_scout": 0.0,
+            "without_scout": 0.0,
+            "delta": 0.0
+          },
+          "coordination_metric": 0.0,
+          "coordination_without_omniscience": true,
+          "omniscient_read_turns": 0
+        }
+      }
+    }
+  },
+  "item20_gap_rows": {
+    "minimal_ally_or_foe_society": {
+      "status": "closed",
+      "closed_by_todos": [
+        "20.7",
+        "20.8"
+      ],
+      "evidence_fields": [
+        "minimal_ecology_runtime_minds",
+        "minimal_ecology_controller_roles",
+        "per_actor_controller_identity",
+        "shipped_four_controller_ecology"
+      ],
+      "closure_note": "Distinct runtime controller roles for pc_rat/scout_ally/sentry_foe/hunter_foe are emitted and linked to per-actor identity."
+    },
+    "shared_social_memory": {
+      "status": "closed",
+      "closed_by_todos": [
+        "20.7",
+        "20.8"
+      ],
+      "evidence_fields": [
+        "bounded_board_contract",
+        "tower_pressure_coordination.board_contract",
+        "tower_pressure_coordination.board_schema",
+        "board_update_metadata"
+      ],
+      "closure_note": "tower_alarm_board and rat_scent_board carry replayable board state, source-mask semantics, and per-beat writer/decay deltas."
+    },
+    "arbiter_balance_grading": {
+      "status": "closed",
+      "closed_by_todos": [
+        "20.7",
+        "20.8"
+      ],
+      "evidence_fields": [
+        "scout_fairness_band",
+        "scout_fairness_schema",
+        "tower_pressure_coordination"
+      ],
+      "closure_note": "Fairness grading uses shipped 20.6 lane metrics, ally-usefulness delta, and non-omniscient coordinated-pressure scoring."
+    }
+  },
+  "item30_architect_society_pipeline": {
+    "room_mind_emits_local_proposals": true,
+    "encounter_mind_emits_local_proposals": true,
+    "floor_director_compiler_resolves_conflicts": true,
+    "layout_generation_stays_solvable_under_budget": true,
+    "proposal_pipeline_evidence": {
+      "final_floor_compiler_path": "proposal_board_to_floor_director",
+      "placement_commit_marker": "RATWORLD_TILE_TAG_SMELL_MARK",
+      "manifest_fields": [
+        "architect_room_mind_proposals",
+        "architect_encounter_mind_proposals",
+        "architect_proposals_accepted",
+        "architect_proposals_rejected",
+        "architect_reject_budget",
+        "architect_reject_dependency",
+        "architect_reject_exclusion",
+        "architect_reject_placement"
+      ]
+    },
+    "runtime_outcome_lineage_inputs": {
+      "source_id": "item20.runtime_outcome_summary.scout_fairness_band.v1",
+      "teacher_ref": "self",
+      "culture_ref": "seed_lineage:ratworld.rat_mind.runtime_actor.teacher_council.v1"
+    },
+    "blackboard_snapshots": [
+      {
+        "floor_z": 0,
+        "snapshot_schema": "ratworld.architect_blackboard_snapshot.v1",
+        "source_ref": "replay.architect.blackboard.floor_0",
+        "selected_count": 6,
+        "rejected_count": 4
+      }
+    ],
+    "selected_proposal_lineage": [
+      "room_mind.layout_local.v1#proposal:1",
+      "room_mind.spawn_zone_local.v1#proposal:2",
+      "encounter_mind.aid_local.v1#proposal:4",
+      "encounter_mind.loot_local.v1#proposal:5"
+    ],
+    "budget_residuals": {
+      "threat": 3,
+      "aid": 2,
+      "loot": 2,
+      "route_complexity": 5,
+      "solvability": 4
+    },
+    "solvability_checks": {
+      "entry_to_exit_path": true,
+      "stair_chain_connected": true,
+      "exit_path_protected_from_trap_bias": true
+    }
+  },
+  "runtime_export_artifacts": {
+    "evidence_sink_ref": "/data/atlas/packages/by_id/ratworld.runtime_host.v1/evidence/ratworld_runtime_evidence",
+    "episode_replay_ref": "/data/atlas/packages/by_id/ratworld.runtime_host.v1/episodes/ratworld_runtime_episode",
+    "capture_tick_4_ref": "/data/atlas/packages/by_id/ratworld.runtime_host.v1/evidence/ratworld_runtime_evidence/capture_tick_4.json",
+    "compare_praxis_1_ref": "/data/atlas/packages/by_id/ratworld.runtime_host.v1/evidence/ratworld_runtime_evidence/compare_praxis_1.json",
+    "replay_0002_ref": "/data/atlas/packages/by_id/ratworld.runtime_host.v1/episodes/ratworld_runtime_episode/replay_0002",
+    "source_logs": [
+      "TT/logs/tests_20260413T070416Z.log",
+      "TT/logs/tests_20260413T031340Z.log"
+    ]
+  },
+  "evidence_capture_mode": "headless",
+  "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+  "schema_id": "ratworld.paired_runtime.evidence_bundle.v1",
+  "selected_modes": [
+    "headless"
+  ],
+  "paired_run_mode": "baseline_vs_praxis_runtime_actor",
+  "pair_provenance": {
+    "comparison_thresholds": {
+      "demotion_threshold": -0.05,
+      "promotion_threshold": 0.05
+    },
+    "culture_seed": "ratworld.teacher_trace_seed.v1",
+    "episode_budget": {
+      "runs_per_mind": 1,
+      "ticks_per_run": 60
+    },
+    "evidence_capture": {
+      "evidence_capture_mode": "headless",
+      "selected_modes": [
+        "headless"
+      ]
+    },
+    "heuristic_or_optimization_teacher_source": "not_applicable",
+    "learner_ref": "model_c",
+    "overlay_modes": {
+      "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+      "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+      "selected_by_mode": {
+        "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+      }
+    },
+    "run_mode": "baseline_vs_praxis_runtime_actor",
+    "seed_suite": "tools/ratworld_suites/triad_eval_seeds_xl.txt",
+    "teacher_ref": "not_applicable"
+  },
+  "canonical_visible_bundle_refs": {
+    "baseline_visible_bundle_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.baseline.visible_bundle.log#tower_report",
+    "praxis_visible_bundle_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.praxis.visible_bundle.log#tower_report"
+  },
+  "optional_gui_overlay_refs": {
+    "gui_overlay_available": false,
+    "gui_overlay_ref": "",
+    "headless_overlay_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+  },
+  "auditable_capture_infrastructure": {
+    "headless": {
+      "baseline_visible_bundle_ref_exists": true,
+      "overlay_generated": true,
+      "overlay_ref": "reports/praxis/ratworld/paired_runtime/evidence/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json",
+      "overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+      "praxis_visible_bundle_ref_exists": true
+    }
+  }
+}

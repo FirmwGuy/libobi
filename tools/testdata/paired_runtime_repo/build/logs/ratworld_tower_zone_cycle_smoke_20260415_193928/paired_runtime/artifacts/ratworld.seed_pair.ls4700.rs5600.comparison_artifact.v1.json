@@ -1,0 +1,1788 @@
+{
+  "behavioral_change_status": "no_change_detected",
+  "behavioral_change_status_bounded": "mixed",
+  "behavioral_change_status_section": {
+    "demotion_threshold": -0.05,
+    "learning_improvement_delta": 0.0,
+    "promotion_threshold": 0.05,
+    "status": "mixed",
+    "status_allowlist": [
+      "no_improvement",
+      "mixed",
+      "improved"
+    ],
+    "threshold_basis": "learning_delta_vs_promotion_and_demotion_thresholds"
+  },
+  "behavioral_claim_status": "not_claimed",
+  "behavioral_improvement_detected": false,
+  "behavioral_outcome_statement": "parity_no_improvement: no behavioral improvement detected in bounded paired lane.",
+  "canonical_pair_record": {
+    "auditable_evidence_artifact_paths": {
+      "headless": {
+        "baseline_evidence_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log",
+        "baseline_replay_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+        "overlay_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json",
+        "praxis_evidence_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log",
+        "praxis_replay_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames"
+      }
+    },
+    "auditable_evidence_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/evidence_bundles/ratworld.seed_pair.ls4700.rs5600.bundle.v1.json",
+    "auditable_evidence_bundles": {
+      "headless": {
+        "baseline_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+        "baseline_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+        "overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json",
+        "overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+        "praxis_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report",
+        "praxis_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames",
+        "run_mode": "headless"
+      }
+    },
+    "auditable_evidence_capture": {
+      "evidence_capture_mode": "headless",
+      "infrastructure_metadata": {
+        "headless": {
+          "baseline_visible_bundle_ref_exists": true,
+          "overlay_generated": true,
+          "overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json",
+          "overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+          "praxis_visible_bundle_ref_exists": true
+        }
+      },
+      "overlay_selection_by_mode": {
+        "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+      },
+      "selected_modes": [
+        "headless"
+      ]
+    },
+    "auditable_evidence_overlay_refs": {
+      "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+    },
+    "canonical_visible_bundle_refs": {
+      "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+      "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+    },
+    "common_random_number_control": {
+      "control_source": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "seed_pair": "4700 5600",
+      "seed_suite_entry": 1
+    },
+    "crn_behavioral_summary": {
+      "accepted_action_deltas": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 10,
+        "baseline_unique_actions": [
+          "move_west"
+        ],
+        "delta_count": 0,
+        "praxis_count": 10,
+        "praxis_unique_actions": [
+          "move_west"
+        ]
+      },
+      "canonical_visible_bundle_refs": {
+        "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+        "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+      },
+      "control_source": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "crn_key": "4700 5600|entry=1|source=/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "evidence_refs": {
+        "baseline_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+        "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+        "praxis_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames",
+        "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+      },
+      "exit_outcomes": {
+        "baseline": 0.0,
+        "delta": 0.0,
+        "praxis": 0.0
+      },
+      "fallback_or_shadow_deltas": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 0,
+        "baseline_unique_actions": [],
+        "delta_count": 0,
+        "praxis_count": 0,
+        "praxis_unique_actions": []
+      },
+      "forage_counts": {
+        "baseline": 0.0,
+        "delta": 0.0,
+        "praxis": 0.0
+      },
+      "learning_deltas": {
+        "baseline": 1.033,
+        "delta": 0.0,
+        "praxis": 1.033
+      },
+      "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+      "pair_index": 1,
+      "pair_provenance": {
+        "comparison_thresholds": {
+          "demotion_threshold": -0.05,
+          "promotion_threshold": 0.05
+        },
+        "culture_seed": "ratworld.teacher_trace_seed.v1",
+        "episode_budget": {
+          "runs_per_mind": 1,
+          "ticks_per_run": 60
+        },
+        "evidence_capture": {
+          "evidence_capture_mode": "headless",
+          "selected_modes": [
+            "headless"
+          ]
+        },
+        "heuristic_or_optimization_teacher_source": "not_applicable",
+        "learner_ref": "model_c",
+        "overlay_modes": {
+          "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+          "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+          "selected_by_mode": {
+            "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+          }
+        },
+        "run_mode": "baseline_vs_praxis_runtime_actor",
+        "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+        "teacher_ref": "not_applicable"
+      },
+      "rejected_action_deltas": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 0,
+        "baseline_unique_actions": [],
+        "delta_count": 0,
+        "praxis_count": 0,
+        "praxis_unique_actions": []
+      },
+      "rejected_reason_deltas": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 0,
+        "baseline_unique_actions": [],
+        "delta_count": 0,
+        "praxis_count": 0,
+        "praxis_unique_actions": []
+      },
+      "seed_pair": "4700 5600",
+      "seed_suite_entry": 1,
+      "survival_ticks": {
+        "baseline": 60.0,
+        "delta": 0.0,
+        "praxis": 60.0
+      }
+    },
+    "decision_variable_header": {
+      "culture_seed": "ratworld.teacher_trace_seed.v1",
+      "demotion_threshold": -0.05,
+      "episode_budget": {
+        "runs_per_mind": 1,
+        "ticks_per_run": 60
+      },
+      "evidence_capture_mode": "headless",
+      "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+      "heuristic_or_optimization_teacher_source": "not_applicable",
+      "learner_ref": "model_c",
+      "promotion_threshold": 0.05,
+      "run_mode": "baseline_vs_praxis_runtime_actor",
+      "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "teacher_ref": "not_applicable"
+    },
+    "lanes": {
+      "baseline": {
+        "accepted_action_count": 10,
+        "accepted_action_events": [
+          {
+            "action_token": "move_west",
+            "event_index": 1
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 2
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 3
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 4
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 5
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 6
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 7
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 8
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 9
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 10
+          }
+        ],
+        "accepted_actions": [
+          "move_west"
+        ],
+        "action_event_count": 10,
+        "ally_usefulness_delta": 0.005556,
+        "auditable_evidence_overlay_refs": {
+          "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+        },
+        "behavioral_action_event_count": 10,
+        "behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.baseline.behavioral_evidence.v1.jsonl",
+        "behavioral_terminal_summary_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.baseline.behavioral_evidence.v1.jsonl#paired_runtime_lane_terminal_summary",
+        "bounded_coordination_evidence_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+        "bounded_coordination_evidence_refs": {
+          "detail_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+          "source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+          "summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+        },
+        "bounded_coordination_evidence_summary": {
+          "board_signal": "tower_alarm_board+rat_scent_board",
+          "coordination_metric": 0.0,
+          "coordination_signal_source": "board_events_plus_local_controller_outputs",
+          "coordination_without_omniscience": true,
+          "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+          "omniscient_read_turns": 0
+        },
+        "bounded_coordination_source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+        "bounded_coordination_summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary",
+        "canonical_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+        "dead_turn_rate": 0.983333,
+        "death_rate": 0.0,
+        "evaluator_metrics": {
+          "ally_usefulness_delta": 0.006,
+          "coordination_metric": 0.0,
+          "coordination_without_omniscience": true,
+          "with_scout": {
+            "board_coord_turn_rate": 1.0,
+            "board_pressure_turn_rate": 1.0,
+            "dead_turn_rate": 0.983,
+            "death_rate": 0.0,
+            "envelope_turn_rate": 1.0,
+            "exit_rate": 0.0,
+            "learning_delta": 1.033
+          },
+          "without_scout": {
+            "board_coord_turn_rate": 1.0,
+            "board_pressure_turn_rate": 1.0,
+            "dead_turn_rate": 1.0,
+            "death_rate": 0.0,
+            "envelope_turn_rate": 1.0,
+            "exit_rate": 0.0,
+            "learning_delta": 1.0
+          }
+        },
+        "exit_metric": 0.0,
+        "exit_outcome": 0.0,
+        "exit_outcomes": {
+          "avg_exit_metric": 0.0,
+          "estimated_exit_successes": 0.0,
+          "last_exit_count": 0,
+          "per_learner_exit_metric": {
+            "model_c": 0.0
+          }
+        },
+        "exit_rate": 0.0,
+        "fairness_bundle": {
+          "ally_usefulness_delta": 0.005556,
+          "bounded_coordination_evidence_refs": {
+            "detail_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+            "source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+            "summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+          },
+          "bounded_coordination_evidence_summary": {
+            "board_signal": "tower_alarm_board+rat_scent_board",
+            "coordination_metric": 0.0,
+            "coordination_signal_source": "board_events_plus_local_controller_outputs",
+            "coordination_without_omniscience": true,
+            "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+            "omniscient_read_turns": 0
+          },
+          "bundle_status": "present",
+          "dead_turn_rate": 0.983333,
+          "death_rate": 0.0,
+          "exit_rate": 0.0,
+          "missing_rate_fields": [],
+          "missing_ref_fields": [],
+          "missing_summary_fields": [],
+          "rate_sources": {
+            "ally_usefulness_delta": "fairness_bundle_json",
+            "dead_turn_rate": "fairness_bundle_json",
+            "death_rate": "fairness_bundle_json",
+            "exit_rate": "fairness_bundle_json"
+          },
+          "ref_sources": {
+            "detail_ref": "fairness_bundle_json",
+            "source_ref": "fairness_bundle_json",
+            "summary_ref": "fairness_bundle_json"
+          },
+          "summary_sources": {
+            "board_signal": "fairness_bundle_json",
+            "coordination_metric": "fairness_bundle_json",
+            "coordination_signal_source": "fairness_bundle_json",
+            "coordination_without_omniscience": "fairness_bundle_json",
+            "omniscience_guard_signal": "fairness_bundle_json",
+            "omniscient_read_turns": "fairness_bundle_json"
+          }
+        },
+        "fairness_bundle_missing_fields": [],
+        "fairness_bundle_missing_ref_fields": [],
+        "fairness_bundle_missing_summary_fields": [],
+        "fairness_bundle_rate_sources": {
+          "ally_usefulness_delta": "fairness_bundle_json",
+          "dead_turn_rate": "fairness_bundle_json",
+          "death_rate": "fairness_bundle_json",
+          "exit_rate": "fairness_bundle_json"
+        },
+        "fairness_bundle_raw": "{\"exit_rate\":0.000000,\"death_rate\":0.000000,\"ally_usefulness_delta\":0.005556,\"dead_turn_rate\":0.983333,\"bounded_coordination_evidence_summary\":{\"coordination_metric\":0.000000,\"coordination_without_omniscience\":true,\"omniscient_read_turns\":0,\"omniscience_guard_signal\":\"tower_coordination.guard.board_summary_only.verified.v1\",\"coordination_signal_source\":\"board_events_plus_local_controller_outputs\",\"board_signal\":\"tower_alarm_board+rat_scent_board\"},\"bounded_coordination_evidence_refs\":{\"summary_ref\":\"replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary\",\"detail_ref\":\"replay.paired_runtime.evaluator.coordination.board_coordination_evidence\",\"source_ref\":\"replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]\"}}",
+        "fairness_bundle_ref_sources": {
+          "detail_ref": "fairness_bundle_json",
+          "source_ref": "fairness_bundle_json",
+          "summary_ref": "fairness_bundle_json"
+        },
+        "fairness_bundle_status": "present",
+        "fairness_bundle_summary_sources": {
+          "board_signal": "fairness_bundle_json",
+          "coordination_metric": "fairness_bundle_json",
+          "coordination_signal_source": "fairness_bundle_json",
+          "coordination_without_omniscience": "fairness_bundle_json",
+          "omniscience_guard_signal": "fairness_bundle_json",
+          "omniscient_read_turns": "fairness_bundle_json"
+        },
+        "fairness_producer_tokens": {
+          "board_signal": "tower_alarm_board+rat_scent_board",
+          "bounded_coordination_evidence_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+          "bounded_coordination_source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+          "bounded_coordination_summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary",
+          "fairness_band": "{exit:low,death:low,dead_turn:high,ally_delta:neutral}",
+          "local_perception_bound": "yes",
+          "no_scout_baseline": "explicit",
+          "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+          "omniscient_read_turns": "0"
+        },
+        "fallback_or_shadow_markers": [],
+        "forage_count": 0.0,
+        "foraging_metric": 0.0,
+        "foraging_outcomes": {
+          "per_learner_food_eaten": {
+            "model_c": 0.0
+          },
+          "total_food_eaten": 0.0
+        },
+        "lane_log_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log",
+        "lane_run_id": "ratworld.seed_pair.ls4700.rs5600.baseline.run",
+        "learning_delta": 1.033,
+        "lineage_refs": {
+          "culture_ref": "seed_lineage:ratworld.rat_mind.runtime_actor.teacher_council.v1",
+          "learner_refs": {
+            "model_c": "rat_mind.model_c"
+          },
+          "teacher_ref": "self"
+        },
+        "optional_gui_overlay_refs": {
+          "gui_overlay_available": false,
+          "gui_overlay_ref": "",
+          "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+        },
+        "pair_provenance": {
+          "comparison_thresholds": {
+            "demotion_threshold": -0.05,
+            "promotion_threshold": 0.05
+          },
+          "culture_seed": "ratworld.teacher_trace_seed.v1",
+          "episode_budget": {
+            "runs_per_mind": 1,
+            "ticks_per_run": 60
+          },
+          "evidence_capture": {
+            "evidence_capture_mode": "headless",
+            "selected_modes": [
+              "headless"
+            ]
+          },
+          "heuristic_or_optimization_teacher_source": "not_applicable",
+          "learner_ref": "model_c",
+          "overlay_modes": {
+            "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+            "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+            "selected_by_mode": {
+              "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+            }
+          },
+          "run_mode": "baseline_vs_praxis_runtime_actor",
+          "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+          "teacher_ref": "not_applicable"
+        },
+        "rejected_action_count": 0,
+        "rejected_action_events": [],
+        "rejected_action_reason_ids": [],
+        "rejected_actions": [],
+        "replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+        "run_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+        "survival_duration": {
+          "avg_ticks": 60.0,
+          "last_alive_count": 4,
+          "max_tick_seen": 6,
+          "per_learner_avg_ticks": {
+            "model_c": 60.0
+          }
+        },
+        "survival_metric": 1.0,
+        "survival_ticks": 60.0,
+        "terminal_outcomes": {
+          "attempts_total": 1,
+          "deaths_total": 0,
+          "estimated_exit_successes": 0.0,
+          "hunger_deaths_total": 0,
+          "timeouts_total": 1,
+          "trap_deaths_total": 0,
+          "unknown_deaths_total": 0
+        },
+        "visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report"
+      },
+      "praxis": {
+        "accepted_action_count": 10,
+        "accepted_action_events": [
+          {
+            "action_token": "move_west",
+            "event_index": 1
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 2
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 3
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 4
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 5
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 6
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 7
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 8
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 9
+          },
+          {
+            "action_token": "move_west",
+            "event_index": 10
+          }
+        ],
+        "accepted_actions": [
+          "move_west"
+        ],
+        "action_event_count": 10,
+        "ally_usefulness_delta": 0.005556,
+        "auditable_evidence_overlay_refs": {
+          "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+        },
+        "behavioral_action_event_count": 10,
+        "behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.praxis.behavioral_evidence.v1.jsonl",
+        "behavioral_terminal_summary_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.praxis.behavioral_evidence.v1.jsonl#paired_runtime_lane_terminal_summary",
+        "bounded_coordination_evidence_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+        "bounded_coordination_evidence_refs": {
+          "detail_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+          "source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+          "summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+        },
+        "bounded_coordination_evidence_summary": {
+          "board_signal": "tower_alarm_board+rat_scent_board",
+          "coordination_metric": 0.0,
+          "coordination_signal_source": "board_events_plus_local_controller_outputs",
+          "coordination_without_omniscience": true,
+          "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+          "omniscient_read_turns": 0
+        },
+        "bounded_coordination_source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+        "bounded_coordination_summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary",
+        "canonical_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report",
+        "dead_turn_rate": 0.983333,
+        "death_rate": 0.0,
+        "evaluator_metrics": {
+          "ally_usefulness_delta": 0.006,
+          "coordination_metric": 0.0,
+          "coordination_without_omniscience": true,
+          "with_scout": {
+            "board_coord_turn_rate": 1.0,
+            "board_pressure_turn_rate": 1.0,
+            "dead_turn_rate": 0.983,
+            "death_rate": 0.0,
+            "envelope_turn_rate": 1.0,
+            "exit_rate": 0.0,
+            "learning_delta": 1.033
+          },
+          "without_scout": {
+            "board_coord_turn_rate": 1.0,
+            "board_pressure_turn_rate": 1.0,
+            "dead_turn_rate": 1.0,
+            "death_rate": 0.0,
+            "envelope_turn_rate": 1.0,
+            "exit_rate": 0.0,
+            "learning_delta": 1.0
+          }
+        },
+        "exit_metric": 0.0,
+        "exit_outcome": 0.0,
+        "exit_outcomes": {
+          "avg_exit_metric": 0.0,
+          "estimated_exit_successes": 0.0,
+          "last_exit_count": 0,
+          "per_learner_exit_metric": {
+            "model_c": 0.0
+          }
+        },
+        "exit_rate": 0.0,
+        "fairness_bundle": {
+          "ally_usefulness_delta": 0.005556,
+          "bounded_coordination_evidence_refs": {
+            "detail_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+            "source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+            "summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+          },
+          "bounded_coordination_evidence_summary": {
+            "board_signal": "tower_alarm_board+rat_scent_board",
+            "coordination_metric": 0.0,
+            "coordination_signal_source": "board_events_plus_local_controller_outputs",
+            "coordination_without_omniscience": true,
+            "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+            "omniscient_read_turns": 0
+          },
+          "bundle_status": "present",
+          "dead_turn_rate": 0.983333,
+          "death_rate": 0.0,
+          "exit_rate": 0.0,
+          "missing_rate_fields": [],
+          "missing_ref_fields": [],
+          "missing_summary_fields": [],
+          "rate_sources": {
+            "ally_usefulness_delta": "fairness_bundle_json",
+            "dead_turn_rate": "fairness_bundle_json",
+            "death_rate": "fairness_bundle_json",
+            "exit_rate": "fairness_bundle_json"
+          },
+          "ref_sources": {
+            "detail_ref": "fairness_bundle_json",
+            "source_ref": "fairness_bundle_json",
+            "summary_ref": "fairness_bundle_json"
+          },
+          "summary_sources": {
+            "board_signal": "fairness_bundle_json",
+            "coordination_metric": "fairness_bundle_json",
+            "coordination_signal_source": "fairness_bundle_json",
+            "coordination_without_omniscience": "fairness_bundle_json",
+            "omniscience_guard_signal": "fairness_bundle_json",
+            "omniscient_read_turns": "fairness_bundle_json"
+          }
+        },
+        "fairness_bundle_missing_fields": [],
+        "fairness_bundle_missing_ref_fields": [],
+        "fairness_bundle_missing_summary_fields": [],
+        "fairness_bundle_rate_sources": {
+          "ally_usefulness_delta": "fairness_bundle_json",
+          "dead_turn_rate": "fairness_bundle_json",
+          "death_rate": "fairness_bundle_json",
+          "exit_rate": "fairness_bundle_json"
+        },
+        "fairness_bundle_raw": "{\"exit_rate\":0.000000,\"death_rate\":0.000000,\"ally_usefulness_delta\":0.005556,\"dead_turn_rate\":0.983333,\"bounded_coordination_evidence_summary\":{\"coordination_metric\":0.000000,\"coordination_without_omniscience\":true,\"omniscient_read_turns\":0,\"omniscience_guard_signal\":\"tower_coordination.guard.board_summary_only.verified.v1\",\"coordination_signal_source\":\"board_events_plus_local_controller_outputs\",\"board_signal\":\"tower_alarm_board+rat_scent_board\"},\"bounded_coordination_evidence_refs\":{\"summary_ref\":\"replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary\",\"detail_ref\":\"replay.paired_runtime.evaluator.coordination.board_coordination_evidence\",\"source_ref\":\"replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]\"}}",
+        "fairness_bundle_ref_sources": {
+          "detail_ref": "fairness_bundle_json",
+          "source_ref": "fairness_bundle_json",
+          "summary_ref": "fairness_bundle_json"
+        },
+        "fairness_bundle_status": "present",
+        "fairness_bundle_summary_sources": {
+          "board_signal": "fairness_bundle_json",
+          "coordination_metric": "fairness_bundle_json",
+          "coordination_signal_source": "fairness_bundle_json",
+          "coordination_without_omniscience": "fairness_bundle_json",
+          "omniscience_guard_signal": "fairness_bundle_json",
+          "omniscient_read_turns": "fairness_bundle_json"
+        },
+        "fairness_producer_tokens": {
+          "board_signal": "tower_alarm_board+rat_scent_board",
+          "bounded_coordination_evidence_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+          "bounded_coordination_source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+          "bounded_coordination_summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary",
+          "fairness_band": "{exit:low,death:low,dead_turn:high,ally_delta:neutral}",
+          "local_perception_bound": "yes",
+          "no_scout_baseline": "explicit",
+          "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+          "omniscient_read_turns": "0"
+        },
+        "fallback_or_shadow_markers": [],
+        "forage_count": 0.0,
+        "foraging_metric": 0.0,
+        "foraging_outcomes": {
+          "per_learner_food_eaten": {
+            "model_c": 0.0
+          },
+          "total_food_eaten": 0.0
+        },
+        "lane_log_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log",
+        "lane_run_id": "ratworld.seed_pair.ls4700.rs5600.praxis.run",
+        "learning_delta": 1.033,
+        "lineage_refs": {
+          "culture_ref": "seed_lineage:ratworld.rat_mind.runtime_actor.teacher_council.v1",
+          "learner_refs": {
+            "model_c": "rat_mind.model_c"
+          },
+          "teacher_ref": "self"
+        },
+        "optional_gui_overlay_refs": {
+          "gui_overlay_available": false,
+          "gui_overlay_ref": "",
+          "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+        },
+        "pair_provenance": {
+          "comparison_thresholds": {
+            "demotion_threshold": -0.05,
+            "promotion_threshold": 0.05
+          },
+          "culture_seed": "ratworld.teacher_trace_seed.v1",
+          "episode_budget": {
+            "runs_per_mind": 1,
+            "ticks_per_run": 60
+          },
+          "evidence_capture": {
+            "evidence_capture_mode": "headless",
+            "selected_modes": [
+              "headless"
+            ]
+          },
+          "heuristic_or_optimization_teacher_source": "not_applicable",
+          "learner_ref": "model_c",
+          "overlay_modes": {
+            "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+            "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+            "selected_by_mode": {
+              "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+            }
+          },
+          "run_mode": "baseline_vs_praxis_runtime_actor",
+          "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+          "teacher_ref": "not_applicable"
+        },
+        "rejected_action_count": 0,
+        "rejected_action_events": [],
+        "rejected_action_reason_ids": [],
+        "rejected_actions": [],
+        "replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames",
+        "run_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+        "survival_duration": {
+          "avg_ticks": 60.0,
+          "last_alive_count": 4,
+          "max_tick_seen": 6,
+          "per_learner_avg_ticks": {
+            "model_c": 60.0
+          }
+        },
+        "survival_metric": 1.0,
+        "survival_ticks": 60.0,
+        "terminal_outcomes": {
+          "attempts_total": 1,
+          "deaths_total": 0,
+          "estimated_exit_successes": 0.0,
+          "hunger_deaths_total": 0,
+          "timeouts_total": 1,
+          "trap_deaths_total": 0,
+          "unknown_deaths_total": 0
+        },
+        "visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+      }
+    },
+    "layout_seed": 4700,
+    "optional_gui_overlay_refs": {
+      "gui_overlay_available": false,
+      "gui_overlay_ref": "",
+      "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+    },
+    "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+    "pair_index": 1,
+    "pair_provenance": {
+      "comparison_thresholds": {
+        "demotion_threshold": -0.05,
+        "promotion_threshold": 0.05
+      },
+      "culture_seed": "ratworld.teacher_trace_seed.v1",
+      "episode_budget": {
+        "runs_per_mind": 1,
+        "ticks_per_run": 60
+      },
+      "evidence_capture": {
+        "evidence_capture_mode": "headless",
+        "selected_modes": [
+          "headless"
+        ]
+      },
+      "heuristic_or_optimization_teacher_source": "not_applicable",
+      "learner_ref": "model_c",
+      "overlay_modes": {
+        "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+        "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+        "selected_by_mode": {
+          "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+        }
+      },
+      "run_mode": "baseline_vs_praxis_runtime_actor",
+      "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "teacher_ref": "not_applicable"
+    },
+    "pairwise_comparison_reducer": {
+      "action_differences": {
+        "accepted_actions": {
+          "actions_only_in_baseline": [],
+          "actions_only_in_praxis": [],
+          "baseline_count": 10,
+          "baseline_unique_actions": [
+            "move_west"
+          ],
+          "delta_count": 0,
+          "praxis_count": 10,
+          "praxis_unique_actions": [
+            "move_west"
+          ]
+        },
+        "fallback_or_shadow_markers": {
+          "actions_only_in_baseline": [],
+          "actions_only_in_praxis": [],
+          "baseline_count": 0,
+          "baseline_unique_actions": [],
+          "delta_count": 0,
+          "praxis_count": 0,
+          "praxis_unique_actions": []
+        },
+        "rejected_actions": {
+          "actions_only_in_baseline": [],
+          "actions_only_in_praxis": [],
+          "baseline_count": 0,
+          "baseline_unique_actions": [],
+          "delta_count": 0,
+          "praxis_count": 0,
+          "praxis_unique_actions": []
+        },
+        "rejected_reason_ids": {
+          "actions_only_in_baseline": [],
+          "actions_only_in_praxis": [],
+          "baseline_count": 0,
+          "baseline_unique_actions": [],
+          "delta_count": 0,
+          "praxis_count": 0,
+          "praxis_unique_actions": []
+        }
+      },
+      "canonical_visible_bundle_refs": {
+        "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+        "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+      },
+      "evidence_refs": {
+        "baseline_behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.baseline.behavioral_evidence.v1.jsonl",
+        "baseline_lane_run_id": "ratworld.seed_pair.ls4700.rs5600.baseline.run",
+        "baseline_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+        "baseline_run_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+        "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+        "praxis_behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.praxis.behavioral_evidence.v1.jsonl",
+        "praxis_lane_run_id": "ratworld.seed_pair.ls4700.rs5600.praxis.run",
+        "praxis_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames",
+        "praxis_run_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+        "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+      },
+      "lane_manifest_alignment": {
+        "baseline_manifest_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+        "baseline_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+        "lane_control_alignment": {
+          "arbiter_learn": {
+            "aligned": true,
+            "baseline": "off",
+            "expected_relation": "equal",
+            "praxis": "off"
+          },
+          "freeze_rat": {
+            "aligned": true,
+            "baseline": "on",
+            "expected_relation": "different",
+            "praxis": "off"
+          },
+          "phase": {
+            "aligned": true,
+            "baseline": "report",
+            "expected_relation": "equal",
+            "praxis": "report"
+          },
+          "tower_learn": {
+            "aligned": true,
+            "baseline": "off",
+            "expected_relation": "equal",
+            "praxis": "off"
+          }
+        },
+        "mismatched_shared_fields": [],
+        "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+        "praxis_manifest_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+        "praxis_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+        "run_mode_alignment": {
+          "aligned": true,
+          "baseline": "baseline_vs_praxis_runtime_actor",
+          "expected": "baseline_vs_praxis_runtime_actor",
+          "praxis": "baseline_vs_praxis_runtime_actor"
+        },
+        "shared_inputs_alignment": {
+          "control_source": {
+            "aligned": true,
+            "baseline": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+            "praxis": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt"
+          },
+          "culture_seed": {
+            "aligned": true,
+            "baseline": "ratworld.teacher_trace_seed.v1",
+            "praxis": "ratworld.teacher_trace_seed.v1"
+          },
+          "demotion_threshold": {
+            "aligned": true,
+            "baseline": -0.05,
+            "praxis": -0.05
+          },
+          "episode_budget": {
+            "aligned": true,
+            "baseline": {
+              "runs_per_mind": 1,
+              "ticks_per_run": 60
+            },
+            "praxis": {
+              "runs_per_mind": 1,
+              "ticks_per_run": 60
+            }
+          },
+          "evidence_capture_mode": {
+            "aligned": true,
+            "baseline": "headless",
+            "praxis": "headless"
+          },
+          "heuristic_or_optimization_teacher_source": {
+            "aligned": true,
+            "baseline": "not_applicable",
+            "praxis": "not_applicable"
+          },
+          "learner_ref": {
+            "aligned": true,
+            "baseline": "model_c",
+            "praxis": "model_c"
+          },
+          "overlay_selection_by_mode": {
+            "aligned": true,
+            "baseline": {
+              "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+            },
+            "praxis": {
+              "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+            }
+          },
+          "promotion_threshold": {
+            "aligned": true,
+            "baseline": 0.05,
+            "praxis": 0.05
+          },
+          "seed_pair": {
+            "aligned": true,
+            "baseline": "4700 5600",
+            "praxis": "4700 5600"
+          },
+          "seed_suite_ref": {
+            "aligned": true,
+            "baseline": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt",
+            "praxis": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt"
+          },
+          "teacher_ref": {
+            "aligned": true,
+            "baseline": "not_applicable",
+            "praxis": "not_applicable"
+          }
+        },
+        "shared_seed_pair_match": true,
+        "status": "aligned"
+      },
+      "measured_delta_overview": {
+        "accepted_action_delta_count": 0.0,
+        "exit_avg_metric_delta": 0.0,
+        "fallback_or_shadow_delta_count": 0.0,
+        "foraging_total_food_eaten_delta": 0.0,
+        "learning_delta": 0.0,
+        "rejected_action_delta_count": 0.0,
+        "rejected_reason_delta_count": 0.0,
+        "survival_duration_avg_ticks_delta": 0.0,
+        "terminal_estimated_exit_successes_delta": 0.0
+      },
+      "measured_deltas": {
+        "exit_outcomes": {
+          "per_learner_exit_metric": {
+            "model_c": {
+              "baseline": 0.0,
+              "delta": 0.0,
+              "praxis": 0.0
+            }
+          },
+          "summary": {
+            "avg_exit_metric": {
+              "baseline": 0.0,
+              "delta": 0.0,
+              "praxis": 0.0
+            },
+            "estimated_exit_successes": {
+              "baseline": 0.0,
+              "delta": 0.0,
+              "praxis": 0.0
+            },
+            "last_exit_count": {
+              "baseline": 0.0,
+              "delta": 0.0,
+              "praxis": 0.0
+            }
+          }
+        },
+        "foraging_outcomes": {
+          "per_learner_food_eaten": {
+            "model_c": {
+              "baseline": 0.0,
+              "delta": 0.0,
+              "praxis": 0.0
+            }
+          },
+          "summary": {
+            "total_food_eaten": {
+              "baseline": 0.0,
+              "delta": 0.0,
+              "praxis": 0.0
+            }
+          }
+        },
+        "learning_state_changes": {
+          "baseline": 1.033,
+          "delta": 0.0,
+          "praxis": 1.033
+        },
+        "survival_duration": {
+          "per_learner_avg_ticks": {
+            "model_c": {
+              "baseline": 60.0,
+              "delta": 0.0,
+              "praxis": 60.0
+            }
+          },
+          "summary": {
+            "avg_ticks": {
+              "baseline": 60.0,
+              "delta": 0.0,
+              "praxis": 60.0
+            },
+            "last_alive_count": {
+              "baseline": 4.0,
+              "delta": 0.0,
+              "praxis": 4.0
+            },
+            "max_tick_seen": {
+              "baseline": 6.0,
+              "delta": 0.0,
+              "praxis": 6.0
+            }
+          }
+        },
+        "terminal_outcomes": {
+          "attempts_total": {
+            "baseline": 1.0,
+            "delta": 0.0,
+            "praxis": 1.0
+          },
+          "deaths_total": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          },
+          "estimated_exit_successes": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          },
+          "hunger_deaths_total": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          },
+          "timeouts_total": {
+            "baseline": 1.0,
+            "delta": 0.0,
+            "praxis": 1.0
+          },
+          "trap_deaths_total": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          },
+          "unknown_deaths_total": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          }
+        }
+      },
+      "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+      "pair_index": 1,
+      "pair_provenance": {
+        "comparison_thresholds": {
+          "demotion_threshold": -0.05,
+          "promotion_threshold": 0.05
+        },
+        "culture_seed": "ratworld.teacher_trace_seed.v1",
+        "episode_budget": {
+          "runs_per_mind": 1,
+          "ticks_per_run": 60
+        },
+        "evidence_capture": {
+          "evidence_capture_mode": "headless",
+          "selected_modes": [
+            "headless"
+          ]
+        },
+        "heuristic_or_optimization_teacher_source": "not_applicable",
+        "learner_ref": "model_c",
+        "overlay_modes": {
+          "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+          "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+          "selected_by_mode": {
+            "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+          }
+        },
+        "run_mode": "baseline_vs_praxis_runtime_actor",
+        "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+        "teacher_ref": "not_applicable"
+      },
+      "scenario_pair": {
+        "common_random_number_control": {
+          "control_source": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+          "seed_pair": "4700 5600",
+          "seed_suite_entry": 1
+        },
+        "crn_key": "4700 5600|entry=1|source=/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+        "run_mode": "baseline_vs_praxis_runtime_actor",
+        "seed_pair": "4700 5600"
+      },
+      "schema_id": "ratworld.paired_runtime.pairwise_comparison_reducer.v1"
+    },
+    "pairwise_comparison_reducer_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/pairwise_reducers/ratworld.seed_pair.ls4700.rs5600.pairwise_comparison_reducer.v1.json",
+    "run_seed": 5600,
+    "suite_line": "4700 5600"
+  },
+  "canonical_visible_bundle_refs": {
+    "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+    "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+  },
+  "classification": "parity_no_improvement",
+  "classification_allowlist": [
+    "infrastructure_failure",
+    "parity_no_improvement",
+    "improvement_below_threshold",
+    "improvement_accepted",
+    "regression_demotion"
+  ],
+  "common_random_number_control": {
+    "control_source": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+    "seed_pair": "4700 5600",
+    "seed_suite_entry": 1
+  },
+  "comparison_reducer": {
+    "behavioral_change_status": "no_change_detected",
+    "behavioral_change_status_bounded": "mixed",
+    "behavioral_change_status_section": {
+      "demotion_threshold": -0.05,
+      "learning_improvement_delta": 0.0,
+      "promotion_threshold": 0.05,
+      "status": "mixed",
+      "status_allowlist": [
+        "no_improvement",
+        "mixed",
+        "improved"
+      ],
+      "threshold_basis": "learning_delta_vs_promotion_and_demotion_thresholds"
+    },
+    "canonical_visible_bundle_refs": {
+      "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+      "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+    },
+    "classification": "parity_no_improvement",
+    "demotion_threshold": -0.05,
+    "evaluation_status": {
+      "behavioral_change_status": {
+        "demotion_threshold": -0.05,
+        "learning_improvement_delta": 0.0,
+        "promotion_threshold": 0.05,
+        "status": "mixed",
+        "status_allowlist": [
+          "no_improvement",
+          "mixed",
+          "improved"
+        ],
+        "threshold_basis": "learning_delta_vs_promotion_and_demotion_thresholds"
+      },
+      "infrastructure_parity_status": {
+        "claim_blocked": false,
+        "classification": "parity_no_improvement",
+        "status": "parity_confirmed"
+      }
+    },
+    "infrastructure_parity_status": {
+      "claim_blocked": false,
+      "classification": "parity_no_improvement",
+      "status": "parity_confirmed"
+    },
+    "infrastructure_status": "parity_confirmed",
+    "learning_improvement_delta": 0.0,
+    "measured_deltas": {
+      "accepted_action_delta_count": 0.0,
+      "exit_avg_metric_delta": 0.0,
+      "fallback_or_shadow_delta_count": 0.0,
+      "foraging_total_food_eaten_delta": 0.0,
+      "learning_delta": 0.0,
+      "rejected_action_delta_count": 0.0,
+      "rejected_reason_delta_count": 0.0,
+      "survival_duration_avg_ticks_delta": 0.0,
+      "terminal_estimated_exit_successes_delta": 0.0
+    },
+    "optional_gui_overlay_refs": {
+      "gui_overlay_available": false,
+      "gui_overlay_ref": "",
+      "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+    },
+    "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+    "pair_provenance": {
+      "comparison_thresholds": {
+        "demotion_threshold": -0.05,
+        "promotion_threshold": 0.05
+      },
+      "culture_seed": "ratworld.teacher_trace_seed.v1",
+      "episode_budget": {
+        "runs_per_mind": 1,
+        "ticks_per_run": 60
+      },
+      "evidence_capture": {
+        "evidence_capture_mode": "headless",
+        "selected_modes": [
+          "headless"
+        ]
+      },
+      "heuristic_or_optimization_teacher_source": "not_applicable",
+      "learner_ref": "model_c",
+      "overlay_modes": {
+        "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+        "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+        "selected_by_mode": {
+          "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+        }
+      },
+      "run_mode": "baseline_vs_praxis_runtime_actor",
+      "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "teacher_ref": "not_applicable"
+    },
+    "promotion_threshold": 0.05,
+    "seed_sweep_arbiter": {
+      "aggregate_rates": {
+        "seed_sweep_ally_usefulness_delta": 0.005556,
+        "seed_sweep_dead_turn_rate": 0.983333,
+        "seed_sweep_death_rate": 0.0,
+        "seed_sweep_exit_rate": 0.0
+      },
+      "aggregate_ref_tokens": {
+        "detail_refs": [
+          "replay.paired_runtime.evaluator.coordination.board_coordination_evidence"
+        ],
+        "source_refs": [
+          "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]"
+        ],
+        "summary_refs": [
+          "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+        ]
+      },
+      "aggregate_summary": {
+        "board_signals": [
+          "tower_alarm_board+rat_scent_board"
+        ],
+        "coordination_metric_avg": 0.0,
+        "coordination_signal_sources": [
+          "board_events_plus_local_controller_outputs"
+        ],
+        "coordination_without_omniscience_all": true,
+        "coordination_without_omniscience_any": true,
+        "omniscience_guard_signals": [
+          "tower_coordination.guard.board_summary_only.verified.v1"
+        ],
+        "omniscient_read_turns_max": 0
+      },
+      "baseline": {
+        "ally_usefulness_delta": 0.005556,
+        "bounded_coordination_evidence_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+        "bounded_coordination_evidence_refs": {
+          "detail_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+          "source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+          "summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+        },
+        "bounded_coordination_evidence_summary": {
+          "board_signal": "tower_alarm_board+rat_scent_board",
+          "coordination_metric": 0.0,
+          "coordination_signal_source": "board_events_plus_local_controller_outputs",
+          "coordination_without_omniscience": true,
+          "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+          "omniscient_read_turns": 0
+        },
+        "bounded_coordination_source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+        "bounded_coordination_summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary",
+        "dead_turn_rate": 0.983333,
+        "death_rate": 0.0,
+        "exit_rate": 0.0,
+        "fairness_bundle_missing_fields": [],
+        "fairness_bundle_missing_ref_fields": [],
+        "fairness_bundle_missing_summary_fields": [],
+        "fairness_bundle_rate_sources": {
+          "ally_usefulness_delta": "fairness_bundle_json",
+          "dead_turn_rate": "fairness_bundle_json",
+          "death_rate": "fairness_bundle_json",
+          "exit_rate": "fairness_bundle_json"
+        },
+        "fairness_bundle_ref_sources": {
+          "detail_ref": "fairness_bundle_json",
+          "source_ref": "fairness_bundle_json",
+          "summary_ref": "fairness_bundle_json"
+        },
+        "fairness_bundle_status": "present",
+        "fairness_bundle_summary_sources": {
+          "board_signal": "fairness_bundle_json",
+          "coordination_metric": "fairness_bundle_json",
+          "coordination_signal_source": "fairness_bundle_json",
+          "coordination_without_omniscience": "fairness_bundle_json",
+          "omniscience_guard_signal": "fairness_bundle_json",
+          "omniscient_read_turns": "fairness_bundle_json"
+        },
+        "lane": "baseline",
+        "lane_context": "ratworld.seed_pair.ls4700.rs5600:baseline"
+      },
+      "missing_bundle_data": [],
+      "praxis": {
+        "ally_usefulness_delta": 0.005556,
+        "bounded_coordination_evidence_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+        "bounded_coordination_evidence_refs": {
+          "detail_ref": "replay.paired_runtime.evaluator.coordination.board_coordination_evidence",
+          "source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+          "summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary"
+        },
+        "bounded_coordination_evidence_summary": {
+          "board_signal": "tower_alarm_board+rat_scent_board",
+          "coordination_metric": 0.0,
+          "coordination_signal_source": "board_events_plus_local_controller_outputs",
+          "coordination_without_omniscience": true,
+          "omniscience_guard_signal": "tower_coordination.guard.board_summary_only.verified.v1",
+          "omniscient_read_turns": 0
+        },
+        "bounded_coordination_source_ref": "replay.paired_runtime.board_inputs+replay.paired_runtime.board_delta+replay.paired_tick_frames[]",
+        "bounded_coordination_summary_ref": "replay.paired_runtime.evaluator.fairness.scout_fairness_band.bounded_coordination_evidence_summary",
+        "dead_turn_rate": 0.983333,
+        "death_rate": 0.0,
+        "exit_rate": 0.0,
+        "fairness_bundle_missing_fields": [],
+        "fairness_bundle_missing_ref_fields": [],
+        "fairness_bundle_missing_summary_fields": [],
+        "fairness_bundle_rate_sources": {
+          "ally_usefulness_delta": "fairness_bundle_json",
+          "dead_turn_rate": "fairness_bundle_json",
+          "death_rate": "fairness_bundle_json",
+          "exit_rate": "fairness_bundle_json"
+        },
+        "fairness_bundle_ref_sources": {
+          "detail_ref": "fairness_bundle_json",
+          "source_ref": "fairness_bundle_json",
+          "summary_ref": "fairness_bundle_json"
+        },
+        "fairness_bundle_status": "present",
+        "fairness_bundle_summary_sources": {
+          "board_signal": "fairness_bundle_json",
+          "coordination_metric": "fairness_bundle_json",
+          "coordination_signal_source": "fairness_bundle_json",
+          "coordination_without_omniscience": "fairness_bundle_json",
+          "omniscience_guard_signal": "fairness_bundle_json",
+          "omniscient_read_turns": "fairness_bundle_json"
+        },
+        "lane": "praxis",
+        "lane_context": "ratworld.seed_pair.ls4700.rs5600:praxis"
+      }
+    },
+    "threshold_status": "not_met"
+  },
+  "culture_seed": "ratworld.teacher_trace_seed.v1",
+  "demotion_threshold": -0.05,
+  "episode_budget": {
+    "runs_per_mind": 1,
+    "ticks_per_run": 60
+  },
+  "evaluation_status": {
+    "behavioral_change_status": {
+      "demotion_threshold": -0.05,
+      "learning_improvement_delta": 0.0,
+      "promotion_threshold": 0.05,
+      "status": "mixed",
+      "status_allowlist": [
+        "no_improvement",
+        "mixed",
+        "improved"
+      ],
+      "threshold_basis": "learning_delta_vs_promotion_and_demotion_thresholds"
+    },
+    "infrastructure_parity_status": {
+      "claim_blocked": false,
+      "classification": "parity_no_improvement",
+      "status": "parity_confirmed"
+    }
+  },
+  "evidence_capture_mode": "headless",
+  "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+  "heuristic_or_optimization_teacher_source": "not_applicable",
+  "infrastructure_parity_status": {
+    "claim_blocked": false,
+    "classification": "parity_no_improvement",
+    "status": "parity_confirmed"
+  },
+  "infrastructure_status": "parity_confirmed",
+  "layout_seed": 4700,
+  "learner_ref": "model_c",
+  "no_improvement_result": {
+    "classification": "parity_no_improvement",
+    "demotion_threshold": -0.05,
+    "learning_improvement_delta": 0.0,
+    "measured_deltas": {
+      "accepted_action_delta_count": 0.0,
+      "exit_avg_metric_delta": 0.0,
+      "fallback_or_shadow_delta_count": 0.0,
+      "foraging_total_food_eaten_delta": 0.0,
+      "learning_delta": 0.0,
+      "rejected_action_delta_count": 0.0,
+      "rejected_reason_delta_count": 0.0,
+      "survival_duration_avg_ticks_delta": 0.0,
+      "terminal_estimated_exit_successes_delta": 0.0
+    },
+    "promotion_threshold": 0.05,
+    "status": "explicit_no_improvement"
+  },
+  "optional_gui_overlay_refs": {
+    "gui_overlay_available": false,
+    "gui_overlay_ref": "",
+    "headless_overlay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/overlays/ratworld.seed_pair.ls4700.rs5600.headless.overlay.v1.json"
+  },
+  "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+  "pair_index": 1,
+  "pair_provenance": {
+    "comparison_thresholds": {
+      "demotion_threshold": -0.05,
+      "promotion_threshold": 0.05
+    },
+    "culture_seed": "ratworld.teacher_trace_seed.v1",
+    "episode_budget": {
+      "runs_per_mind": 1,
+      "ticks_per_run": 60
+    },
+    "evidence_capture": {
+      "evidence_capture_mode": "headless",
+      "selected_modes": [
+        "headless"
+      ]
+    },
+    "heuristic_or_optimization_teacher_source": "not_applicable",
+    "learner_ref": "model_c",
+    "overlay_modes": {
+      "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+      "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+      "selected_by_mode": {
+        "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+      }
+    },
+    "run_mode": "baseline_vs_praxis_runtime_actor",
+    "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+    "teacher_ref": "not_applicable"
+  },
+  "pairwise_comparison_reducer": {
+    "action_differences": {
+      "accepted_actions": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 10,
+        "baseline_unique_actions": [
+          "move_west"
+        ],
+        "delta_count": 0,
+        "praxis_count": 10,
+        "praxis_unique_actions": [
+          "move_west"
+        ]
+      },
+      "fallback_or_shadow_markers": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 0,
+        "baseline_unique_actions": [],
+        "delta_count": 0,
+        "praxis_count": 0,
+        "praxis_unique_actions": []
+      },
+      "rejected_actions": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 0,
+        "baseline_unique_actions": [],
+        "delta_count": 0,
+        "praxis_count": 0,
+        "praxis_unique_actions": []
+      },
+      "rejected_reason_ids": {
+        "actions_only_in_baseline": [],
+        "actions_only_in_praxis": [],
+        "baseline_count": 0,
+        "baseline_unique_actions": [],
+        "delta_count": 0,
+        "praxis_count": 0,
+        "praxis_unique_actions": []
+      }
+    },
+    "canonical_visible_bundle_refs": {
+      "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+      "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+    },
+    "evidence_refs": {
+      "baseline_behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.baseline.behavioral_evidence.v1.jsonl",
+      "baseline_lane_run_id": "ratworld.seed_pair.ls4700.rs5600.baseline.run",
+      "baseline_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/baseline/ratworld.seed_pair.ls4700.rs5600.baseline/branch.frames",
+      "baseline_run_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+      "baseline_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.baseline.log#tower_report",
+      "praxis_behavioral_evidence_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/lane_evidence/ratworld.seed_pair.ls4700.rs5600.praxis.behavioral_evidence.v1.jsonl",
+      "praxis_lane_run_id": "ratworld.seed_pair.ls4700.rs5600.praxis.run",
+      "praxis_replay_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/cps/ratworld.seed_pair.ls4700.rs5600/praxis/ratworld.seed_pair.ls4700.rs5600.praxis/branch.frames",
+      "praxis_run_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+      "praxis_visible_bundle_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/logs/ratworld.seed_pair.ls4700.rs5600.praxis.log#tower_report"
+    },
+    "lane_manifest_alignment": {
+      "baseline_manifest_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+      "baseline_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.baseline.run_manifest.v1.json",
+      "lane_control_alignment": {
+        "arbiter_learn": {
+          "aligned": true,
+          "baseline": "off",
+          "expected_relation": "equal",
+          "praxis": "off"
+        },
+        "freeze_rat": {
+          "aligned": true,
+          "baseline": "on",
+          "expected_relation": "different",
+          "praxis": "off"
+        },
+        "phase": {
+          "aligned": true,
+          "baseline": "report",
+          "expected_relation": "equal",
+          "praxis": "report"
+        },
+        "tower_learn": {
+          "aligned": true,
+          "baseline": "off",
+          "expected_relation": "equal",
+          "praxis": "off"
+        }
+      },
+      "mismatched_shared_fields": [],
+      "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+      "praxis_manifest_path": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+      "praxis_manifest_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/manifests/ratworld.seed_pair.ls4700.rs5600.praxis.run_manifest.v1.json",
+      "run_mode_alignment": {
+        "aligned": true,
+        "baseline": "baseline_vs_praxis_runtime_actor",
+        "expected": "baseline_vs_praxis_runtime_actor",
+        "praxis": "baseline_vs_praxis_runtime_actor"
+      },
+      "shared_inputs_alignment": {
+        "control_source": {
+          "aligned": true,
+          "baseline": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+          "praxis": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt"
+        },
+        "culture_seed": {
+          "aligned": true,
+          "baseline": "ratworld.teacher_trace_seed.v1",
+          "praxis": "ratworld.teacher_trace_seed.v1"
+        },
+        "demotion_threshold": {
+          "aligned": true,
+          "baseline": -0.05,
+          "praxis": -0.05
+        },
+        "episode_budget": {
+          "aligned": true,
+          "baseline": {
+            "runs_per_mind": 1,
+            "ticks_per_run": 60
+          },
+          "praxis": {
+            "runs_per_mind": 1,
+            "ticks_per_run": 60
+          }
+        },
+        "evidence_capture_mode": {
+          "aligned": true,
+          "baseline": "headless",
+          "praxis": "headless"
+        },
+        "heuristic_or_optimization_teacher_source": {
+          "aligned": true,
+          "baseline": "not_applicable",
+          "praxis": "not_applicable"
+        },
+        "learner_ref": {
+          "aligned": true,
+          "baseline": "model_c",
+          "praxis": "model_c"
+        },
+        "overlay_selection_by_mode": {
+          "aligned": true,
+          "baseline": {
+            "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+          },
+          "praxis": {
+            "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+          }
+        },
+        "promotion_threshold": {
+          "aligned": true,
+          "baseline": 0.05,
+          "praxis": 0.05
+        },
+        "seed_pair": {
+          "aligned": true,
+          "baseline": "4700 5600",
+          "praxis": "4700 5600"
+        },
+        "seed_suite_ref": {
+          "aligned": true,
+          "baseline": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt",
+          "praxis": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/seed_suites/ratworld.seed_pair.ls4700.rs5600.txt"
+        },
+        "teacher_ref": {
+          "aligned": true,
+          "baseline": "not_applicable",
+          "praxis": "not_applicable"
+        }
+      },
+      "shared_seed_pair_match": true,
+      "status": "aligned"
+    },
+    "measured_delta_overview": {
+      "accepted_action_delta_count": 0.0,
+      "exit_avg_metric_delta": 0.0,
+      "fallback_or_shadow_delta_count": 0.0,
+      "foraging_total_food_eaten_delta": 0.0,
+      "learning_delta": 0.0,
+      "rejected_action_delta_count": 0.0,
+      "rejected_reason_delta_count": 0.0,
+      "survival_duration_avg_ticks_delta": 0.0,
+      "terminal_estimated_exit_successes_delta": 0.0
+    },
+    "measured_deltas": {
+      "exit_outcomes": {
+        "per_learner_exit_metric": {
+          "model_c": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          }
+        },
+        "summary": {
+          "avg_exit_metric": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          },
+          "estimated_exit_successes": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          },
+          "last_exit_count": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          }
+        }
+      },
+      "foraging_outcomes": {
+        "per_learner_food_eaten": {
+          "model_c": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          }
+        },
+        "summary": {
+          "total_food_eaten": {
+            "baseline": 0.0,
+            "delta": 0.0,
+            "praxis": 0.0
+          }
+        }
+      },
+      "learning_state_changes": {
+        "baseline": 1.033,
+        "delta": 0.0,
+        "praxis": 1.033
+      },
+      "survival_duration": {
+        "per_learner_avg_ticks": {
+          "model_c": {
+            "baseline": 60.0,
+            "delta": 0.0,
+            "praxis": 60.0
+          }
+        },
+        "summary": {
+          "avg_ticks": {
+            "baseline": 60.0,
+            "delta": 0.0,
+            "praxis": 60.0
+          },
+          "last_alive_count": {
+            "baseline": 4.0,
+            "delta": 0.0,
+            "praxis": 4.0
+          },
+          "max_tick_seen": {
+            "baseline": 6.0,
+            "delta": 0.0,
+            "praxis": 6.0
+          }
+        }
+      },
+      "terminal_outcomes": {
+        "attempts_total": {
+          "baseline": 1.0,
+          "delta": 0.0,
+          "praxis": 1.0
+        },
+        "deaths_total": {
+          "baseline": 0.0,
+          "delta": 0.0,
+          "praxis": 0.0
+        },
+        "estimated_exit_successes": {
+          "baseline": 0.0,
+          "delta": 0.0,
+          "praxis": 0.0
+        },
+        "hunger_deaths_total": {
+          "baseline": 0.0,
+          "delta": 0.0,
+          "praxis": 0.0
+        },
+        "timeouts_total": {
+          "baseline": 1.0,
+          "delta": 0.0,
+          "praxis": 1.0
+        },
+        "trap_deaths_total": {
+          "baseline": 0.0,
+          "delta": 0.0,
+          "praxis": 0.0
+        },
+        "unknown_deaths_total": {
+          "baseline": 0.0,
+          "delta": 0.0,
+          "praxis": 0.0
+        }
+      }
+    },
+    "pair_id": "ratworld.seed_pair.ls4700.rs5600",
+    "pair_index": 1,
+    "pair_provenance": {
+      "comparison_thresholds": {
+        "demotion_threshold": -0.05,
+        "promotion_threshold": 0.05
+      },
+      "culture_seed": "ratworld.teacher_trace_seed.v1",
+      "episode_budget": {
+        "runs_per_mind": 1,
+        "ticks_per_run": 60
+      },
+      "evidence_capture": {
+        "evidence_capture_mode": "headless",
+        "selected_modes": [
+          "headless"
+        ]
+      },
+      "heuristic_or_optimization_teacher_source": "not_applicable",
+      "learner_ref": "model_c",
+      "overlay_modes": {
+        "gui_overlay_selection": "ratworld_baseline_vs_praxis_delta_overlay.v1",
+        "headless_overlay_selection": "ratworld_headless_tower_report_delta_overlay.v1",
+        "selected_by_mode": {
+          "headless": "ratworld_headless_tower_report_delta_overlay.v1"
+        }
+      },
+      "run_mode": "baseline_vs_praxis_runtime_actor",
+      "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "teacher_ref": "not_applicable"
+    },
+    "scenario_pair": {
+      "common_random_number_control": {
+        "control_source": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+        "seed_pair": "4700 5600",
+        "seed_suite_entry": 1
+      },
+      "crn_key": "4700 5600|entry=1|source=/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+      "run_mode": "baseline_vs_praxis_runtime_actor",
+      "seed_pair": "4700 5600"
+    },
+    "schema_id": "ratworld.paired_runtime.pairwise_comparison_reducer.v1"
+  },
+  "pairwise_comparison_reducer_ref": "build/logs/ratworld_tower_zone_cycle_smoke_20260415_193928/paired_runtime/pairwise_reducers/ratworld.seed_pair.ls4700.rs5600.pairwise_comparison_reducer.v1.json",
+  "phase": "paired_runtime_comparison",
+  "promotion_threshold": 0.05,
+  "run_mode": "baseline_vs_praxis_runtime_actor",
+  "run_seed": 5600,
+  "schema_id": "ratworld.paired_runtime.comparison_artifact.v1",
+  "seed_suite": "/home/vic/Documents/src/CEP/tools/ratworld_suites/triad_eval_seeds_xl.txt",
+  "status": "ok",
+  "suite_line": "4700 5600",
+  "teacher_ref": "not_applicable",
+  "threshold_status": "not_met"
+}
